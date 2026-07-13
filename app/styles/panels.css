@@ -371,7 +371,7 @@
    translucent white into the section's dye (var(--cat)). The thumb is a small
    neutral-white dot — the color has moved off the knob and onto the line. */
 .slider input[type="range"]::-webkit-slider-runnable-track {
-  height: 4px;
+  height: 3px;
   background: linear-gradient(
     90deg,
     color-mix(in oklab, #fff 45%, transparent),
@@ -388,7 +388,7 @@
   border-radius: 50%;
   background: #fff;
   border: 0;
-  margin-top: -3px;
+  margin-top: -3.5px;
   transition: transform var(--d-tap) var(--ease-out);
 }
 
@@ -397,7 +397,7 @@
 }
 
 .slider input[type="range"]::-moz-range-track {
-  height: 4px;
+  height: 3px;
   background: linear-gradient(
     90deg,
     color-mix(in oklab, #fff 45%, transparent),
