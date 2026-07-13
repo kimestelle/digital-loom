@@ -1,0 +1,77 @@
+/* ─── tokens.css ─────────────────────────────────────────────────────
+   Design tokens: fonts, color/size variables, reset, base typography. */
+
+@import "tailwindcss";
+
+:root {
+  --bg: #0d0e10;
+  --bg-elev: #14161a;
+  --bg-elev-2: #191c21;
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --fg: #e8e6e1;
+  --fg-mute: rgba(232, 230, 225, 0.82);
+  --fg-dim: rgba(232, 230, 225, 0.6);
+  --accent: #f4f2ee;
+  --accent-cool: #8fb5c1;
+
+  /* natural-dye category accents — the same palette the PixelPlay pixels
+     cycle through (jjok indigo · madder · gardenia · persimmon · mugwort). */
+  --dye-indigo: #6898d2;
+  --dye-madder: #ce6e58;
+  --dye-gardenia: #e0b660;
+  --dye-persimmon: #c68e5e;
+  --dye-mugwort: #98ac74;
+  --error: #e58a7f;
+  --ok: #9ccf9b;
+
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+
+  /* stronger easings than the CSS defaults, per emil-design-eng */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* durations: keep UI under 300ms per emil-design-eng */
+  --d-tap: 140ms;
+  --d-fast: 180ms;
+  --d-med: 240ms;
+  --d-slow: 320ms;
+
+  --font-display: var(--font-absans), system-ui, sans-serif;
+  --font-mono: var(--font-necto-mono), ui-monospace, Menlo, monospace;
+}
+
+/* A section opts into a dye with data-dye="…"; category-scoped controls
+   inside (slider thumbs, active tabs, swatch borders) read var(--cat) and
+   fall back to the white accent when unset. */
+[data-dye="indigo"] { --cat: var(--dye-indigo); }
+[data-dye="madder"] { --cat: var(--dye-madder); }
+[data-dye="gardenia"] { --cat: var(--dye-gardenia); }
+[data-dye="persimmon"] { --cat: var(--dye-persimmon); }
+[data-dye="mugwort"] { --cat: var(--dye-mugwort); }
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --font-sans: var(--font-absans);
+  --font-mono: var(--font-necto-mono);
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-display);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-size: 15px;
+  line-height: 1.5;
+  letter-spacing: 0; /* body sits near 0 per apple-design typography */
+}

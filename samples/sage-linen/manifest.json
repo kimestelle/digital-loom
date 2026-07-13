@@ -1,0 +1,28 @@
+{
+  "label": "sage-linen",
+  "prompt": "sage green linen",
+  "sourceFile": "source.jpg",
+  "hash": "ba3798534188b2366c656fea8cf4ce71",
+  "maps": [
+    {
+      "name": "albedo",
+      "file": "albedo.png"
+    },
+    {
+      "name": "normal",
+      "file": "normal.png"
+    },
+    {
+      "name": "roughness",
+      "file": "roughness.png"
+    },
+    {
+      "name": "metalness",
+      "file": "metalness.png"
+    },
+    {
+      "name": "height",
+      "file": "height.png"
+    }
+  ]
+}

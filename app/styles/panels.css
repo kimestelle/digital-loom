@@ -1,0 +1,488 @@
+/* ─── panels.css ─────────────────────────────────────────────────────
+   Side panels (workshop · tuning): panel chrome, sections, sliders/knobs, segmented pickers, weave picker, perf meters. */
+
+/* ── side panels (workshop · tuning) ────────────────────────────────
+   Two floating glass drawers pinned to left and right of the viewport.
+   Interruptible, spring-easy width/opacity transitions on collapse so
+   the panel feels like it's actually a physical drawer sliding.
+   Apple design guidelines applied: response on pointer-down (:active
+   scale), symmetric enter/exit paths, no lockouts during transition,
+   custom ease-drawer curve, reduced-motion respect. */
+
+.side-panel {
+  position: fixed;
+  top: 86px;
+  bottom: 16px;
+  width: 320px;
+  z-index: 25;
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition:
+    width 280ms var(--ease-drawer),
+    transform 280ms var(--ease-drawer);
+}
+
+.side-panel-left {
+  left: 16px;
+}
+
+.side-panel-right {
+  right: 16px;
+}
+
+/* Collapse downward: unpin the bottom so the panel shrinks to just its header
+   bar (the scroll body is hidden below). */
+.side-panel[data-collapsed="true"] {
+  bottom: auto;
+}
+
+.side-panel-header {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  padding: 12px 12px 12px 14px;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  min-height: 44px;
+}
+
+.side-panel-right .side-panel-header {
+  padding: 12px 14px 12px 12px;
+  /* chromeless tuning panel (no `glass`) — no divider hairline to float. */
+  border-bottom: none;
+}
+
+.side-panel-title {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+  opacity: 1;
+  transition: opacity 180ms var(--ease-out);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Title stays visible when collapsed — the header bar is the whole panel. */
+
+.side-panel-toggle {
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  color: var(--fg-mute);
+  transition:
+    background var(--d-fast) var(--ease-out),
+    color var(--d-fast) var(--ease-out),
+    border-color var(--d-fast) var(--ease-out),
+    transform var(--d-tap) var(--ease-out);
+  flex-shrink: 0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .side-panel-toggle:hover {
+    color: var(--fg);
+    background: color-mix(in oklab, var(--bg-elev-2) 60%, transparent);
+    border-color: var(--line);
+  }
+}
+
+.side-panel-toggle:active {
+  transform: scale(0.94);
+}
+
+.side-panel-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.side-panel-toggle .chevron {
+  font-size: 15px;
+  line-height: 1;
+  transition: transform var(--d-med) var(--ease-out);
+}
+
+/* Caret points down when open (invites collapse); flips up when collapsed. */
+.side-panel[data-collapsed="true"] .chevron {
+  transform: rotate(180deg);
+}
+
+.side-panel-scroll {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  opacity: 1;
+  transition: opacity 220ms var(--ease-out);
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.side-panel[data-collapsed="true"] .side-panel-scroll {
+  display: none;
+}
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 2px;
+}
+
+.cache-count {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--bg-elev-2) 82%, transparent);
+  border: 1px solid var(--line-strong);
+  color: var(--fg-mute);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  margin-left: auto;
+}
+
+.dock-empty {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+  margin: 0;
+}
+
+.dock-error {
+  font-size: 10.5px;
+  padding: 4px 8px;
+}
+
+
+/* weave picker — interlacing diagrams with the fabric name as caption */
+
+.weave-picker {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.weave-tile {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: color-mix(in oklab, var(--bg-elev-2) 70%, transparent);
+  color: var(--fg-mute);
+  cursor: pointer;
+  transition:
+    border-color var(--d-fast) var(--ease-out),
+    background var(--d-fast) var(--ease-out),
+    color var(--d-fast) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .weave-tile:hover {
+    border-color: color-mix(in oklab, var(--cat, var(--accent)) 45%, transparent);
+    color: var(--fg);
+  }
+}
+
+.weave-tile[data-active="true"] {
+  border-color: color-mix(in oklab, var(--cat, var(--accent)) 70%, transparent);
+  background: color-mix(in oklab, var(--cat, var(--accent)) 12%, var(--bg-elev-2));
+  color: var(--fg);
+}
+
+.weave-diagram {
+  display: block;
+  width: 40px;
+  height: 40px;
+}
+
+.weave-tile-caption {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: inherit;
+}
+
+/* performance meters */
+
+.perf-meters {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.perf-meter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 2px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: color-mix(in oklab, var(--bg-elev-2) 70%, transparent);
+}
+
+.perf-meter-val {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  line-height: 1.1;
+}
+
+.perf-meter-val[data-warn="true"] {
+  color: var(--error);
+}
+
+.perf-meter-unit {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+}
+
+.perf-auto {
+  width: 100%;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+.export-btn {
+  width: 100%;
+  justify-content: center;
+  margin-top: 8px;
+}
+
+
+/* knob layout — vertical stack in the tuning panel, one slider per row */
+
+.knob-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.knob-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fabric-picker {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.fabric-picker-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-mute);
+  letter-spacing: 0.03em;
+  flex: 0 0 auto;
+}
+
+.fabric-picker-select {
+  flex: 1 1 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  padding: 3px 6px;
+  cursor: pointer;
+  min-width: 0;
+}
+.fabric-picker-select:hover { border-color: var(--fg-mute); }
+.fabric-picker-select:focus { outline: none; border-color: var(--fg); }
+
+.slider {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slider-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-mute);
+  letter-spacing: 0.03em;
+}
+
+.slider-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+.slider input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* The category color now lives on the TRACK: a thin line grading from
+   translucent white into the section's dye (var(--cat)). The thumb is a small
+   neutral-white dot — the color has moved off the knob and onto the line. */
+.slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, #fff 45%, transparent),
+    var(--cat, var(--accent))
+  );
+  border-radius: 999px;
+}
+
+.slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  border: 0;
+  margin-top: -3px;
+  transition: transform var(--d-tap) var(--ease-out);
+}
+
+.slider input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+.slider input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, #fff 45%, transparent),
+    var(--cat, var(--accent))
+  );
+  border-radius: 999px;
+}
+
+.slider input[type="range"]::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  border: 0;
+}
+
+.knob-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Segmented control for transmission mode — full-width variant used in
+   the tuning panel gives each tab a real click target. */
+.tx-mode-picker {
+  display: inline-flex;
+  padding: 0px;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--bg-elev-2) 65%, transparent);
+  /* border: 1px solid var(--line-strong); */
+  gap: 2px;
+}
+
+.tx-mode-picker-wide {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  width: 100%;
+}
+
+.tx-mode-tab {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 4px 10px;
+  border-radius: 7px;
+  color: var(--fg-mute);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  cursor: pointer;
+  transition:
+    background var(--d-fast) var(--ease-out),
+    color var(--d-fast) var(--ease-out),
+    transform var(--d-tap) var(--ease-out);
+  text-align: center;
+}
+
+.tx-mode-tab:active {
+  transform: scale(0.97);
+}
+
+/* Active tab text is the pixel's exact live color — PixelPlay writes its
+   current rgb into --cat on this picker, so the two stay identical as the
+   enter/exit pops cross-fade the pixel to a new dye. */
+.tx-mode-tab[data-active="true"] {
+  color: var(--cat, var(--accent));
+  font-weight: 600;
+}
+
+.tx-mode-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tx-mode-tab:not([data-active="true"]):hover {
+    color: var(--fg);
+  }
+}
+
+.btn-toggle {
+  padding: 5px 10px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}

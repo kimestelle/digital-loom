@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "mumyeong",
+  "names": {
+    "ko": "무명",
+    "roman": "mumyeong",
+    "en": "cotton"
+  },
+  "urls": {
+    "albedo": "/pregen/silk-sample/albedo.png",
+    "texture": "/pregen/silk-sample/height.png"
+  },
+  "core": {
+    "gsm": 150,
+    "coverFactor": 0.75,
+    "thicknessMm": 0.4,
+    "fiberModulus": 0.55,
+    "fiberType": "staple",
+    "weaveType": "plain",
+    "twist": 0.55
+  },
+  "overrides": {
+    "warpStiffness": 0.9,
+    "creaseFriction": 0.5,
+    "creaseThreshold": 0.4,
+    "windResponse": 0.8
+  }
+}

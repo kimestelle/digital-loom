@@ -1,0 +1,26 @@
+{
+  "endpoint": "fal-ai/patina/material/extract",
+  "hash": "71871d958aa681541baf9159cbf98bc4",
+  "createdAt": "2026-07-10T03:52:26.890Z",
+  "maps": [
+    {
+      "name": "albedo",
+      "file": "albedo.png"
+    },
+    {
+      "name": "normal",
+      "file": "normal.png"
+    },
+    {
+      "name": "roughness",
+      "file": "roughness.png"
+    },
+    {
+      "name": "height",
+      "file": "height.png"
+    }
+  ],
+  "rawResponsePath": "response.json",
+  "prompt": "silk fabric",
+  "sourceFilename": "silk-sample.jpg"
+}

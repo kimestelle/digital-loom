@@ -1,0 +1,28 @@
+{
+  "label": "teapot-print",
+  "prompt": "silk printed with teacups and teapots",
+  "sourceFile": "source.png",
+  "hash": "4f9afb11c856b8e0d875662ac3e25f96",
+  "maps": [
+    {
+      "name": "albedo",
+      "file": "albedo.png"
+    },
+    {
+      "name": "normal",
+      "file": "normal.png"
+    },
+    {
+      "name": "roughness",
+      "file": "roughness.png"
+    },
+    {
+      "name": "metalness",
+      "file": "metalness.png"
+    },
+    {
+      "name": "height",
+      "file": "height.png"
+    }
+  ]
+}

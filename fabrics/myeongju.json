@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "id": "myeongju",
+  "names": {
+    "ko": "명주",
+    "roman": "myeongju",
+    "en": "silk"
+  },
+  "urls": {
+    "albedo": "/pregen/silk-sample/albedo.png",
+    "texture": "/pregen/silk-sample/height.png"
+  },
+  "core": {
+    "gsm": 60,
+    "coverFactor": 0.88,
+    "thicknessMm": 0.15,
+    "fiberModulus": 0.45,
+    "fiberType": "filament",
+    "weaveType": "plain",
+    "twist": 0.5
+  },
+  "overrides": {
+    "particleMass": 1
+  }
+}

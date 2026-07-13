@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "id": "denim",
+  "names": {
+    "ko": "데님",
+    "roman": "denim",
+    "en": "denim twill"
+  },
+  "urls": {
+    "albedo": "/pregen/silk-sample/albedo.png",
+    "texture": "/pregen/silk-sample/height.png"
+  },
+  "core": {
+    "gsm": 400,
+    "coverFactor": 0.92,
+    "thicknessMm": 1,
+    "fiberModulus": 0.55,
+    "fiberType": "staple",
+    "weaveType": "twill",
+    "twist": 0.9
+  },
+  "overrides": {}
+}

@@ -1,0 +1,24 @@
+{
+  "label": "red silk",
+  "prompt": "red silk",
+  "sourceFile": "albedo.png",
+  "hash": "71871d958aa681541baf9159cbf98bc4",
+  "maps": [
+    {
+      "name": "albedo",
+      "file": "albedo.png"
+    },
+    {
+      "name": "normal",
+      "file": "normal.png"
+    },
+    {
+      "name": "roughness",
+      "file": "roughness.png"
+    },
+    {
+      "name": "height",
+      "file": "height.png"
+    }
+  ]
+}

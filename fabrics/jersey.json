@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "id": "jersey",
+  "names": {
+    "ko": "저지",
+    "roman": "jeoji",
+    "en": "cotton jersey"
+  },
+  "urls": {
+    "albedo": "/pregen/silk-sample/albedo.png",
+    "texture": "/pregen/silk-sample/height.png"
+  },
+  "core": {
+    "gsm": 180,
+    "coverFactor": 0.85,
+    "thicknessMm": 0.8,
+    "fiberModulus": 0.55,
+    "fiberType": "staple",
+    "weaveType": "knit",
+    "twist": 0.3
+  },
+  "overrides": {}
+}

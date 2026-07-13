@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "id": "sambe",
+  "names": {
+    "ko": "삼베",
+    "roman": "sambe",
+    "en": "hemp"
+  },
+  "urls": {
+    "albedo": "/pregen/silk-sample/albedo.png",
+    "texture": "/pregen/silk-sample/height.png"
+  },
+  "core": {
+    "gsm": 200,
+    "coverFactor": 0.7,
+    "thicknessMm": 0.6,
+    "fiberModulus": 0.82,
+    "fiberType": "staple",
+    "weaveType": "plain",
+    "twist": 0.75
+  },
+  "overrides": {
+    "windResponse": 0.6,
+    "sheen": 0.05
+  }
+}

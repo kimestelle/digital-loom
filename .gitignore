@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# fabric pipeline
+/cache/*
+!/cache/.gitkeep
+
+# local tooling state and accidental dev bundles
+/.claude/*.lock
+/.claude/*.local.json
+/app/styles/*._.js

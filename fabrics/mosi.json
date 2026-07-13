@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "id": "mosi",
+  "names": {
+    "ko": "모시",
+    "roman": "mosi",
+    "en": "ramie"
+  },
+  "urls": {
+    "albedo": "/pregen/silk-sample/albedo.png",
+    "texture": "/pregen/silk-sample/height.png"
+  },
+  "core": {
+    "gsm": 80,
+    "coverFactor": 0.55,
+    "thicknessMm": 0.25,
+    "fiberModulus": 0.85,
+    "fiberType": "staple",
+    "weaveType": "plain",
+    "twist": 0.7
+  },
+  "overrides": {
+    "particleMass": 0.7,
+    "bendStiffness": 0.78
+  }
+}
