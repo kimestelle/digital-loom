@@ -26,6 +26,28 @@ FAL_API_KEY=your_fal_api_key
 
 Submitting a new image calls the configured FAL endpoint. Selecting or dropping
 an image only stages it; the paid request starts when **submit** is pressed.
+Users can also paste their own fal key in the workshop panel (stored in
+localStorage, sent per request) — it overrides the server key.
+
+## Deploying on Vercel
+
+Push the repo to GitHub, create a Vercel project from it, and add one
+environment variable: `FAL_API_KEY`. That's the whole setup — the build needs
+no other configuration.
+
+What ships with the deploy: the sample materials (`samples/`), their tuned
+parameters (`fabrics/presets/*.json`), the pregen silk bundle
+(`public/pregen/`), and the weave profiles (in code). What's written at
+runtime — fresh extractions and newly-saved presets — goes to `/tmp` on
+Vercel (the repo tree is read-only there), which means it survives within a
+warm serverless instance but **not across cold starts or redeploys**. The
+collection zip (my swatches → collection → download zip) is the durable
+backup: users can re-load it any time to restore their full library. For
+permanent server-side storage, point `LOOM_CACHE_DIR` / `LOOM_PRESETS_DIR`
+at a mounted disk on a non-serverless host.
+
+One serverless limit to know: Vercel caps request bodies at ~4.5 MB, which
+bounds photo uploads and per-material collection imports.
 
 ## Commands
 
@@ -71,3 +93,4 @@ local browser preferences.
 This project uses Next.js 16. Its APIs and conventions differ from earlier
 versions. Before changing framework code, read the relevant installed guide in
 `node_modules/next/dist/docs/` as required by `AGENTS.md`.
+# digital-loom
