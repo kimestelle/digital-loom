@@ -61,7 +61,17 @@ export async function runPatinaBaseline(
   form.append("image", file);
   form.append("prompt", opts.prompt?.trim() || "fabric");
 
-  const res = await fetch("/api/patina", { method: "POST", body: form });
+  // The user's own fal key (if saved in the workshop panel) travels per
+  // request; the server falls back to its env credential when absent.
+  const userKey =
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("loom.falKey")?.trim()
+      : null;
+  const res = await fetch("/api/patina", {
+    method: "POST",
+    body: form,
+    headers: userKey ? { "x-fal-key": userKey } : undefined,
+  });
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
     throw new Error(

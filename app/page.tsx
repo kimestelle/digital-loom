@@ -1,11 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import ClothScene, { type ClothStats } from "@/lib/ui/clothScene";
+import { STAMP_MASK_URI } from "@/lib/ui/stampMask";
 import { fabricFromPkg } from "@/lib/ui/fabricViewer";
 import {
   FABRICS,
-  FABRIC_ORDER,
   type FabricId,
 } from "@/lib/cloth/fabrics";
 import { runPatinaBaseline } from "@/lib/pipeline/patinaBaseline";
@@ -47,6 +54,11 @@ import {
   SampleGrid,
   useSwatchDrag,
 } from "@/lib/ui/materialSwatches";
+import {
+  MaterialTransferLayer,
+  useMaterialTransfer,
+  type MaterialTransferController,
+} from "@/lib/ui/materialTransfer";
 
 const OBJECT_MODEL_URL = "/model/whale.glb";
 
@@ -59,7 +71,8 @@ interface CacheEntry {
 }
 
 // Order the mobile bottom sheet pages through (‹ prev / › next / swipe).
-const MOBILE_PANELS = ["workshop", "tuning"] as const;
+const MOBILE_PANELS = ["workshop", "swatches", "tuning"] as const;
+type MobilePanel = (typeof MOBILE_PANELS)[number];
 
 const PREGEN_MANIFEST = "/pregen/silk-sample/manifest.json";
 const PREGEN_BASE = "/pregen/silk-sample";
@@ -71,6 +84,31 @@ const PREGEN_HASH = "71871d958aa681541baf9159cbf98bc4";
 // plain weaves share a renderer but differ in thread count / yarn width so
 // fine silk, open ramie, everyday cotton, and coarse hemp read distinctly.
 // (twill/knit ignore these — their geometry carries the identity.)
+// The picker presents three structural FAMILIES (plain / twill / knit),
+// each carried by one representative profile. The other profiles stay in
+// FABRICS so previously-saved presets resolve.
+const WEAVE_CATEGORIES: Array<{
+  id: FabricId;
+  label: string;
+  title: string;
+}> = [
+  {
+    id: "mumyeong",
+    label: "plain",
+    title: "plain weave — over-under, crisp and stable (cotton, linen)",
+  },
+  {
+    id: "denim",
+    label: "twill",
+    title: "twill — diagonal rib, heavier drape (denim, gabardine)",
+  },
+  {
+    id: "jersey",
+    label: "knit",
+    title: "knit — looped yarn, stretchy and clingy (jersey, tees)",
+  },
+];
+
 const WEAVE_DIAGRAM_PARAMS: Record<FabricId, { threads: number; yarn: number }> = {
   myeongju: { threads: 7, yarn: 0.62 }, // fine, dense
   mosi: { threads: 4, yarn: 0.38 },     // thin thread, open gaps
@@ -122,15 +160,40 @@ export default function Home() {
   const [rightCollapsed, setRightCollapsed] = useState(false);
   // Mobile only: which editor the bottom sheet shows (the other is hidden).
   // Navigated by the ‹ › buttons or a sideways swipe. Ignored on desktop.
-  const [mobileTab, setMobileTab] = useState<"workshop" | "tuning">("workshop");
-  const mobileIdx = MOBILE_PANELS.indexOf(mobileTab);
+  const [mobileTab, setMobileTab] = useState<MobilePanel>("workshop");
+  // Bottom sheet visibility on mobile: tabs stay docked at the bottom while
+  // the sheet itself can collapse away to leave the stage full-screen.
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(true);
+  // Left-panel tab: the working tools vs. the swatch collection.
+  const [workshopTab, setWorkshopTab] = useState<"workshop" | "swatches">(
+    "workshop",
+  );
   // Step the sheet by ±1, clamped to the ends (a 2-page pager).
   const stepMobile = useCallback((dir: 1 | -1) => {
     setMobileTab((cur) => {
       const next = MOBILE_PANELS.indexOf(cur) + dir;
       return MOBILE_PANELS[Math.min(MOBILE_PANELS.length - 1, Math.max(0, next))];
     });
+    setMobileSheetOpen(true);
   }, []);
+  // A mobile tab tap: re-tapping the active tab toggles the sheet closed
+  // (leaving the stage full-screen); any other tab opens its editor. The
+  // workshop/swatches tabs drive the left panel's own tab state so desktop
+  // and mobile stay one source of truth.
+  const selectMobileTab = useCallback(
+    (tab: MobilePanel) => {
+      if (tab === mobileTab) {
+        setMobileSheetOpen((v) => !v);
+        return;
+      }
+      setMobileTab(tab);
+      setMobileSheetOpen(true);
+      if (tab === "workshop" || tab === "swatches") {
+        setWorkshopTab(tab);
+      }
+    },
+    [mobileTab],
+  );
   // Horizontal swipe on the sheet → step. Ignores mostly-vertical drags so it
   // doesn't fight the panel's own scrolling.
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
@@ -169,6 +232,12 @@ export default function Home() {
   }>({ id: null, sig: "" });
   // The maps hash for the active material (a clone's differs from its id).
   const activePkgHashRef = useRef<string | null>(null);
+  // Mesh-dissolve entry point for callbacks defined before the transfer hook
+  // is instantiated (Patina completion, deletion). Until the hook mounts it
+  // degrades to an instant commit — same behavior as before this feature.
+  const materialSwapRef = useRef<MaterialTransferController["swap"]>(
+    (commit) => commit(),
+  );
   // User-defined order of the library section, by item id. Persists to
   // localStorage so drag-reordering sticks and nothing shuffles on its own.
   const [libraryOrder, setLibraryOrder] = useState<string[]>([]);
@@ -309,22 +378,34 @@ export default function Home() {
           fabricName: name,
           prompt,
         });
-        setPkg(result.pkg);
         setStatus({
           kind: "done",
           cacheHit: result.cacheHit,
           hash: result.hash,
         });
-        activePkgHashRef.current = result.hash;
-        setActiveId(result.hash);
         void refreshCache();
         // Canonical params for a material use slug === hash.
         const saved = presets.find((preset) => preset.slug === result.hash);
-        if (result.cacheHit && saved) {
-          // Re-extracting a material we've already tuned — restore its params
-          // rather than overwriting them with defaults.
-          applyParams(saved);
-        } else {
+        // Wear the fresh maps behind a mesh pixel-dissolve: the cloth
+        // dissolves out, the material-affecting state lands while it's fully
+        // hidden, and the reveal gates on the new albedo actually loading.
+        materialSwapRef.current(
+          () => {
+            setPkg(result.pkg);
+            activePkgHashRef.current = result.hash;
+            setActiveId(result.hash);
+            if (result.cacheHit && saved) {
+              // Re-extracting a material we've already tuned — restore its
+              // params rather than overwriting them with defaults.
+              applyParams(saved);
+            }
+          },
+          {
+            expectedAlbedoURL: result.pkg.maps.albedo?.url,
+            ownerAfter: result.hash,
+          },
+        );
+        if (!(result.cacheHit && saved)) {
           // Fresh maps (or a cache hit we've never tuned): auto-tune off the
           // maps and let autosave persist that as the material's first preset.
           // Arm the baseline empty so the estimate writes once it settles.
@@ -335,9 +416,7 @@ export default function Home() {
             );
             const est = await estimateParams(result.pkg);
             setKnobs((k) => ({ ...k, ...est.knobs }));
-            if (est.metalness > 0) {
-              setMetalnessInput(String(est.metalness.toFixed(2)));
-            }
+
           } catch {
             // estimation is a nicety — never let it break the extraction
           }
@@ -656,7 +735,7 @@ export default function Home() {
       const { estimateParams } = await import("@/lib/pipeline/estimateParams");
       const est = await estimateParams(p);
       setKnobs((k) => ({ ...k, ...est.knobs }));
-      if (est.metalness > 0) setMetalnessInput(String(est.metalness.toFixed(2)));
+
     } catch {
       // estimation is a nicety — leave defaults if it fails
     }
@@ -805,7 +884,11 @@ export default function Home() {
       }
       setPresets((cur) => cur.filter((p) => p.slug !== item.id));
       setLibraryOrder((cur) => cur.filter((id) => id !== item.id));
-      if (activeId === item.id) setActiveId(null);
+      if (activeId === item.id) {
+        // Deleting the worn material: dissolve the cloth out, drop to the
+        // base fabric while hidden, reveal once its albedo is back in.
+        materialSwapRef.current(() => setActiveId(null), { ownerAfter: null });
+      }
     },
     [deleteCachedEntry, activeId],
   );
@@ -869,7 +952,9 @@ export default function Home() {
 
   // Empty field → 0 (non-metallic). Clamp so stray input can't push the shader
   // past a physical 0..1 metalness.
-  const metalness = Math.min(1, Math.max(0, parseFloat(metalnessInput) || 0));
+  // Metal is retired from the UI: presets still round-trip their stored
+  // metalness (so old files stay intact), but nothing renders metallic.
+  const metalness = 0;
 
   const mapEntries = useMemo<MapEntry[]>(() => {
     if (!pkg) return [];
@@ -1012,7 +1097,7 @@ export default function Home() {
 
   // ── id → item adapters for the swatch grids (their callbacks report ids;
   //    the page resolves them back to rich LibraryItems). ───────────────────
-  const selectById = useCallback(
+  const commitById = useCallback(
     (id: string) => {
       const item =
         sampleItems.find((i) => i.id === id) ??
@@ -1038,33 +1123,164 @@ export default function Home() {
     [libraryItems, deleteLibraryItem],
   );
 
+  // Double-click rename. The display name lives on the material's preset, so
+  // renaming re-posts the preset with the new name. An untuned cache run has
+  // no preset yet — freeze one (same thing its first autosave would do),
+  // using the live params when it's the worn material or the map-derived
+  // estimate otherwise.
+  const renameById = useCallback(
+    async (id: string, name: string) => {
+      const item =
+        sampleItems.find((i) => i.id === id) ??
+        libraryItems.find((i) => i.id === id);
+      if (!item) return;
+      const preset = item.preset;
+      if (preset) {
+        await postParams(
+          preset.slug,
+          preset.pkgHash ?? item.pkgHash,
+          name,
+          preset.fabricId,
+          preset.metalness,
+          preset.knobs,
+        );
+        return;
+      }
+      if (activeId === id) {
+        await postParams(id, item.pkgHash, name, fabricId, metalness, knobs);
+        return;
+      }
+      if (!item.entry) return;
+      try {
+        const p = pkgFromMaps(
+          item.entry.sourceFilename ?? "material",
+          "",
+          item.entry.maps,
+          {
+            prompt: item.entry.prompt,
+            sourceFilename: item.entry.sourceFilename,
+            hash: item.entry.hash,
+          },
+        );
+        for (const m of item.entry.maps) {
+          const key = m.name as MapName;
+          if (p.maps[key]) p.maps[key]!.url = m.url;
+        }
+        const { estimateParams } = await import("@/lib/pipeline/estimateParams");
+        const est = await estimateParams(p);
+        await postParams(id, item.pkgHash, name, fabricId, est.metalness, {
+          ...knobs,
+          ...est.knobs,
+        });
+      } catch {
+        await postParams(id, item.pkgHash, name, fabricId, 0, knobs);
+      }
+    },
+    [sampleItems, libraryItems, activeId, fabricId, metalness, knobs, postParams],
+  );
+
+  // ── collection zip: download everything / restore everything ───────────
+  const [collectionBusy, setCollectionBusy] = useState<
+    "export" | "import" | null
+  >(null);
+  const exportCollectionZip = useCallback(async () => {
+    if (collectionBusy) return;
+    setCollectionBusy("export");
+    try {
+      const { exportCollection } = await import(
+        "@/lib/export/collectionExport"
+      );
+      await exportCollection(libraryItems);
+    } finally {
+      setCollectionBusy(null);
+    }
+  }, [collectionBusy, libraryItems]);
+  const importCollectionZip = useCallback(
+    async (file: File) => {
+      if (collectionBusy) return;
+      setCollectionBusy("import");
+      try {
+        const { importCollection } = await import(
+          "@/lib/export/collectionExport"
+        );
+        const res = await importCollection(file);
+        await refreshCache();
+        await refreshPresets();
+        // Restored ids adopt the manifest's order; existing items keep theirs.
+        setLibraryOrder((cur) => {
+          const merged = [...cur.filter((id) => !res.order.includes(id)), ...res.order];
+          return merged;
+        });
+      } catch (err) {
+        setStatus({
+          kind: "error",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        setCollectionBusy(null);
+      }
+    },
+    [collectionBusy, refreshCache, refreshPresets],
+  );
+
+  const materialTransfer = useMaterialTransfer({
+    activeId,
+    stageRef,
+    commit: commitById,
+  });
+  useEffect(() => {
+    materialSwapRef.current = materialTransfer.swap;
+  }, [materialTransfer.swap]);
+
+  // Landing splash: covers the first load (shader compile + settle + first
+  // maps) so the user never sees the scene pop in piecemeal. perfStats' first
+  // emission means the render loop is actually producing frames.
+  const [landingPhase, setLandingPhase] = useState<"hold" | "leaving" | "gone">(
+    "hold",
+  );
+  // Async on purpose (lint: no sync setState in effects). Two separate
+  // effects: the leaving→gone timer must NOT depend on perfStats — stats
+  // re-emit ~2 Hz, and each emission would clear-and-reschedule a shared
+  // timer forever.
+  useEffect(() => {
+    if (landingPhase !== "hold" || !perfStats) return;
+    const t = window.setTimeout(() => setLandingPhase("leaving"), 120);
+    return () => window.clearTimeout(t);
+  }, [landingPhase, perfStats]);
+  useEffect(() => {
+    if (landingPhase !== "leaving") return;
+    const t = window.setTimeout(() => setLandingPhase("gone"), 700);
+    return () => window.clearTimeout(t);
+  }, [landingPhase]);
+
   return (
     <div className="app">
+      {landingPhase !== "gone" ? (
+        <div className="landing" data-leaving={landingPhase === "leaving"}>
+          <span className="nav-brand-name">digital loom</span>
+          <span className="nav-brand-sub">fabric material instrument</span>
+        </div>
+      ) : null}
+      <MaterialTransferLayer command={materialTransfer.command} />
       <NavBar mode={mode} onMode={setMode} status={status} />
 
-      {/* Mobile-only bottom-sheet header: names the active editor and steps
-          between them with ‹ ›. Hidden on desktop (both panels always show). */}
-      <div className="mobile-nav" aria-label="editor navigation">
-        <span className="mobile-nav-title">{mobileTab}</span>
-        <button
-          type="button"
-          className="mobile-nav-btn"
-          aria-label="previous editor"
-          disabled={mobileIdx === 0}
-          onClick={() => stepMobile(-1)}
-        >
-          ‹
-        </button>
-        <button
-          type="button"
-          className="mobile-nav-btn"
-          aria-label="next editor"
-          disabled={mobileIdx === MOBILE_PANELS.length - 1}
-          onClick={() => stepMobile(1)}
-        >
-          ›
-        </button>
-      </div>
+      {/* Mobile-only bottom tab bar: workshop · swatches · tuning in one
+          dock. Re-tapping the active tab collapses the sheet to the bottom
+          so the stage runs full-screen. display:none on desktop. */}
+      <nav className="mobile-nav" aria-label="editor tabs">
+        {MOBILE_PANELS.map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            className="mobile-nav-tab"
+            data-active={mobileTab === tab && mobileSheetOpen}
+            aria-pressed={mobileTab === tab && mobileSheetOpen}
+            onClick={() => selectMobileTab(tab)}
+          >
+            {tab === "swatches" ? "my swatches" : tab}
+          </button>
+        ))}
+      </nav>
 
       <div className="stage" ref={stageRef}>
         {/* One persistent scene. `mode` cross-fades the cloth and the object
@@ -1085,6 +1301,7 @@ export default function Home() {
           roughnessMapURL={pkg?.maps.roughness?.url}
           porosityMapURL={pkg?.maps.transmission?.url}
           metalness={metalness}
+          iridescence={knobs.iridescence}
           metalnessMapURL={pkg?.maps.metalness?.url}
           normalMapURL={pkg?.maps.normal?.url}
           normalAmount={knobs.normalAmount}
@@ -1113,6 +1330,10 @@ export default function Home() {
           iterations={knobs.iterations}
           selfCollide={knobs.selfCollide}
           anisotropy={knobs.anisotropy}
+          materialRevealRef={materialTransfer.revealRef}
+          materialTransitionKey={materialTransfer.transitionKey}
+          materialExpectedAlbedoURL={materialTransfer.expectedAlbedoURL}
+          onMaterialReady={materialTransfer.materialReady}
           onStats={setPerfStats}
         />
         {mode === "cloth" && (knobs.pomDebug !== 0 || knobs.wireframe) ? (
@@ -1138,7 +1359,7 @@ export default function Home() {
       <aside
         className="side-panel side-panel-left glass"
         data-collapsed={leftCollapsed}
-        data-mshow={mobileTab === "workshop"}
+        data-mshow={mobileSheetOpen && mobileTab !== "tuning"}
         onTouchStart={onSheetTouchStart}
         onTouchEnd={onSheetTouchEnd}
         aria-label="workshop"
@@ -1148,41 +1369,108 @@ export default function Home() {
           side="left"
           collapsed={leftCollapsed}
           onToggle={() => setLeftCollapsed((v) => !v)}
+          tabs={{
+            items: [
+              { id: "workshop", label: "workshop" },
+              { id: "swatches", label: "my swatches" },
+            ],
+            active: workshopTab,
+            onSelect: (id) => setWorkshopTab(id as "workshop" | "swatches"),
+          }}
         />
-        <div className="side-panel-scroll">
-          <MapsStrip
-            entries={mapEntries}
-            exportState={exportState}
-            canExport={Boolean(pkg)}
-            onExport={handleExport}
-          />
-          <InsertPanel
-            stagedName={stagedFile?.name ?? null}
-            onFiles={stageFiles}
-            prompt={prompt}
-            onPrompt={setPrompt}
-            metalness={metalnessInput}
-            onMetalness={setMetalnessInput}
-            onSubmit={submit}
-            busy={status.kind === "loading"}
-            error={status.kind === "error" ? status.message : null}
-          />
-
-          <SampleGrid
-            items={sampleItems}
-            activeId={activeId}
-            drag={drag}
-            onSelect={selectById}
-          />
-          <LibraryGrid
-            items={libraryItems}
-            activeId={activeId}
-            drag={drag}
-            onSelect={selectById}
-            onClone={cloneById}
-            onReorder={reorderLibrary}
-            onDelete={deleteById}
-          />
+        {/* Both tabs render side by side in a 200%-wide track; switching
+            slides the track, so the panel keeps its full height and the two
+            panes glide past each other instead of swapping. Each pane owns
+            its scroll position. */}
+        <div className="panel-tab-viewport">
+          <div className="panel-tab-track" data-tab={workshopTab}>
+            <div
+              className="side-panel-scroll panel-tab-pane"
+              aria-hidden={workshopTab !== "workshop"}
+            >
+              <MapsStrip
+                entries={mapEntries}
+                exportState={exportState}
+                canExport={Boolean(pkg)}
+                onExport={handleExport}
+              />
+              <InsertPanel
+                stagedName={stagedFile?.name ?? null}
+                onFiles={stageFiles}
+                prompt={prompt}
+                onPrompt={setPrompt}
+                onSubmit={submit}
+                busy={status.kind === "loading"}
+                error={status.kind === "error" ? status.message : null}
+              />
+            </div>
+            <div
+              className="side-panel-scroll panel-tab-pane swatch-stamped"
+              aria-hidden={workshopTab !== "swatches"}
+              style={
+                {
+                  "--stamp-mask": `url("${STAMP_MASK_URI}")`,
+                } as CSSProperties
+              }
+            >
+              <SampleGrid
+                items={sampleItems}
+                activeId={activeId}
+                awayId={materialTransfer.awayId}
+                meshOwnerId={materialTransfer.meshOwnerId}
+                drag={drag}
+                onSelect={materialTransfer.click}
+                onRegister={materialTransfer.register}
+                onHoverIn={materialTransfer.hoverIn}
+                onHoverOut={materialTransfer.hoverOut}
+                onRename={renameById}
+              />
+              <LibraryGrid
+                items={libraryItems}
+                activeId={activeId}
+                awayId={materialTransfer.awayId}
+                meshOwnerId={materialTransfer.meshOwnerId}
+                drag={drag}
+                onSelect={materialTransfer.click}
+                onRegister={materialTransfer.register}
+                onHoverIn={materialTransfer.hoverIn}
+                onHoverOut={materialTransfer.hoverOut}
+                onClone={cloneById}
+                onReorder={reorderLibrary}
+                onDelete={deleteById}
+                onRename={renameById}
+              />
+              <section className="panel-section" data-dye="persimmon">
+                <SectionLabel hint="save your whole collection (maps + tuned parameters) as one zip, or load a saved one back in">
+                  collection
+                </SectionLabel>
+                <div className="collection-actions">
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    disabled={collectionBusy !== null || libraryItems.length === 0}
+                    onClick={() => void exportCollectionZip()}
+                  >
+                    {collectionBusy === "export" ? "zipping…" : "download zip ↓"}
+                  </button>
+                  <label className="btn btn-ghost collection-load">
+                    {collectionBusy === "import" ? "loading…" : "load zip"}
+                    <input
+                      type="file"
+                      accept=".zip,application/zip"
+                      hidden
+                      disabled={collectionBusy !== null}
+                      onChange={(e) => {
+                        const f = e.currentTarget.files?.[0];
+                        e.currentTarget.value = "";
+                        if (f) void importCollectionZip(f);
+                      }}
+                    />
+                  </label>
+                </div>
+              </section>
+            </div>
+          </div>
         </div>
       </aside>
 
@@ -1192,7 +1480,7 @@ export default function Home() {
       <aside
         className="side-panel side-panel-right"
         data-collapsed={rightCollapsed}
-        data-mshow={mobileTab === "tuning"}
+        data-mshow={mobileSheetOpen && mobileTab === "tuning"}
         onTouchStart={onSheetTouchStart}
         onTouchEnd={onSheetTouchEnd}
         aria-label="tuning"
@@ -1205,7 +1493,7 @@ export default function Home() {
         />
         <div className="side-panel-scroll">
           <section className="panel-section" data-dye="gardenia">
-            <SectionLabel>frag res</SectionLabel>
+            <SectionLabel hint="how sharply the scene is drawn; higher is crisper but works the GPU harder">frag res</SectionLabel>
             <div className="tx-mode-picker tx-mode-picker-wide" role="tablist">
               <PixelPlay />
               {(
@@ -1239,7 +1527,7 @@ export default function Home() {
           </section>
 
           <section className="panel-section" data-dye="persimmon">
-            <SectionLabel>mesh res</SectionLabel>
+            <SectionLabel hint="how many points simulate the cloth; higher drapes finer folds, costs speed">mesh res</SectionLabel>
             <div className="tx-mode-picker tx-mode-picker-wide" role="tablist">
               <PixelPlay />
               {(
@@ -1267,7 +1555,7 @@ export default function Home() {
           </section>
 
           <section className="panel-section" data-dye="mugwort">
-            <SectionLabel>sky</SectionLabel>
+            <SectionLabel hint="backdrop only — the lighting stays the same in both">sky</SectionLabel>
             <div className="tx-mode-picker tx-mode-picker-wide" role="tablist">
               <PixelPlay />
               {(
@@ -1294,27 +1582,31 @@ export default function Home() {
           </section>
 
           <section className="panel-section" data-dye="indigo">
-            <SectionLabel>transmission</SectionLabel>
+            <SectionLabel hint="what happens when the sun is behind the cloth and light passes through">transmission</SectionLabel>
             {/* Independent per-map weights: each map's pull on where the cloth
                 goes sheer. Any can be zeroed out; they blend by relative
                 weight. All three at 0 → opaque. */}
             <Slider
               label="from height"
+                hint="how much the weave's hills and valleys decide where light shines through"
               value={knobs.txHeight}
               onChange={(v) => setKnobs((k) => ({ ...k, txHeight: v }))}
             />
             <Slider
               label="from albedo"
+                hint="bright spots in the color map let more light through"
               value={knobs.txAlbedo}
               onChange={(v) => setKnobs((k) => ({ ...k, txAlbedo: v }))}
             />
             <Slider
               label="from roughness"
+                hint="the roughness map decides where light sneaks through"
               value={knobs.txRoughness}
               onChange={(v) => setKnobs((k) => ({ ...k, txRoughness: v }))}
             />
             <Slider
               label="contrast"
+                hint="pushes see-through spots more open and solid spots more solid"
               value={knobs.transmissionContrast}
               onChange={(v) =>
                 setKnobs((k) => ({ ...k, transmissionContrast: v }))
@@ -1323,10 +1615,11 @@ export default function Home() {
           </section>
 
           <section className="panel-section" data-dye="madder">
-            <SectionLabel>material</SectionLabel>
+            <SectionLabel hint="the character of the fabric itself">material</SectionLabel>
             <div className="knob-stack">
               <Slider
                 label="weight"
+                hint="how heavy the cloth hangs — heavier swings less in the breeze"
                 value={knobs.weight}
                 min={0.2}
                 max={3}
@@ -1335,6 +1628,7 @@ export default function Home() {
               />
               <Slider
                 label="breeze"
+                hint="wind strength; zero is dead calm"
                 value={knobs.breeze}
                 min={0}
                 max={0.25}
@@ -1343,16 +1637,25 @@ export default function Home() {
               />
               <Slider
                 label="sheen"
+                hint="the soft shine that catches folds and edges, like silk"
                 value={knobs.sheen}
                 onChange={(v) => setKnobs((k) => ({ ...k, sheen: v }))}
               />
               <Slider
+                label="iridescence"
+                hint="rainbow light play: color fringes through the cloth, thread shimmer, and the sun's lens flare"
+                value={knobs.iridescence}
+                onChange={(v) => setKnobs((k) => ({ ...k, iridescence: v }))}
+              />
+              <Slider
                 label="openness"
+                hint="how see-through the fabric is overall — denim to organza"
                 value={knobs.openness}
                 onChange={(v) => setKnobs((k) => ({ ...k, openness: v }))}
               />
               <Slider
                 label="α boost"
+                hint="extra thinning on top — makes worn, threadbare patches"
                 value={knobs.alphaBoost}
                 min={0}
                 max={0.5}
@@ -1373,7 +1676,6 @@ export default function Home() {
                     { v: 0 as const, label: "height" },
                     { v: 1 as const, label: "albedo" },
                     { v: 2 as const, label: "rough" },
-                    { v: 3 as const, label: "metal" },
                   ]
                 ).map((opt) => (
                   <button
@@ -1393,6 +1695,7 @@ export default function Home() {
               </div>
               <Slider
                 label="albedo mix"
+                hint="blend between plain white cloth and the captured color"
                 value={knobs.albedoAmount}
                 onChange={(v) =>
                   setKnobs((k) => ({ ...k, albedoAmount: v }))
@@ -1400,6 +1703,7 @@ export default function Home() {
               />
               <Slider
                 label="tile ×"
+                hint="how many times the fabric pattern repeats across the sheet"
                 value={knobs.tileScale}
                 min={0.5}
                 max={16}
@@ -1410,7 +1714,7 @@ export default function Home() {
           </section>
 
           <section className="panel-section" data-dye="mugwort">
-            <SectionLabel>weave</SectionLabel>
+            <SectionLabel hint="the weave structure — changes how stiff the cloth behaves in each direction">weave</SectionLabel>
             {/* Weave-structure picker — an interlacing diagram per fabric,
                 name as caption. This chooses the cloth's motion DNA (damping,
                 wind response, crease memory, base mass); the sliders below
@@ -1418,26 +1722,39 @@ export default function Home() {
             <div className="weave-picker" role="radiogroup" aria-label="weave">
               {/* one pixel roams the whole grid, orbiting the chosen weave */}
               <PixelPlay layer="over" pixel={4} />
-              {FABRIC_ORDER.map((id) => {
-                const f = FABRICS[id];
-                const d = WEAVE_DIAGRAM_PARAMS[id];
+              {/* Three distinct structural families, each backed by a
+                  representative profile. All legacy profiles still resolve
+                  (saved presets keep their fabricId); active state matches
+                  by weave family so an old preset lights its family tile. */}
+              {WEAVE_CATEGORIES.map((cat) => {
+                const f = FABRICS[cat.id];
+                const d = WEAVE_DIAGRAM_PARAMS[cat.id];
+                const active =
+                  FABRICS[fabricId].core.weaveType === f.core.weaveType;
                 return (
                   <button
-                    key={id}
+                    key={cat.id}
                     type="button"
                     role="radio"
-                    aria-checked={fabricId === id}
+                    aria-checked={active}
                     className="weave-tile"
-                    data-active={fabricId === id}
-                    title={`${f.nameKo} · ${f.nameEn}`}
-                    onClick={() => setFabricId(id)}
+                    data-active={active}
+                    title={cat.title}
+                    // Weave changes ride the same mesh pixel-dissolve as
+                    // material swaps: out, apply while hidden, back in. With
+                    // an extracted pkg no maps reload, so it's a tight
+                    // out-and-in that also hides the stiffness snap.
+                    onClick={() =>
+                      fabricId !== cat.id &&
+                      materialTransfer.swap(() => setFabricId(cat.id))
+                    }
                   >
                     <WeaveDiagram
                       type={f.core.weaveType}
                       threads={d.threads}
                       yarn={d.yarn}
                     />
-                    <span className="weave-tile-caption">{f.nameRoman}</span>
+                    <span className="weave-tile-caption">{cat.label}</span>
                   </button>
                 );
               })}
@@ -1445,6 +1762,7 @@ export default function Home() {
             <div className="knob-stack">
               <Slider
                 label="warp"
+                hint="stiffness along the vertical threads"
                 value={knobs.warpStiffness}
                 onChange={(v) =>
                   setKnobs((k) => ({ ...k, warpStiffness: v }))
@@ -1452,6 +1770,7 @@ export default function Home() {
               />
               <Slider
                 label="weft"
+                hint="stiffness along the horizontal threads"
                 value={knobs.weftStiffness}
                 onChange={(v) =>
                   setKnobs((k) => ({ ...k, weftStiffness: v }))
@@ -1459,6 +1778,7 @@ export default function Home() {
               />
               <Slider
                 label="shear"
+                hint="resistance to diagonal skewing — low lets the cloth stretch on the bias"
                 value={knobs.shearStiffness}
                 onChange={(v) =>
                   setKnobs((k) => ({ ...k, shearStiffness: v }))
@@ -1466,6 +1786,7 @@ export default function Home() {
               />
               <Slider
                 label="bend"
+                hint="resistance to folding — high reads stiff and papery"
                 value={knobs.bendStiffness}
                 onChange={(v) =>
                   setKnobs((k) => ({ ...k, bendStiffness: v }))
@@ -1475,10 +1796,11 @@ export default function Home() {
           </section>
 
           <section className="panel-section" data-dye="persimmon">
-            <SectionLabel>parallax</SectionLabel>
+            <SectionLabel hint="the illusion of depth in the weave texture">parallax</SectionLabel>
             <div className="knob-stack">
               <Slider
                 label="pom depth"
+                hint="how deep the weave relief looks — raised threads without extra geometry"
                 value={knobs.pomScale}
                 min={0}
                 max={0.08}
@@ -1487,6 +1809,7 @@ export default function Home() {
               />
               <IntSlider
                 label="pom min"
+                hint="quality floor for the relief effect (steps per pixel)"
                 value={knobs.pomMinSteps}
                 min={2}
                 max={32}
@@ -1494,6 +1817,7 @@ export default function Home() {
               />
               <IntSlider
                 label="pom max"
+                hint="quality ceiling for the relief at grazing angles"
                 value={knobs.pomMaxSteps}
                 min={8}
                 max={64}
@@ -1501,16 +1825,19 @@ export default function Home() {
               />
               <Slider
                 label="micro nrm"
+                hint="how strongly the captured normal map bumps each thread"
                 value={knobs.normalAmount}
                 onChange={(v) => setKnobs((k) => ({ ...k, normalAmount: v }))}
               />
               <Slider
                 label="self shadow"
+                hint="threads casting tiny shadows on each other inside the weave"
                 value={knobs.pomShadow}
                 onChange={(v) => setKnobs((k) => ({ ...k, pomShadow: v }))}
               />
               <Slider
                 label="stretch"
+                hint="taut spots go sheer, flat, and shiny — like pulled fabric"
                 value={knobs.stretch}
                 onChange={(v) => setKnobs((k) => ({ ...k, stretch: v }))}
               />
@@ -1518,10 +1845,11 @@ export default function Home() {
           </section>
 
           <section className="panel-section" data-dye="gardenia">
-            <SectionLabel>edge</SectionLabel>
+            <SectionLabel hint="the cut edges of the sheet and how they fray">edge</SectionLabel>
             <div className="knob-stack">
               <Slider
                 label="inset"
+                hint="how far in from the edge the fraying starts"
                 value={knobs.edgeInset}
                 min={0}
                 max={0.15}
@@ -1530,11 +1858,13 @@ export default function Home() {
               />
               <Slider
                 label="fray"
+                hint="how ragged the cut edges are"
                 value={knobs.edgeFray}
                 onChange={(v) => setKnobs((k) => ({ ...k, edgeFray: v }))}
               />
               <Slider
                 label="crispness"
+                hint="sharp vs soft boundary on the frayed edge"
                 value={knobs.edgeSharpness}
                 onChange={(v) =>
                   setKnobs((k) => ({ ...k, edgeSharpness: v }))
@@ -1542,6 +1872,7 @@ export default function Home() {
               />
               <Slider
                 label="detail"
+                hint="scale of the fray noise — fine threads or chunky bites"
                 value={knobs.edgeDetail}
                 min={1}
                 max={8}
@@ -1552,7 +1883,7 @@ export default function Home() {
           </section>
 
           <section className="panel-section" data-dye="indigo">
-            <SectionLabel>modes</SectionLabel>
+            <SectionLabel hint="debug views and how the cloth is pinned to the line">modes</SectionLabel>
             <div className="knob-toggles">
               <button
                 type="button"
@@ -1610,7 +1941,7 @@ export default function Home() {
           </section>
 
           <section className="panel-section" data-dye="madder">
-            <SectionLabel>performance</SectionLabel>
+            <SectionLabel hint="live cost of this device drawing the scene">performance</SectionLabel>
             {/* Live meters (2 Hz) — this device, not the material. */}
             <div className="perf-meters" role="status" aria-live="off">
               <span className="perf-meter">
@@ -1654,6 +1985,7 @@ export default function Home() {
             <div className="knob-stack">
               <IntSlider
                 label="iterations"
+                hint="solver passes per frame — more keeps the cloth taut and stable, fewer is faster"
                 value={knobs.iterations}
                 min={2}
                 max={8}
@@ -1661,7 +1993,7 @@ export default function Home() {
               />
             </div>
 
-            <SectionLabel>self-collide</SectionLabel>
+            <SectionLabel hint="how often the cloth checks for folding into itself; off is fastest but folds can pass through">self-collide</SectionLabel>
             <div className="tx-mode-picker tx-mode-picker-wide" role="tablist">
               <PixelPlay />
               {(
@@ -1687,7 +2019,7 @@ export default function Home() {
               ))}
             </div>
 
-            <SectionLabel>anisotropy</SectionLabel>
+            <SectionLabel hint="texture sharpness at glancing angles — higher keeps the weave crisp edge-on">anisotropy</SectionLabel>
             <div className="tx-mode-picker tx-mode-picker-wide" role="tablist">
               <PixelPlay />
               {([2, 4, 8] as const).map((v) => (

@@ -11,17 +11,21 @@ import {
   type CachedMap,
 } from "./cache";
 
-let configured = false;
-function configure(): void {
-  if (configured) return;
-  const credentials = process.env.FAL_API_KEY ?? process.env.FAL_KEY;
+let configuredKey: string | null = null;
+function configure(userKey?: string): void {
+  // A caller-supplied key (the user's own fal account) beats the server's
+  // env credential. fal.config is module-global, so re-configure whenever
+  // the effective key changes.
+  const credentials =
+    userKey?.trim() || process.env.FAL_API_KEY || process.env.FAL_KEY;
   if (!credentials) {
     throw new Error(
-      "FAL_API_KEY (or FAL_KEY) missing from env. Add it to .env before running the Patina baseline.",
+      "No fal key: set FAL_API_KEY in the server env, or paste your own key in the workshop panel.",
     );
   }
+  if (configuredKey === credentials) return;
   fal.config({ credentials });
-  configured = true;
+  configuredKey = credentials;
 }
 
 export const PATINA_ENDPOINT =
@@ -111,12 +115,13 @@ export async function extractPatina(
   imageBytes: Uint8Array,
   filename: string,
   prompt: string,
+  userKey?: string,
 ): Promise<ExtractResult> {
   const hash = hashBytes(imageBytes, `${PATINA_ENDPOINT}|${prompt}`);
   const existing = await readManifest(hash);
   if (existing) return { hash, manifest: existing, cacheHit: true };
 
-  configure();
+  configure(userKey);
 
   const blob = new Blob([imageBytes as unknown as BlobPart]);
   const file = new File([blob], filename || "input.png");

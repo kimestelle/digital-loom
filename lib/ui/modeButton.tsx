@@ -226,7 +226,7 @@ export default function ModeButton({ mode = "cloth", onMode }: ModeButtonProps) 
   return (
     <button
       type="button"
-      className="mode-orb absolute left-1/2 -translate-x-1/2"
+      className={`mode-orb absolute left-1/2 -translate-x-1/2 ${mode === "cloth" ? "rounded-md" : "rounded-full"}`}
       data-mode={mode}
       aria-label={
         mode === "cloth"

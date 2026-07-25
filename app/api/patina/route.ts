@@ -29,7 +29,15 @@ export async function POST(request: Request): Promise<Response> {
   const bytes = new Uint8Array(await file.arrayBuffer());
 
   try {
-    const { hash, manifest, cacheHit } = await extractPatina(bytes, file.name, prompt);
+    // A user-supplied fal key (workshop panel) rides in a header and takes
+    // precedence over the server's env credential for this request.
+    const userKey = request.headers.get("x-fal-key") ?? undefined;
+    const { hash, manifest, cacheHit } = await extractPatina(
+      bytes,
+      file.name,
+      prompt,
+      userKey,
+    );
     const maps: MapPayload[] = manifest.maps.map((m) => ({
       ...m,
       url: `/api/cache/${hash}/${m.file}`,

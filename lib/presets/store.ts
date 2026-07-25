@@ -13,7 +13,17 @@ import {
   type MaterialPreset,
 } from "./types";
 
-export const PRESETS_ROOT = path.resolve(process.cwd(), "fabrics", "presets");
+// Two roots: the repo's committed presets are the read-only SEED (the sample
+// materials' tuned params ship there), and PRESETS_ROOT is where new writes
+// land. Locally both are the same directory — behavior unchanged. On Vercel
+// (read-only repo tree) writes go to /tmp: functional within an instance,
+// ephemeral across cold starts; the collection zip is the durable backup.
+export const SEED_ROOT = path.resolve(process.cwd(), "fabrics", "presets");
+export const PRESETS_ROOT = process.env.LOOM_PRESETS_DIR
+  ? path.resolve(process.env.LOOM_PRESETS_DIR)
+  : process.env.VERCEL
+    ? "/tmp/loom-presets"
+    : SEED_ROOT;
 
 const SLUG_RE = /^[a-z0-9-]{1,64}$/;
 
@@ -22,18 +32,18 @@ function presetPath(slug: string): string | null {
   return path.join(PRESETS_ROOT, `${slug}.json`);
 }
 
-export async function listPresets(): Promise<MaterialPreset[]> {
+async function readPresetDir(dir: string): Promise<MaterialPreset[]> {
   let names: string[] = [];
   try {
-    names = await fs.readdir(PRESETS_ROOT);
+    names = await fs.readdir(dir);
   } catch {
-    return []; // directory absent → no presets yet
+    return []; // directory absent → no presets there
   }
   const out: MaterialPreset[] = [];
   for (const n of names) {
     if (!n.endsWith(".json")) continue;
     try {
-      const raw = await fs.readFile(path.join(PRESETS_ROOT, n), "utf8");
+      const raw = await fs.readFile(path.join(dir, n), "utf8");
       const p = JSON.parse(raw) as MaterialPreset;
       if (p?.version === PRESET_VERSION && p.name && p.slug && p.knobs) {
         out.push(p);
@@ -42,6 +52,17 @@ export async function listPresets(): Promise<MaterialPreset[]> {
       // Skip unreadable/corrupt files rather than failing the whole list.
     }
   }
+  return out;
+}
+
+export async function listPresets(): Promise<MaterialPreset[]> {
+  const seed = await readPresetDir(SEED_ROOT);
+  const bySlug = new Map(seed.map((p) => [p.slug, p]));
+  if (PRESETS_ROOT !== SEED_ROOT) {
+    // Writable overlay wins: a user's tweak of a seeded material shadows it.
+    for (const p of await readPresetDir(PRESETS_ROOT)) bySlug.set(p.slug, p);
+  }
+  const out = [...bySlug.values()];
   out.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   return out;
 }

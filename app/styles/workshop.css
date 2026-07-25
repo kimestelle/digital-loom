@@ -152,3 +152,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* one-line plain-words note under the export button */
+.export-note {
+  margin: 2px 0 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: var(--fg-dim);
+}

@@ -2,7 +2,15 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-export const CACHE_ROOT = path.resolve(process.cwd(), "cache");
+// Extraction cache root. On Vercel (and any serverless host) the repo tree
+// is read-only — only /tmp is writable — so the cache lives there:
+// functional within an instance's lifetime, ephemeral across cold starts.
+// The collection-zip export/import is the durable path for user materials.
+export const CACHE_ROOT = process.env.LOOM_CACHE_DIR
+  ? path.resolve(process.env.LOOM_CACHE_DIR)
+  : process.env.VERCEL
+    ? "/tmp/loom-cache"
+    : path.resolve(process.cwd(), "cache");
 
 export interface CachedMap {
   name: string;

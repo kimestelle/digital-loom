@@ -1,16 +1,20 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import * as THREE from "three";
+import { useEffect, useRef, type MutableRefObject } from "react";
+import * as THREE from "three/webgpu";
 import { ClothSolver, DEFAULT_CONFIG, type ClothConfig } from "@/lib/cloth/ClothSolver";
 import type { ResolvedFabric } from "@/lib/cloth/fabrics";
 import type { MapName, MaterialPackage } from "@/lib/core/materialPackage";
 import {
-  CLOTH_VERTEX_SHADER,
-  CLOTH_FRAGMENT_SHADER,
-  SKY_VERTEX_SHADER,
-  SKY_FRAGMENT_SHADER,
-} from "@/lib/ui/clothSceneShaders";
+  createClothMaterial,
+  createSkyMaterial,
+  createLensFlareMaterial,
+} from "@/lib/ui/clothSceneNodes";
+
+// Development escape hatch: flip to true to run the scene on the WebGL 2
+// backend even where WebGPU is available (the same fallback path browsers
+// without WebGPU take automatically). Useful for eyeballing backend parity.
+const FORCE_WEBGL = false;
 
 // Cubic-bezier easing (CSS-style control points), Newton-solved. Returns
 // eased y for a linear x in [0,1]. Used to shape the cloth→object transition
@@ -98,6 +102,10 @@ interface Props {
   /** Stretch response amount (0 = off): taut regions go sheer, flatten their
    *  relief, and specularise. Drives + gates the per-particle strain compute. */
   stretch?: number;
+  /** Rainbow refraction amount (0 = off). Drives the cloth's transmission
+   *  dispersion + grating sheen, the sky's circumsolar ring, and the
+   *  object's physical iridescence — one knob, four spectral effects. */
+  iridescence?: number;
   /** Heatmap the strain field instead of shading (debug). */
   stretchDebug?: boolean;
   pomScale?: number;
@@ -119,6 +127,15 @@ interface Props {
   meshRows?: number;
   /** 0 = full sky, 1 = flat dark-gray backdrop. Lighting unchanged. */
   skyMode?: 0 | 1;
+
+  /** Shared, imperatively animated reveal value for material transfers. The
+   *  render loop reads it directly so a pixel dissolve never re-renders the
+   *  React tree at 60 fps. */
+  materialRevealRef?: MutableRefObject<number>;
+  /** Selection generation whose albedo readiness should be acknowledged. */
+  materialTransitionKey?: number;
+  materialExpectedAlbedoURL?: string;
+  onMaterialReady?: (key: number) => void;
 
   /** "cloth" hangs the fabric; "object" whisks the cloth away and surfaces a
    *  3D object wearing the same material, in the SAME scene (shared sky, sun,
@@ -153,8 +170,8 @@ export interface ClothStats {
   calls: number;
 }
 
-// Shader sources for the cloth, sky, and sun live in clothSceneShaders.ts —
-// this file stays focused on scene setup, physics wiring, and rendering.
+// The cloth and sky node materials live in clothSceneNodes.ts — this file
+// stays focused on scene setup, physics wiring, and rendering.
 
 export default function ClothScene(props: Props) {
   const {
@@ -164,27 +181,8 @@ export default function ClothScene(props: Props) {
     // size). The studio passes measured pixels; the embed passes nothing.
     width,
     height,
-    openness = 0.55,
-    albedoAmount = 1.0,
-    metalness = 0,
-    normalAmount = 1.0,
-    pomShadow = 0.55,
-    stretch = 0,
-    alphaBoost = 0,
-    alphaBoostSource = 0,
-    pomScale = 0.015,
-    pomMinSteps = 8,
-    pomMaxSteps = 32,
-    pomDebug = 0,
-    edgeInset = 0.008,
-    edgeFray = 0.12,
-    edgeSharpness = 0.15,
-    edgeDetail = 1,
-    tileScale = 1,
-    txHeight = 1,
-    txAlbedo = 0,
-    txRoughness = 0,
-    transmissionContrast = 0.3,
+    // Every knob prop is read live from propsRef in the tick loop — only the
+    // mount-time values are destructured here.
     pixelScale = 1,
     objectModelUrl = "/model/whale.glb",
   } = props;
@@ -208,7 +206,9 @@ export default function ClothScene(props: Props) {
     let disposed = false;
 
     // ── Renderer / scene / camera ───────────────────────────────────────
-    const renderer = new THREE.WebGLRenderer({
+    // WebGPU where the browser supports it; the renderer transparently falls
+    // back to a WebGL 2 backend elsewhere (TSL materials compile for both).
+    const renderer = new THREE.WebGPURenderer({
       // MSAA on top of ≥1.5× supersampling is redundant — the supersample
       // already anti-aliases, and the combined backing-store bandwidth is
       // what kills older GPUs. Only request MSAA at lower pixel scales,
@@ -217,6 +217,7 @@ export default function ClothScene(props: Props) {
       antialias: pixelScale < 1.5,
       alpha: false,
       powerPreference: "high-performance",
+      forceWebGL: FORCE_WEBGL,
     });
     renderer.setPixelRatio(pixelScale);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -232,9 +233,11 @@ export default function ClothScene(props: Props) {
 
     // Exponential fog — the "little volumetric" ask. Distance-based haze
     // knits the cloth into the sky, gives the sun its atmospheric weight,
-    // and reads as light scattering through moist air.
+    // and reads as light scattering through moist air. (Dialed down from
+    // 0.00035 — with the veiling glare now adding its own near-sun haze the
+    // original density read as an overcast murk.)
     const fogColor = new THREE.Color(0xbecfe0);
-    scene.fog = new THREE.FogExp2(fogColor.getHex(), 0.00035);
+    scene.fog = new THREE.FogExp2(fogColor.getHex(), 0.00019);
 
     // Camera framing — cloth spans roughly 423 units in solver units and we
     // want it to occupy about 60% of the frame vertically (matches the
@@ -288,23 +291,30 @@ export default function ClothScene(props: Props) {
 
     // ── Sky ─────────────────────────────────────────────────────────────
     const skyGeom = new THREE.SphereGeometry(3500, 32, 24);
-    const skyMat = new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      depthWrite: false,
-      uniforms: {
-        u_top: { value: new THREE.Color(0x2f5c94) },
-        u_bottom: { value: new THREE.Color(0xe6d3b0) },
-        u_sunDir: { value: new THREE.Vector3(0, 0.5, 1).normalize() },
-        u_sunColor: { value: new THREE.Color(1.0, 0.86, 0.65) },
-        u_sunAlt: { value: 0.5 },
-        u_fogColor: { value: fogColor },
-        u_skyMode: { value: 0 },
-      },
-      vertexShader: SKY_VERTEX_SHADER,
-      fragmentShader: SKY_FRAGMENT_SHADER,
-    });
+    const { material: skyMat, u: skyU } = createSkyMaterial();
+    // The bundle owns its own Color instances (no aliasing with fogColor) —
+    // seed the fog tint once; updateSun keeps it in sync every frame.
+    skyU.u_fogColor.value.copy(fogColor);
     const skyMesh = new THREE.Mesh(skyGeom, skyMat);
     scene.add(skyMesh);
+
+    // ── Lens flare overlay ──────────────────────────────────────────────
+    // Additive fullscreen quad drawn after everything (the material's
+    // vertexNode bypasses the camera). The tick projects the sun to NDC,
+    // fades the flare at the frame edges, and hides the quad outright when
+    // it would be invisible so the overlay costs nothing most of the time.
+    const { material: flareMat, u: flareU } = createLensFlareMaterial();
+    const flareGeom = new THREE.PlaneGeometry(2, 2);
+    const flareQuad = new THREE.Mesh(flareGeom, flareMat);
+    flareQuad.frustumCulled = false;
+    flareQuad.renderOrder = 999;
+    flareQuad.visible = false;
+    scene.add(flareQuad);
+    const flareSunVec = new THREE.Vector3();
+    const flareDirVec = new THREE.Vector3();
+    const flareCamDir = new THREE.Vector3();
+    // Smoothed cloth-occlusion factor for the flare (1 = unobstructed).
+    let flareOcclusion = 1;
 
     // ── Lighting ────────────────────────────────────────────────────────
     // Hemisphere sky-bounce plus the moving sun as a directional.
@@ -379,61 +389,17 @@ export default function ClothScene(props: Props) {
     });
 
     // Cloth material — shared across every unit (uniforms are global). The
-    // ported shader with all knob uniforms.
-    const clothMat = new THREE.ShaderMaterial({
-      transparent: true,
-      side: THREE.DoubleSide,
-      // Three's TypeScript defs require every field here in newer versions;
-      // WebGL2 has derivatives in core, and Three enables them by default,
-      // so we don't strictly need to opt in — leaving this out is fine.
-      uniforms: {
-        u_lightDir: { value: new THREE.Vector3(0, 0, 1) },
-        u_lightColor: { value: new THREE.Color(1.4, 1.2, 0.95) },
-        u_ambientColor: { value: new THREE.Color(0.32, 0.42, 0.55) },
-        u_baseColor: { value: new THREE.Color(1, 1, 1) },
-        // Initial values derived from `openness` via the step-3 formulas;
-        // the tick loop refreshes them each frame with the same math.
-        u_translucency: { value: openness },
-        u_sheen: { value: 0.9 },
-        u_albedoTex: { value: null as THREE.Texture | null },
-        u_albedoAmount: { value: albedoAmount },
-        u_densityTex: { value: null as THREE.Texture | null },
-        u_densityAmount: { value: 1 - 0.5 * openness },
-        u_alphaFromDensity: { value: 0.1 * openness },
-        u_metalnessTex: { value: null as THREE.Texture | null },
-        u_metalness: { value: metalness },
-        u_hasMetalnessTex: { value: 0 },
-        u_normalTex: { value: null as THREE.Texture | null },
-        u_normalAmount: { value: normalAmount },
-        u_hasNormalTex: { value: 0 },
-        u_pomShadow: { value: pomShadow },
-        u_stretch: { value: stretch },
-        u_stretchDetail: { value: 0.5 },
-        u_stretchDebug: { value: 0 },
-        u_alphaBoost: { value: alphaBoost },
-        u_alphaBoostSource: { value: alphaBoostSource },
-        u_roughnessTex: { value: null as THREE.Texture | null },
-        u_hasRoughnessTex: { value: 0 },
-        u_pomScale: { value: pomScale },
-        u_pomMinSteps: { value: pomMinSteps },
-        u_pomMaxSteps: { value: pomMaxSteps },
-        u_pomDebug: { value: pomDebug },
-        u_edgeInset: { value: edgeInset },
-        u_edgeFray: { value: edgeFray },
-        u_edgeSharpness: { value: edgeSharpness },
-        u_edgeDetail: { value: edgeDetail },
-        u_tileScale: { value: tileScale },
-        u_txHeight: { value: txHeight },
-        u_txAlbedo: { value: txAlbedo },
-        u_txRoughness: { value: txRoughness },
-        u_transmissionContrast: { value: transmissionContrast },
-        u_fade: { value: 1 },
-        u_fogColor: { value: fogColor },
-        u_fogDensity: { value: 0.00035 },
-      },
-      vertexShader: CLOTH_VERTEX_SHADER,
-      fragmentShader: CLOTH_FRAGMENT_SHADER,
-    });
+    // TSL node material with all knob uniforms; the tick loop pushes the
+    // prop-derived values (openness formulas included) before the first
+    // render, so the bundle's defaults only matter for the few constants the
+    // loop never touches.
+    const {
+      material: clothMat,
+      u: clothU,
+      tex: clothTex,
+      blanks: clothBlanks,
+    } = createClothMaterial();
+    clothU.u_fogColor.value.copy(fogColor);
     // ── Cloth unit factory ──────────────────────────────────────────────
     // A "unit" is a complete, independent cloth: its own solver, geometry,
     // wire-debug draws, and pins, all under one group. Normally one is live;
@@ -768,9 +734,12 @@ export default function ClothScene(props: Props) {
     // ── Texture loading ─────────────────────────────────────────────────
     // Anisotropic + trilinear texture setup so tiled maps don't moiré.
     const texLoader = new THREE.TextureLoader();
-    const anisoMax = renderer.capabilities.getMaxAnisotropy();
+    // Lazy read: the backend's capabilities only exist after renderer.init()
+    // resolves, and every caller (texture loads, syncAnisotropy) runs
+    // post-init. WebGPU caps at 16; the `|| 16` guards a zero from an
+    // uninitialized backend.
     const currentAniso = () =>
-      Math.min(propsRef.current.anisotropy ?? 8, anisoMax);
+      Math.min(propsRef.current.anisotropy ?? 8, renderer.getMaxAnisotropy() || 16);
     const configureTex = (t: THREE.Texture, isColor: boolean) => {
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
       t.anisotropy = currentAniso();
@@ -780,41 +749,51 @@ export default function ClothScene(props: Props) {
       t.needsUpdate = true;
       return t;
     };
-    // One entry per texture slot: which uniform it feeds, whether it's a
+    // One entry per texture slot: which texture node it feeds, whether it's a
     // color (sRGB) map, an optional has-flag uniform for maps that may be
-    // absent, plus load bookkeeping (current texture + last URL).
+    // absent, plus load bookkeeping (current texture + last URL). The node's
+    // `.value` is never null — an empty slot binds the shared black
+    // placeholder, which the slot code must never dispose.
     interface TexSlot {
-      uniform: string;
-      hasFlag?: string;
+      node: (typeof clothTex)["albedo"];
+      blank: THREE.Texture;
+      hasFlag?: { value: number };
       isColor: boolean;
       current: THREE.Texture | null;
+      currentUrl: string;
       lastUrl: string;
     }
     const texSlots: Record<
       "albedo" | "density" | "metalness" | "normal" | "roughness",
       TexSlot
     > = {
-      albedo: { uniform: "u_albedoTex", isColor: true, current: null, lastUrl: "" },
-      density: { uniform: "u_densityTex", isColor: false, current: null, lastUrl: "" },
+      albedo: { node: clothTex.albedo, blank: clothBlanks.albedo, isColor: true, current: null, currentUrl: "", lastUrl: "" },
+      density: { node: clothTex.density, blank: clothBlanks.density, isColor: false, current: null, currentUrl: "", lastUrl: "" },
       metalness: {
-        uniform: "u_metalnessTex",
-        hasFlag: "u_hasMetalnessTex",
+        node: clothTex.metalness,
+        blank: clothBlanks.metalness,
+        hasFlag: clothU.u_hasMetalnessTex,
         isColor: false,
         current: null,
+        currentUrl: "",
         lastUrl: "",
       },
       normal: {
-        uniform: "u_normalTex",
-        hasFlag: "u_hasNormalTex",
+        node: clothTex.normal,
+        blank: clothBlanks.normal,
+        hasFlag: clothU.u_hasNormalTex,
         isColor: false,
         current: null,
+        currentUrl: "",
         lastUrl: "",
       },
       roughness: {
-        uniform: "u_roughnessTex",
-        hasFlag: "u_hasRoughnessTex",
+        node: clothTex.roughness,
+        blank: clothBlanks.roughness,
+        hasFlag: clothU.u_hasRoughnessTex,
         isColor: false,
         current: null,
+        currentUrl: "",
         lastUrl: "",
       },
     };
@@ -825,8 +804,9 @@ export default function ClothScene(props: Props) {
         // Cleared — drop the texture and flag so the shader falls back.
         slot.current?.dispose();
         slot.current = null;
-        clothMat.uniforms[slot.uniform].value = null;
-        if (slot.hasFlag) clothMat.uniforms[slot.hasFlag].value = 0;
+        slot.currentUrl = "";
+        slot.node.value = slot.blank;
+        if (slot.hasFlag) slot.hasFlag.value = 0;
         return;
       }
       texLoader.load(url, (tex) => {
@@ -838,8 +818,9 @@ export default function ClothScene(props: Props) {
         configureTex(tex, slot.isColor);
         slot.current?.dispose();
         slot.current = tex;
-        clothMat.uniforms[slot.uniform].value = tex;
-        if (slot.hasFlag) clothMat.uniforms[slot.hasFlag].value = 1;
+        slot.currentUrl = url;
+        slot.node.value = tex;
+        if (slot.hasFlag) slot.hasFlag.value = 1;
       });
     };
     const syncTextures = () => {
@@ -853,7 +834,9 @@ export default function ClothScene(props: Props) {
       setSlotUrl(texSlots.normal, propsRef.current.normalMapURL ?? "");
       setSlotUrl(texSlots.roughness, propsRef.current.roughnessMapURL ?? "");
     };
-    syncTextures();
+    // (First syncTextures() runs post-init — texture configuration reads the
+    // backend's anisotropy cap.)
+    let lastReadyKey = -1;
 
     // Anisotropy is a live perf lever — push the current value onto every
     // loaded cloth + object texture whenever it changes.
@@ -1072,9 +1055,9 @@ export default function ClothScene(props: Props) {
       // Same direction fed to cloth and sky. Cloth wants light-travel
       // direction (sun → ground), so pass the negation.
       sunDir.copy(sun.position).normalize();
-      clothMat.uniforms.u_lightDir.value.set(-sunDir.x, -sunDir.y, -sunDir.z);
-      skyMat.uniforms.u_sunDir.value.copy(sunDir);
-      skyMat.uniforms.u_sunAlt.value = THREE.MathUtils.clamp(
+      clothU.u_lightDir.value.set(-sunDir.x, -sunDir.y, -sunDir.z);
+      skyU.u_sunDir.value.copy(sunDir);
+      skyU.u_sunAlt.value = THREE.MathUtils.clamp(
         sunDir.y + 0.3,
         0,
         1,
@@ -1084,21 +1067,22 @@ export default function ClothScene(props: Props) {
       const alt01 = THREE.MathUtils.clamp(sunDir.y + 0.2, 0, 1);
       sunTint.copy(SUN_WARM).lerp(SUN_COOL, alt01);
       sun.color.copy(sunTint);
-      sun.intensity = 0.5 + alt01 * 1.6;
-      clothMat.uniforms.u_lightColor.value.copy(sunTint).multiplyScalar(1.35);
-      skyMat.uniforms.u_sunColor.value.copy(sunTint);
+      sun.intensity = 0.45 + alt01 * 1.25;
+      clothU.u_lightColor.value.copy(sunTint).multiplyScalar(1.15);
+      skyU.u_sunColor.value.copy(sunTint);
 
       // Sky gradient shifts too — dawn/dusk warmth vs midday blue.
       skyTopScratch.copy(SKY_TOP_DAY).lerp(SKY_TOP_HORIZON, alt01);
       skyBottomScratch.copy(SKY_BOTTOM_HORIZON).lerp(SKY_BOTTOM_DAY, alt01);
-      skyMat.uniforms.u_top.value.copy(skyTopScratch);
-      skyMat.uniforms.u_bottom.value.copy(skyBottomScratch);
+      skyU.u_top.value.copy(skyTopScratch);
+      skyU.u_bottom.value.copy(skyBottomScratch);
       // Fog colour lerps with the horizon so distance-haze always reads
       // as lit by the current time of day.
       fogScratch.copy(skyBottomScratch).lerp(skyTopScratch, 0.35);
       fogColor.copy(fogScratch);
       sceneFog.color.copy(fogScratch);
-      clothMat.uniforms.u_fogColor.value.copy(fogScratch);
+      clothU.u_fogColor.value.copy(fogScratch);
+      skyU.u_fogColor.value.copy(fogScratch);
     };
 
     // ── Cloth ↔ object transition ───────────────────────────────────────
@@ -1171,6 +1155,11 @@ export default function ClothScene(props: Props) {
       sheenRoughness: 0.8,
       thickness: 0.35,
       ior: 1.4,
+      // Iridescence is a compile-time shader variant — enable it at a floor
+      // value from construction so toggling the knob never recompiles the
+      // object's program mid-session; the tick drives the live amount.
+      iridescence: 0.001,
+      iridescenceIOR: 1.3,
       side: THREE.DoubleSide,
       transparent: true,
     });
@@ -1333,7 +1322,7 @@ export default function ClothScene(props: Props) {
 
       // Whisk the cloth up and out as it fades to transparent.
       clothGroup.visible = clothVisible;
-      clothMat.uniforms.u_fade.value = 1 - eased;
+      clothU.u_fade.value = 1 - eased;
       wireMat.opacity = 1 - eased;
       pinBodyMat.opacity = 1 - eased;
       wireEdgeMat.opacity = (1 - eased) * 0.65;
@@ -1399,6 +1388,24 @@ export default function ClothScene(props: Props) {
         rebuildWireTube();
         // Cloth material textures are shared across units — sync once.
         syncTextures();
+        const readyKey = propsRef.current.materialTransitionKey ?? 0;
+        const expectedAlbedo = propsRef.current.materialExpectedAlbedoURL;
+        const loadedAlbedo = texSlots.albedo.currentUrl;
+        // Normalize BOTH sides: callers hand over swatch `currentSrc` values
+        // (absolute) as well as cache-relative map URLs (/api/cache/…), and
+        // the loader stores whatever string it fetched with.
+        const toAbs = (u: string) =>
+          u ? new URL(u, window.location.href).href : "";
+        const expectedReady = expectedAlbedo
+          ? toAbs(loadedAlbedo) === toAbs(expectedAlbedo)
+          : loadedAlbedo === fabricRef.current.albedoURL;
+        if (
+          readyKey !== lastReadyKey &&
+          expectedReady
+        ) {
+          lastReadyKey = readyKey;
+          propsRef.current.onMaterialReady?.(readyKey);
+        }
       }
       statSimMs += performance.now() - simStart;
 
@@ -1422,12 +1429,14 @@ export default function ClothScene(props: Props) {
         // the property here without it in the constructor was also a no-op:
         // the shader compiles without the transmission define.)
         objectMat.metalness = Math.min(1, Math.max(0, p.metalness ?? 0));
+        // Floor keeps the iridescence shader variant alive (see constructor).
+        objectMat.iridescence = Math.max(0.001, p.iridescence ?? 0);
         syncObjectTextures();
       }
       easedPrev = eased;
 
       // Push knob uniforms — cheap, and lets sliders take effect immediately.
-      const u = clothMat.uniforms;
+      const u = clothU;
       // Collapse the transparency cluster: one openness scalar drives all
       // three shader uniforms via the step-3 formulas. Legacy props still
       // win if a caller explicitly sets them (one-release compat).
@@ -1456,12 +1465,15 @@ export default function ClothScene(props: Props) {
       u.u_txAlbedo.value = p.txAlbedo ?? 0;
       u.u_txRoughness.value = p.txRoughness ?? 0;
       u.u_transmissionContrast.value = p.transmissionContrast ?? 0.3;
+      u.u_materialReveal.value = p.materialRevealRef?.current ?? 1;
+      u.u_iridescence.value = p.iridescence ?? 0;
       u.u_sheen.value = fabricRef.current.sheen;
 
       // Skybox mode is just a shader uniform on the sky mesh — lighting is
       // driven by the DirectionalLight/HemisphereLight/cloth uniforms and
       // stays exactly the same across modes.
-      skyMat.uniforms.u_skyMode.value = p.skyMode ?? 0;
+      skyU.u_skyMode.value = p.skyMode ?? 0;
+      skyU.u_halo.value = p.iridescence ?? 0;
 
       // setPixelRatio unconditionally re-runs setSize, which reassigns
       // canvas.width — per the HTML spec that clears/reallocates the drawing
@@ -1471,6 +1483,75 @@ export default function ClothScene(props: Props) {
         lastPixelRatio = nextRatio;
         renderer.setPixelRatio(nextRatio);
       }
+      // Lens flare: project the sun, fade near the frame edges, and skip
+      // the overlay entirely when the sun is off-frame, behind the camera,
+      // or the backdrop is the flat black stage (no visible sun to flare).
+      {
+        flareCamDir.set(0, 0, -1).applyQuaternion(camera.quaternion);
+        flareDirVec.copy(sun.position).sub(camera.position);
+        const facing = flareDirVec.dot(flareCamDir) > 0;
+        let amt = 0;
+        if (facing && (p.skyMode ?? 0) !== 1) {
+          flareSunVec.copy(sun.position).project(camera);
+          const edge = (v: number) =>
+            Math.max(0, Math.min(1, (1.25 - Math.abs(v)) / 0.35));
+          amt =
+            edge(flareSunVec.x) *
+            edge(flareSunVec.y) *
+            (p.iridescence ?? 0) *
+            0.8;
+
+          // Occlusion flicker — flare source strength depends on what the
+          // camera→sun ray passes through. Intersect it with the cloth's
+          // hang plane (z = 0) and scan the live unit's particles for
+          // silhouette coverage at that point: dense cloth chokes the flare,
+          // sheer weave lets it bloom, and the flutter modulates coverage
+          // frame to frame, which is what makes the flare shimmer.
+          if (amt > 0 && clothVisible) {
+            const cz = camera.position.z;
+            const sz = sun.position.z;
+            let target = 1;
+            if ((cz > 0) !== (sz > 0)) {
+              const t0 = cz / (cz - sz);
+              const ix = camera.position.x + (sun.position.x - camera.position.x) * t0;
+              const iy = camera.position.y + (sun.position.y - camera.position.y) * t0;
+              const unit = units[units.length - 1];
+              const px = ix - unit.group.position.x;
+              const py = -iy; // world Y+ up → solver Y+ down
+              const pos = unit.solver.pos;
+              let minD2 = Infinity;
+              for (let i = 0; i < unit.solver.count; i++) {
+                const dx = pos[i * 3] - px;
+                const dy = pos[i * 3 + 1] - py;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < minD2) minD2 = d2;
+              }
+              // Inside the silhouette when the nearest particle is within
+              // ~1.5 grid spacings; soft edge over one more spacing.
+              const spacing = unit.cfg.spacing;
+              const dMin = Math.sqrt(minD2);
+              const cover = Math.max(
+                0,
+                Math.min(1, (spacing * 2.5 - dMin) / spacing),
+              );
+              // How much light survives the covered path: dense weave chokes
+              // the flare to ~12%, organza passes most of it.
+              const o = p.openness ?? 0.55;
+              const pass = 0.12 + 0.68 * o;
+              target = 1 - cover * (1 - pass);
+            }
+            // EMA so coverage changes breathe instead of popping; the
+            // residual lag also reads as the eye readjusting.
+            flareOcclusion += (target - flareOcclusion) * 0.12;
+            amt *= flareOcclusion;
+          }
+          flareU.u_sun.value.set(flareSunVec.x, flareSunVec.y);
+          flareU.u_aspect.value = camera.aspect;
+        }
+        flareU.u_amt.value = amt;
+        flareQuad.visible = amt > 0.003;
+      }
+
       // Advances damping so the rotate/zoom motion continues to ease
       // after the pointer is released.
       controls?.update();
@@ -1485,7 +1566,7 @@ export default function ClothScene(props: Props) {
           fps: statDtMs > 0 ? 1000 / (statDtMs / statFrames) : 0,
           simMs: statSimMs / statFrames,
           tris: renderer.info.render.triangles,
-          calls: renderer.info.render.calls,
+          calls: renderer.info.render.drawCalls,
         });
         statFrames = 0;
         statDtMs = 0;
@@ -1494,7 +1575,26 @@ export default function ClothScene(props: Props) {
 
       raf = requestAnimationFrame(tick);
     };
-    tick();
+    // WebGPURenderer.render() throws until the backend has initialized, so
+    // the loop (and the first texture loads, which read backend capabilities)
+    // starts from init(). Everything above — scene graph, solver, listeners —
+    // stayed synchronous.
+    renderer
+      .init()
+      .then(() => {
+        if (disposed) {
+          // Unmounted while the async init was in flight; the cleanup below
+          // already ran, so release the now-initialized backend here.
+          renderer.dispose();
+          return;
+        }
+        resize();
+        syncTextures();
+        tick();
+      })
+      .catch((err) => {
+        console.error("ClothScene: renderer init failed", err);
+      });
 
     return () => {
       disposed = true;
@@ -1512,18 +1612,23 @@ export default function ClothScene(props: Props) {
       wirePointMat.dispose();
       skyGeom.dispose();
       skyMat.dispose();
+      flareGeom.dispose();
+      flareMat.dispose();
       wireTube.dispose();
       wireMat.dispose();
       pinBodyGeom.dispose();
       pinBodyMat.dispose();
       for (const slot of Object.values(texSlots)) slot.current?.dispose();
+      for (const b of Object.values(clothBlanks)) b.dispose();
       objectGroup.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh) m.geometry?.dispose();
       });
       objectMat.dispose();
       for (const t of objTextures) t.dispose();
-      renderer.dispose();
+      // If init() is still pending, its .then() disposes the renderer once
+      // the backend exists (see above).
+      if (renderer.initialized) renderer.dispose();
     };
     // Mount ONCE. meshCols/meshRows/pinMode changes are handled imperatively
     // by the slide swap in the tick — re-running this effect would tear down

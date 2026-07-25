@@ -203,10 +203,15 @@ export function derive(core: FabricCore, tileScale = 1): DerivedFabric {
   // weighting) — which map a fabric wears thin along is authored taste.
   const alphaBoost = 0;
   const alphaBoostSource: 0 | 1 | 2 | 3 = 0;
+  // Rainbow refraction is a viewing effect with no derivation from
+  // FabricCore (thread-scale diffraction would need fiber metrology) —
+  // ship the app-wide subtle default and let the slider own it.
+  const iridescence = 0.35;
 
   return {
     // FabricKnobs
     sheen,
+    iridescence,
     translucency,
     densityAmount,
     alphaFromDensity,

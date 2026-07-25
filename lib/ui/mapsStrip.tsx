@@ -29,7 +29,9 @@ export const MapsStrip = memo(function MapsStrip({
 }: MapsStripProps) {
   return (
     <section className="panel-section" data-dye="indigo">
-      <SectionLabel>maps</SectionLabel>
+      <SectionLabel hint="your photo is factored by the Patina AI into PBR maps the shader relights from any angle: albedo = pure color with lighting removed · normal = which way each thread faces · roughness = matte vs shiny · height = raised threads vs valleys · metalness = where it's metal">
+        maps
+      </SectionLabel>
       {entries.length === 0 ? (
         <p className="dock-empty">no maps</p>
       ) : (
@@ -57,6 +59,10 @@ export const MapsStrip = memo(function MapsStrip({
                 ? "export failed — retry"
                 : "export material ⤓"}
           </button>
+          <p className="export-note">
+            zips these maps (PBR-named) with a .glb specimen + material.json —
+            drops straight into Blender, Unity, or Unreal
+          </p>
         </>
       )}
     </section>

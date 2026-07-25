@@ -6,12 +6,74 @@
 // than several hundred lines of slider markup, and (b) future consumers can
 // reuse the same visual language.
 
-import type { ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+
+// ── Info dot: ⓘ with a plain-words explanation on hover/focus. The bubble
+// renders through a portal pinned to the trigger's viewport rect — panels
+// clip overflow AND their backdrop-filter makes them the containing block
+// even for fixed-position descendants, so a CSS-only bubble can't escape.
+
+export function InfoDot({ hint }: { hint: string }) {
+  const ref = useRef<HTMLSpanElement | null>(null);
+  const [rect, setRect] = useState<{ x: number; y: number } | null>(null);
+  const show = () => {
+    const r = ref.current?.getBoundingClientRect();
+    if (!r) return;
+    // Clamp horizontally so the bubble (max-width 230) never leaves the
+    // viewport — dots at a panel's edge would otherwise push it offscreen.
+    const half = 115 + 12;
+    setRect({
+      x: Math.min(Math.max(r.left + r.width / 2, half), window.innerWidth - half),
+      y: r.top,
+    });
+  };
+  const hide = () => setRect(null);
+  return (
+    <span
+      ref={ref}
+      className="info-dot"
+      tabIndex={0}
+      role="note"
+      aria-label={hint}
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
+    >
+      {/* text-transform on ancestors would capitalize a literal "i" */}
+      <span style={{ textTransform: "lowercase" }}>i</span>
+      {rect
+        ? createPortal(
+            <span
+              className="info-bubble"
+              role="tooltip"
+              style={{ left: rect.x, top: rect.y }}
+            >
+              {hint}
+            </span>,
+            document.body,
+          )
+        : null}
+    </span>
+  );
+}
 
 // ── Section header for panels
 
-export function SectionLabel({ children }: { children: ReactNode }) {
-  return <div className="section-label">{children}</div>;
+export function SectionLabel({
+  children,
+  hint,
+}: {
+  children: ReactNode;
+  hint?: string;
+}) {
+  return (
+    <div className="section-label">
+      {children}
+      {hint ? <InfoDot hint={hint} /> : null}
+    </div>
+  );
 }
 
 // ── Sliders
@@ -23,6 +85,8 @@ interface SliderProps {
   min?: number;
   max?: number;
   step?: number;
+  /** Plain-words explanation surfaced on the ⓘ next to the label. */
+  hint?: string;
 }
 
 export function Slider({
@@ -32,12 +96,16 @@ export function Slider({
   min = 0,
   max = 1,
   step = 0.01,
+  hint,
 }: SliderProps) {
   const digits = step >= 1 ? 0 : step >= 0.01 ? 2 : 3;
   return (
     <label className="slider">
       <span className="slider-label">
-        <span>{label}</span>
+        <span className="slider-name">
+          {label}
+          {hint ? <InfoDot hint={hint} /> : null}
+        </span>
         <span className="slider-value">{value.toFixed(digits)}</span>
       </span>
       <input
@@ -58,6 +126,7 @@ interface IntSliderProps {
   onChange: (v: number) => void;
   min: number;
   max: number;
+  hint?: string;
 }
 
 export function IntSlider({
@@ -66,11 +135,15 @@ export function IntSlider({
   onChange,
   min,
   max,
+  hint,
 }: IntSliderProps) {
   return (
     <label className="slider">
       <span className="slider-label">
-        <span>{label}</span>
+        <span className="slider-name">
+          {label}
+          {hint ? <InfoDot hint={hint} /> : null}
+        </span>
         <span className="slider-value">{value}</span>
       </span>
       <input
@@ -87,11 +160,20 @@ export function IntSlider({
 
 // ── Side panel header + collapse toggle
 
+interface PanelHeaderTabs<T extends string> {
+  items: ReadonlyArray<{ id: T; label: string }>;
+  active: T;
+  onSelect: (id: T) => void;
+}
+
 interface PanelHeaderProps {
   title: string;
   side: "left" | "right";
   collapsed: boolean;
   onToggle: () => void;
+  /** When set, the header title becomes a tab strip (title is kept for the
+   *  toggle's aria labels). */
+  tabs?: PanelHeaderTabs<string>;
 }
 
 export function PanelHeader({
@@ -99,6 +181,7 @@ export function PanelHeader({
   side,
   collapsed,
   onToggle,
+  tabs,
 }: PanelHeaderProps) {
   // Panels collapse downward (roll up into the header bar); the caret points
   // down to invite the collapse and flips up (via CSS) once collapsed.
@@ -117,7 +200,25 @@ export function PanelHeader({
       </span>
     </button>
   );
-  const titleEl = <span className="side-panel-title">{title}</span>;
+  const titleEl = tabs ? (
+    <div className="side-panel-tabs" role="tablist" aria-label={title}>
+      {tabs.items.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          role="tab"
+          className="side-panel-tab"
+          aria-selected={tabs.active === t.id}
+          data-active={tabs.active === t.id}
+          onClick={() => tabs.onSelect(t.id)}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  ) : (
+    <span className="side-panel-title">{title}</span>
+  );
   return (
     <header className="side-panel-header">
       {side === "left" ? (

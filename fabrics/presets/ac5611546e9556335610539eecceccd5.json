@@ -1,20 +1,20 @@
 {
   "name": "fabric",
-  "slug": "dda2cb7ebe2d8b9e3cc856fa8abc4769",
+  "slug": "ac5611546e9556335610539eecceccd5",
   "fabricId": "myeongju",
-  "pkgHash": "dda2cb7ebe2d8b9e3cc856fa8abc4769",
-  "metalness": 0,
+  "pkgHash": "ac5611546e9556335610539eecceccd5",
+  "metalness": 1,
   "knobs": {
-    "sheen": 0.8159348192401952,
+    "sheen": 0.6851791321997538,
     "iridescence": 1,
-    "openness": 0.40029296875000003,
+    "openness": 1,
     "translucency": 0.5,
     "densityAmount": 0.75,
     "alphaFromDensity": 0.05,
     "alphaBoost": 0,
     "alphaBoostSource": 0,
     "albedoAmount": 1,
-    "pomScale": 0,
+    "pomScale": 0.03762945007288416,
     "normalAmount": 1,
     "pomShadow": 0.55,
     "stretch": 0,
@@ -34,5 +34,5 @@
     "bendStiffness": 0.06
   },
   "version": 1,
-  "createdAt": "2026-07-24T00:45:36.295Z"
+  "createdAt": "2026-07-24T01:31:36.914Z"
 }

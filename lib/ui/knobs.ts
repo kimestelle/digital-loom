@@ -21,6 +21,11 @@ export interface FabricKnobs {
   // Material / lighting
   sheen: number;
 
+  /** Rainbow refraction (0 = off): spectral dispersion of the backlit
+   *  transmission, grating iridescence riding the sheen, the sky's
+   *  circumsolar ring, and the object's physical iridescence. */
+  iridescence: number;
+
   /** Single transparency scalar (0 = opaque denim, 1 = organza-sheer). Drives
    *  translucency, densityAmount, and alphaFromDensity via the step-3 formulas
    *  inside ClothScene's tick loop. It replaces the three deprecated fields
@@ -187,6 +192,9 @@ export const MESH_PRESETS: Record<
 
 export const DEFAULT_FABRIC_KNOBS: FabricKnobs = {
   sheen: 0.9,
+  // Subtle by default — visible when backlit or at grazing angles without
+  // repainting materials saved before the knob existed.
+  iridescence: 0.35,
   // openness 0.55 preserves the pre-step-6 look — translucency was 0.55,
   // densityAmount was 0.75 (≈ 1 − 0.5·0.55), alphaFromDensity was 0.06
   // (≈ 0.1·0.55). Sweeping this slider now covers the whole denim→organza

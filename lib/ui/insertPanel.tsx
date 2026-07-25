@@ -6,8 +6,10 @@
 // Purely presentational — staging, validation, and the pipeline run stay in
 // the page. Styles live in app/styles/workshop.css (.mini-drop / .prompt-*).
 
-import { memo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { SectionLabel } from "@/lib/ui/panelPrimitives";
+
+const FAL_KEY_STORAGE = "loom.falKey";
 
 export interface InsertPanelProps {
   /** Name of the staged photo, or null when nothing is staged yet. */
@@ -15,9 +17,6 @@ export interface InsertPanelProps {
   onFiles: (files: FileList | null) => void;
   prompt: string;
   onPrompt: (v: string) => void;
-  /** Raw metalness field text (parsed/clamped by the page). */
-  metalness: string;
-  onMetalness: (v: string) => void;
   onSubmit: () => void;
   busy: boolean;
   error?: string | null;
@@ -28,14 +27,24 @@ export const InsertPanel = memo(function InsertPanel({
   onFiles,
   prompt,
   onPrompt,
-  metalness,
-  onMetalness,
   onSubmit,
   busy,
   error,
 }: InsertPanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  // The user's own fal credential. Lives in localStorage only — it rides
+  // each /api/patina request as a header (never rendered anywhere else) and
+  // takes precedence over the server's key. Cleared field = server key.
+  const [falKey, setFalKey] = useState("");
+  useEffect(() => {
+    setFalKey(localStorage.getItem(FAL_KEY_STORAGE) ?? "");
+  }, []);
+  const saveFalKey = (v: string) => {
+    setFalKey(v);
+    if (v.trim()) localStorage.setItem(FAL_KEY_STORAGE, v.trim());
+    else localStorage.removeItem(FAL_KEY_STORAGE);
+  };
 
   return (
     <section className="panel-section" data-dye="madder">
@@ -77,16 +86,14 @@ export const InsertPanel = memo(function InsertPanel({
         />
       </label>
       <label className="prompt-field prompt-field-compact">
-        <span className="prompt-label">metal</span>
+        <span className="prompt-label">fal key</span>
         <input
-          type="number"
-          min={0}
-          max={1}
-          step={0.05}
+          type="password"
           className="prompt-input"
-          value={metalness}
-          onChange={(e) => onMetalness(e.currentTarget.value)}
-          placeholder="0 – 1"
+          value={falKey}
+          onChange={(e) => saveFalKey(e.currentTarget.value)}
+          placeholder="optional — your own key"
+          autoComplete="off"
           spellCheck={false}
         />
       </label>

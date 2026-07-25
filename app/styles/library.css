@@ -14,23 +14,32 @@
 
 .swatch {
   position: relative;
-  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .swatch-face {
   appearance: none;
   position: relative;
   width: 100%;
-  height: 100%;
+  aspect-ratio: 1;
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--line-strong);
   background: var(--bg-elev-2);
   cursor: pointer;
   display: block;
+  /* No double-tap zoom — double-click/tap is the rename gesture. */
+  touch-action: manipulation;
   transition:
     border-color var(--d-fast) var(--ease-out),
     transform var(--d-tap) var(--ease-out);
+}
+
+/* Don't scale-bounce while renaming — the field would zoom with the face. */
+.swatch-face:has(.swatch-rename):active {
+  transform: none;
 }
 
 .swatch-face img,
@@ -39,6 +48,34 @@
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.material-thumbnail {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.material-thumbnail img {
+  transition: opacity 80ms linear;
+}
+
+.material-thumbnail[data-away="true"] img {
+  opacity: 0;
+}
+
+.material-thumbnail-ghost {
+  position: absolute;
+  inset: 0;
+  border: 1px dashed color-mix(in oklab, var(--cat, var(--accent)) 55%, transparent);
+  background: color-mix(in oklab, var(--bg-elev-1) 70%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms var(--ease-out);
+}
+
+.material-thumbnail[data-away="true"] .material-thumbnail-ghost {
+  opacity: 1;
 }
 
 .swatch-blank {
@@ -64,23 +101,61 @@
   box-shadow: 0 0 0 1px var(--cat, var(--accent));
 }
 
-/* caption ribbon along the bottom, legible over any albedo */
-.swatch-label {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 10px 5px 4px;
+/* ── frayed stamp mask (my swatches tab) ─────────────────────────────
+   Every swatch in the collection reads as a stamp torn off its sheet:
+   an SVG alpha mask whose edge is a turbulence-displaced rect (the fray)
+   with straight machine-punched perforation holes biting into it. The
+   mask cuts the border/background/albedo together, so the fray is the
+   silhouette, not a drawn outline. */
+.swatch-stamped .swatch-face {
+  border: none;
+  mask-image: var(--stamp-mask);
+  mask-size: 100% 100%;
+  -webkit-mask-image: var(--stamp-mask);
+  -webkit-mask-size: 100% 100%;
+}
+
+/* Selection can't ride the (masked-off) border ring — mark the active
+   stamp with the accent label strip instead. */
+.swatch-stamped .swatch-face[data-active="true"] {
+  box-shadow: none;
+}
+
+.swatch-face[data-active="true"] .swatch-label {
+  color: var(--cat, var(--accent));
+}
+
+/* (--stamp-mask itself is injected inline by page.tsx from
+   lib/ui/stampMask.ts — one artwork shared with the transfer canvas.) */
+
+/* inline rename field — replaces the label ribbon during a double-click edit.
+   Chromeless (no border/outline) and inset past the stamp mask's fray +
+   perforations (~10% bite each side) so the field never collides with the
+   torn edge. */
+.swatch-rename {
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--bg-elev-2) 80%, transparent);
+  color: var(--fg);
   font-family: var(--font-mono);
-  font-size: 9px;
-  line-height: 1.2;
-  letter-spacing: 0.01em;
-  color: #f3ede0;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  outline: none;
+  box-shadow: none;
+}
+
+/* caption below the face — same voice as the maps strip */
+.swatch-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--fg-mute);
+  letter-spacing: 0.04em;
   text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.78), transparent);
   pointer-events: none;
 }
 
@@ -122,6 +197,15 @@
   width: 100vw;
   height: 100vh;
   z-index: 1000;
+  pointer-events: none;
+}
+
+.material-transfer-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1001;
   pointer-events: none;
 }
 
@@ -172,14 +256,38 @@
   opacity: 1;
 }
 
-/* drop marker while reordering */
-.swatch[data-drop="true"] {
-  outline: 2px dashed color-mix(in oklab, var(--cat, var(--accent)) 70%, transparent);
-  outline-offset: 2px;
+/* drop marker while reordering — an insertion caret centered in the grid
+   gap BEFORE the hovered swatch (drop semantics are insert-before), never
+   painted over the swatch itself. */
+.swatch[data-drop="true"]::before {
+  content: "";
+  position: absolute;
+  left: -4.5px; /* centers the 3px bar in the 6px grid gap */
+  top: 4%;
+  bottom: 4%;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--cat, var(--accent));
+  box-shadow: 0 0 6px color-mix(in oklab, var(--cat, var(--accent)) 60%, transparent);
+  pointer-events: none;
+  z-index: 3;
 }
 
 /* whole library grid dims subtly while a clone drag is in flight */
 .swatch-grid[data-cloning="true"] {
   outline: 1px dashed color-mix(in oklab, var(--cat, var(--accent)) 40%, transparent);
   outline-offset: 4px;
+}
+
+/* collection zip actions (my swatches tab) */
+.collection-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.collection-load {
+  display: grid;
+  place-items: center;
+  cursor: pointer;
 }
