@@ -33,8 +33,8 @@
   /* No double-tap zoom — double-click/tap is the rename gesture. */
   touch-action: manipulation;
   transition:
-    border-color var(--d-fast) var(--ease-out),
-    transform var(--d-tap) var(--ease-out);
+    border-color var(--d-fast) var(--ease-motion),
+    transform var(--d-tap) var(--ease-motion);
 }
 
 /* Don't scale-bounce while renaming — the field would zoom with the face. */
@@ -71,7 +71,7 @@
   background: color-mix(in oklab, var(--bg-elev-1) 70%, transparent);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 120ms var(--ease-out);
+  transition: opacity 120ms var(--ease-motion);
 }
 
 .material-thumbnail[data-away="true"] .material-thumbnail-ghost {
@@ -175,7 +175,7 @@
   background: rgba(0, 0, 0, 0.5);
   cursor: pointer;
   opacity: 0;
-  transition: opacity var(--d-fast) var(--ease-out), background var(--d-fast) var(--ease-out);
+  transition: opacity var(--d-fast) var(--ease-motion), background var(--d-fast) var(--ease-motion);
 }
 
 .swatch:hover .swatch-del,
@@ -216,7 +216,7 @@
   pointer-events: none;
   border: 1.5px dashed color-mix(in oklab, var(--cat, var(--accent)) 55%, transparent);
   background: color-mix(in oklab, var(--bg-elev-1) 65%, transparent);
-  animation: ghost-in 160ms var(--ease-out);
+  animation: ghost-in 160ms var(--ease-motion);
 }
 
 @keyframes ghost-in {
@@ -245,7 +245,7 @@
   background: rgba(0, 0, 0, 0.5);
   cursor: grab;
   opacity: 0;
-  transition: opacity var(--d-fast) var(--ease-out);
+  transition: opacity var(--d-fast) var(--ease-motion);
 }
 
 .swatch-grip:active {

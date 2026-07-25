@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { stampMaskImage } from "@/lib/ui/stampMask";
+import { easeMotion } from "@/lib/ui/motion";
 
 const GRID = 64;
 const BOX_SCREEN_MS = 240;
@@ -182,9 +183,9 @@ export function MaterialTransferLayer({
     const draw = (now: number) => {
       if (!start) start = now;
       const raw = Math.min(1, (now - start) / duration);
-      // Strong ease-in-out without moving geometry: the pixel frontier starts
-      // promptly, then lands softly at the destination.
-      const p = raw * raw * (3 - 2 * raw);
+      // The interface's shared motion curve, so the pixel frontier moves in
+      // the same cadence as every panel slide and drape transition.
+      const p = easeMotion(raw);
       for (let i = 0; i < CELL_NOISE.length; i++) {
         const moved = CELL_NOISE[i] < p;
         movedPixels.data[i * 4 + 3] = moved ? 255 : 0;
@@ -318,7 +319,7 @@ export function useMaterialTransfer({
   );
 
   // Standalone reveal driver for transitions with no canvas fly-layer. Same
-  // smoothstep easing and reduced-motion cap as the layer's draw loop; the
+  // shared motion curve and reduced-motion cap as the layer's draw loop; the
   // serial pump guarantees it never runs concurrently with that loop's own
   // revealRef writes.
   const animateReveal = useCallback(
@@ -337,7 +338,7 @@ export function useMaterialTransfer({
         const step = (now: number) => {
           if (!start) start = now;
           const raw = Math.min(1, (now - start) / dur);
-          const p = raw * raw * (3 - 2 * raw);
+          const p = easeMotion(raw);
           revealRef.current = from + (to - from) * p;
           if (raw < 1) requestAnimationFrame(step);
           else resolve();

@@ -13,10 +13,17 @@ import { createPortal } from "react-dom";
 // renders through a portal pinned to the trigger's viewport rect — panels
 // clip overflow AND their backdrop-filter makes them the containing block
 // even for fixed-position descendants, so a CSS-only bubble can't escape.
+//
+// The portal node is created on first show and then kept mounted (rect is
+// sticky) — only `open` toggles from then on. That gives the bubble a real
+// CSS transition in BOTH directions (fade + scale in on show, back out on
+// hide) instead of a one-shot enter animation that vanishes instantly when
+// React unmounts it on hide.
 
 export function InfoDot({ hint }: { hint: string }) {
   const ref = useRef<HTMLSpanElement | null>(null);
   const [rect, setRect] = useState<{ x: number; y: number } | null>(null);
+  const [open, setOpen] = useState(false);
   const show = () => {
     const r = ref.current?.getBoundingClientRect();
     if (!r) return;
@@ -27,8 +34,11 @@ export function InfoDot({ hint }: { hint: string }) {
       x: Math.min(Math.max(r.left + r.width / 2, half), window.innerWidth - half),
       y: r.top,
     });
+    // One frame so the browser paints the closed (opacity:0) state first —
+    // otherwise a first-ever show mounts already-open and never transitions.
+    requestAnimationFrame(() => setOpen(true));
   };
-  const hide = () => setRect(null);
+  const hide = () => setOpen(false);
   return (
     <span
       ref={ref}
@@ -41,12 +51,12 @@ export function InfoDot({ hint }: { hint: string }) {
       onFocus={show}
       onBlur={hide}
     >
-      {/* text-transform on ancestors would capitalize a literal "i" */}
-      <span style={{ textTransform: "lowercase" }}>i</span>
+      <span className="info-icon" aria-hidden="true" />
       {rect
         ? createPortal(
             <span
               className="info-bubble"
+              data-open={open}
               role="tooltip"
               style={{ left: rect.x, top: rect.y }}
             >

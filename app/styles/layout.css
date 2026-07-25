@@ -185,7 +185,7 @@
   cursor: pointer;
   box-shadow: inner 0 0 0 2px color-mix(in oklab, black 20%, transparent);
   transition:
-    transform var(--d-tap) var(--ease-out);
+    transform var(--d-tap) var(--ease-motion);
 }
 
 .mode-orb-canvas {
@@ -270,8 +270,8 @@
     cursor: pointer;
     touch-action: manipulation;
     transition:
-      background var(--d-fast) var(--ease-out),
-      color var(--d-fast) var(--ease-out);
+      background var(--d-fast) var(--ease-motion),
+      color var(--d-fast) var(--ease-motion);
   }
 
   .mobile-nav-tab[data-active="true"] {
@@ -295,7 +295,7 @@
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
     border: 1px solid var(--line);
-    transition: transform 380ms cubic-bezier(0.65, 0, 0.35, 1);
+    transition: transform 380ms var(--ease-motion);
   }
 
   .side-panel[data-mshow="false"] {
@@ -343,8 +343,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   transition:
-    color var(--d-fast) var(--ease-out),
-    border-color var(--d-fast) var(--ease-out);
+    color var(--d-fast) var(--ease-motion),
+    border-color var(--d-fast) var(--ease-motion);
 }
 
 .status-dot {
@@ -353,7 +353,7 @@
   border-radius: 50%;
   background: var(--fg-dim);
   flex-shrink: 0;
-  transition: background var(--d-fast) var(--ease-out);
+  transition: background var(--d-fast) var(--ease-motion);
 }
 
 /* text inherits the pill's mono type; just keep long messages tidy */
@@ -454,7 +454,7 @@
   );
   background-size: 300% 300%;
   animation: landing-drift 7s ease-in-out infinite alternate;
-  transition: opacity 650ms var(--ease-out);
+  transition: opacity 650ms var(--ease-motion);
 }
 
 .landing[data-leaving="true"] {

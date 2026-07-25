@@ -10,36 +10,12 @@ import {
   createSkyMaterial,
   createLensFlareMaterial,
 } from "@/lib/ui/clothSceneNodes";
+import { easeMotion } from "@/lib/ui/motion";
 
 // Development escape hatch: flip to true to run the scene on the WebGL 2
 // backend even where WebGPU is available (the same fallback path browsers
 // without WebGPU take automatically). Useful for eyeballing backend parity.
 const FORCE_WEBGL = false;
-
-// Cubic-bezier easing (CSS-style control points), Newton-solved. Returns
-// eased y for a linear x in [0,1]. Used to shape the cloth→object transition
-// so its *speed* ramps in and out rather than moving at a constant rate.
-function makeCubicBezier(x1: number, y1: number, x2: number, y2: number) {
-  const cx = 3 * x1;
-  const bx = 3 * (x2 - x1) - cx;
-  const ax = 1 - cx - bx;
-  const cy = 3 * y1;
-  const by = 3 * (y2 - y1) - cy;
-  const ay = 1 - cy - by;
-  const sampleX = (t: number) => ((ax * t + bx) * t + cx) * t;
-  const sampleY = (t: number) => ((ay * t + by) * t + cy) * t;
-  const dX = (t: number) => (3 * ax * t + 2 * bx) * t + cx;
-  return (x: number) => {
-    let t = x;
-    for (let i = 0; i < 5; i++) {
-      const err = sampleX(t) - x;
-      const d = dX(t);
-      if (Math.abs(d) < 1e-6) break;
-      t -= err / d;
-    }
-    return sampleY(Math.min(1, Math.max(0, t)));
-  };
-}
 
 // Object maps that map onto MeshPhysicalMaterial slots. Shared with the
 // object-material sync below.
@@ -270,6 +246,15 @@ export default function ClothScene(props: Props) {
         c.maxPolarAngle = Math.PI * 0.9;
         c.rotateSpeed = 0.65;
         c.zoomSpeed = 0.9;
+        // Touch remap: two fingers get the mouse-drag effect (orbit, plus
+        // pinch-to-zoom standing in for the scroll wheel); one finger gets
+        // NO camera gesture at all, so it falls straight through to the
+        // pointermove listener below as the mouse-hover equivalent (that
+        // listener isn't gated on button state — it already treats any
+        // pointer motion over the canvas, mouse or touch, as "hovering").
+        // `null` is OrbitControls' documented way to disable a touch-count
+        // mapping (there's no TOUCH.NONE constant).
+        c.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };
         controls = c;
       })
       .catch(() => {
@@ -286,7 +271,22 @@ export default function ClothScene(props: Props) {
       camera.updateProjectionMatrix();
     };
     resize();
-    const ro = new ResizeObserver(resize);
+    // ResizeObserver fires repeatedly — often dozens of times a second —
+    // while a window is being live-dragged. renderer.setSize() tears down
+    // and reconfigures the WebGPU swap chain on every call, so calling it
+    // unthrottled during a drag hammers that reconfiguration continuously,
+    // which is what reads as on-screen flicker. Coalesce to at most one
+    // actual resize per animation frame; a pending one is cancelled on
+    // unmount so it can't fire after the renderer's been disposed.
+    let resizeRaf = 0;
+    const scheduleResize = () => {
+      if (resizeRaf) return;
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0;
+        resize();
+      });
+    };
+    const ro = new ResizeObserver(scheduleResize);
     ro.observe(container);
 
     // ── Sky ─────────────────────────────────────────────────────────────
@@ -969,12 +969,29 @@ export default function ClothScene(props: Props) {
       0.5,
     );
     const wireRadius = 0.9;
+    // Radial segments around the tube's circumference. A thin, dark strand
+    // seen mostly against the bright sky is the worst case for under-
+    // tessellation: too few facets doesn't just jag the silhouette, each
+    // flat facet catches the sun's specular highlight at a slightly
+    // different angle, so a low count reads as a travelling glint/band
+    // shimmering along the rope as it sways — easy to mistake for aliasing,
+    // but no amount of MSAA/supersampling fixes it (that's for sampling
+    // rate, not missing geometry). 16 reads as round at any camera
+    // distance; cost is trivial since the tube is a single thin strip that
+    // only rebuilds when it's actually moved (see ROPE_REBUILD_EPS below).
+    const WIRE_RADIAL_SEGMENTS = 16;
     const wireMat = new THREE.MeshStandardMaterial({
       color: 0x141414,
       roughness: 0.75,
       metalness: 0.15,
     });
-    let wireTube = new THREE.TubeGeometry(ropeCurve, 100, wireRadius, 5, false);
+    let wireTube = new THREE.TubeGeometry(
+      ropeCurve,
+      100,
+      wireRadius,
+      WIRE_RADIAL_SEGMENTS,
+      false,
+    );
     const wireMesh = new THREE.Mesh(wireTube, wireMat);
     scene.add(wireMesh);
     // Tube regeneration is the priciest per-frame allocation in the loop:
@@ -996,7 +1013,13 @@ export default function ClothScene(props: Props) {
       if (!moved) return;
       ropeSnapshot.set(ropePos);
       syncRopePoints();
-      const next = new THREE.TubeGeometry(ropeCurve, 100, wireRadius, 5, false);
+      const next = new THREE.TubeGeometry(
+        ropeCurve,
+        100,
+        wireRadius,
+        WIRE_RADIAL_SEGMENTS,
+        false,
+      );
       wireTube.dispose();
       wireTube = next;
       wireMesh.geometry = next;
@@ -1271,16 +1294,15 @@ export default function ClothScene(props: Props) {
       }
     };
 
-    // blend: 0 = pure cloth, 1 = pure object. Eased by the bezier for the
-    // whisk/surface; its per-frame delta is the "bezier-mediated speed" that
-    // drives the object's spin-in. Timing is WALL-CLOCK (ms), not per-frame,
-    // so the ~1s duration holds whatever the frame rate — a slow GPU no
-    // longer stretches the transition to a crawl.
-    const easeTransition = makeCubicBezier(0.65, 0.0, 0.35, 1.0);
+    // blend: 0 = pure cloth, 1 = pure object. Eased by the interface's shared
+    // motion curve for the whisk/surface; its per-frame delta is the
+    // "bezier-mediated speed" that drives the object's spin-in. Timing is
+    // WALL-CLOCK (ms), not per-frame, so the ~1s duration holds whatever the
+    // frame rate — a slow GPU no longer stretches the transition to a crawl.
     const TRANSITION_MS = 1100; // cloth↔object duration
     const OBJECT_SPIN = Math.PI * 2 * 1.25; // 1¼ turns as it surfaces
     let blend = props.mode === "object" ? 1 : 0;
-    let easedPrev = easeTransition(blend);
+    let easedPrev = easeMotion(blend);
     let objectSpin = 0;
 
     // ── Loop ────────────────────────────────────────────────────────────
@@ -1316,7 +1338,7 @@ export default function ClothScene(props: Props) {
       const blendStep = dtMs / TRANSITION_MS;
       if (blend < target) blend = Math.min(target, blend + blendStep);
       else if (blend > target) blend = Math.max(target, blend - blendStep);
-      const eased = easeTransition(blend);
+      const eased = easeMotion(blend);
       const clothVisible = eased < 0.999;
       const objectVisible = eased > 0.001;
 
@@ -1364,7 +1386,7 @@ export default function ClothScene(props: Props) {
       // curve), then retire the units that have left frame. Wall-clock timed.
       if (slideT < 1) {
         slideT = Math.min(1, slideT + dtMs / SLIDE_MS);
-        const se = easeTransition(slideT);
+        const se = easeMotion(slideT);
         for (const un of units) {
           un.group.position.x = un.fromX + (un.toX - un.fromX) * se;
         }
@@ -1599,6 +1621,7 @@ export default function ClothScene(props: Props) {
     return () => {
       disposed = true;
       cancelAnimationFrame(raf);
+      cancelAnimationFrame(resizeRaf);
       ro.disconnect();
       controls?.dispose();
       renderer.domElement.removeEventListener("pointermove", onPointerMove);

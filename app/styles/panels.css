@@ -7,7 +7,7 @@
    the panel feels like it's actually a physical drawer sliding.
    Apple design guidelines applied: response on pointer-down (:active
    scale), symmetric enter/exit paths, no lockouts during transition,
-   custom ease-drawer curve, reduced-motion respect. */
+   the interface's shared --ease-motion curve, reduced-motion respect. */
 
 .side-panel {
   position: fixed;
@@ -20,8 +20,8 @@
   flex-direction: column;
   overflow: hidden;
   transition:
-    width 280ms var(--ease-drawer),
-    transform 280ms var(--ease-drawer);
+    width 280ms var(--ease-motion),
+    transform 280ms var(--ease-motion);
 }
 
 .side-panel-left {
@@ -63,7 +63,7 @@
   text-transform: uppercase;
   color: var(--fg-mute);
   opacity: 1;
-  transition: opacity 180ms var(--ease-out);
+  transition: opacity 180ms var(--ease-motion);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -90,7 +90,7 @@
   text-transform: uppercase;
   color: var(--fg-dim);
   white-space: nowrap;
-  transition: color 180ms var(--ease-out);
+  transition: color 180ms var(--ease-motion);
 }
 
 .side-panel-tab:hover {
@@ -117,7 +117,7 @@
   grid-template-columns: 100% 100%;
   height: 100%;
   transform: translateX(0);
-  transition: transform 460ms cubic-bezier(0.65, 0, 0.35, 1);
+  transition: transform 460ms var(--ease-motion);
 }
 
 .panel-tab-track[data-tab="swatches"] {
@@ -148,10 +148,10 @@
   cursor: pointer;
   color: var(--fg-mute);
   transition:
-    background var(--d-fast) var(--ease-out),
-    color var(--d-fast) var(--ease-out),
-    border-color var(--d-fast) var(--ease-out),
-    transform var(--d-tap) var(--ease-out);
+    background var(--d-fast) var(--ease-motion),
+    color var(--d-fast) var(--ease-motion),
+    border-color var(--d-fast) var(--ease-motion),
+    transform var(--d-tap) var(--ease-motion);
   flex-shrink: 0;
 }
 
@@ -175,7 +175,7 @@
 .side-panel-toggle .chevron {
   font-size: 15px;
   line-height: 1;
-  transition: transform var(--d-med) var(--ease-out);
+  transition: transform var(--d-med) var(--ease-motion);
 }
 
 /* Caret points down when open (invites collapse); flips up when collapsed. */
@@ -195,7 +195,7 @@
   flex-direction: column;
   gap: 18px;
   opacity: 1;
-  transition: opacity 220ms var(--ease-out);
+  transition: opacity 220ms var(--ease-motion);
   scrollbar-width: thin;
   scrollbar-color: var(--line-strong) transparent;
 }
@@ -270,9 +270,9 @@
   color: var(--fg-mute);
   cursor: pointer;
   transition:
-    border-color var(--d-fast) var(--ease-out),
-    background var(--d-fast) var(--ease-out),
-    color var(--d-fast) var(--ease-out);
+    border-color var(--d-fast) var(--ease-motion),
+    background var(--d-fast) var(--ease-motion),
+    color var(--d-fast) var(--ease-motion);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -429,22 +429,19 @@
   gap: 5px;
 }
 
-/* ⓘ info dot + plain-words tooltip. The bubble is CSS-only (::after reads
-   aria-label) so it works for hover and keyboard focus alike. */
+/* ⓘ info dot + plain-words tooltip. The bubble is a portalled element whose
+   data-open attribute drives a real two-way CSS transition (see InfoDot in
+   panelPrimitives.tsx) — it fades AND scales in on show and back out on
+   hide, rather than snapping away when React unmounts it. */
 .info-dot {
   position: relative;
   display: inline-grid;
   place-items: center;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  border: 1px solid currentColor;
-  font-size: 8px;
-  line-height: 1;
-  font-style: normal;
+  width: 13px;
+  height: 13px;
   opacity: 0.55;
   cursor: help;
-  transition: opacity 140ms var(--ease-out);
+  transition: opacity 140ms var(--ease-motion);
 }
 
 .info-dot:hover,
@@ -453,9 +450,25 @@
   outline: none;
 }
 
+/* Feather "info" glyph (public/icons/info.svg), masked so it inherits the
+   dot's currentColor — same technique as the swatch stamp fray mask. */
+.info-icon {
+  display: block;
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  mask-image: url("/icons/info.svg");
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-image: url("/icons/info.svg");
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+
 .info-bubble {
   position: fixed;
-  transform: translate(-50%, calc(-100% - 8px));
   width: max-content;
   max-width: 230px;
   padding: 6px 9px;
@@ -472,18 +485,17 @@
   white-space: normal;
   pointer-events: none;
   z-index: 300;
-  animation: bubble-in 140ms var(--ease-out);
+  transform-origin: bottom center;
+  opacity: 0;
+  transform: translate(-50%, calc(-100% - 4px)) scale(0.94);
+  transition:
+    opacity 220ms var(--ease-motion),
+    transform 220ms var(--ease-motion);
 }
 
-@keyframes bubble-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, calc(-100% - 5px));
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, calc(-100% - 8px));
-  }
+.info-bubble[data-open="true"] {
+  opacity: 1;
+  transform: translate(-50%, calc(-100% - 10px)) scale(1);
 }
 
 /* Section-label dots sit at the row's end. */
@@ -522,7 +534,7 @@
   background: #fff;
   border: 0;
   margin-top: -3.5px;
-  transition: transform var(--d-tap) var(--ease-out);
+  transition: transform var(--d-tap) var(--ease-motion);
 }
 
 .slider input[type="range"]:active::-webkit-slider-thumb {
@@ -583,9 +595,9 @@
   text-transform: lowercase;
   cursor: pointer;
   transition:
-    background var(--d-fast) var(--ease-out),
-    color var(--d-fast) var(--ease-out),
-    transform var(--d-tap) var(--ease-out);
+    background var(--d-fast) var(--ease-motion),
+    color var(--d-fast) var(--ease-motion),
+    transform var(--d-tap) var(--ease-motion);
   text-align: center;
 }
 

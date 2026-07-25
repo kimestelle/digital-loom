@@ -13,9 +13,9 @@
   gap: 8px;
   cursor: pointer;
   transition:
-    border-color var(--d-fast) var(--ease-out),
-    background var(--d-fast) var(--ease-out),
-    transform var(--d-tap) var(--ease-out);
+    border-color var(--d-fast) var(--ease-motion),
+    background var(--d-fast) var(--ease-motion),
+    transform var(--d-tap) var(--ease-motion);
   background: color-mix(in oklab, var(--bg-elev-2) 70%, transparent);
 }
 

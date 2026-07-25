@@ -1028,6 +1028,15 @@ export default function Home() {
       if (!isClone && sampleByHash.has(p.pkgHash)) continue;
       const src = mapsForHash(p.pkgHash);
       const existing = byId.get(p.slug);
+      // A preset whose pkgHash resolves to no maps anywhere (not a sample,
+      // no cache entry, not pregen, and no thumb already staged by an
+      // earlier cache-entry pass) is a dangling reference — its images
+      // never made it to this deploy. Rendering it would be a permanently
+      // broken, unselectable ghost swatch, so skip it instead. (Can happen
+      // if a preset JSON gets committed to fabrics/presets/ without its
+      // backing extraction ever landing in the shipped cache/samples.)
+      if (!existing?.thumb && !src.thumb) continue;
+
       byId.set(p.slug, {
         id: p.slug,
         pkgHash: p.pkgHash,

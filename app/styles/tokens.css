@@ -29,10 +29,15 @@
   --radius: 10px;
   --radius-lg: 14px;
 
-  /* stronger easings than the CSS defaults, per emil-design-eng */
-  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
-  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  /* The interface's ONE motion curve — every discrete state transition
+     (fades, slides, panel/tab expand-contract, the cloth transitions, the
+     pixel-dissolve reveal) eases through this same curve so the whole app
+     reads as one coherent hand moving it. JS-driven motion (clothScene,
+     materialTransfer) mirrors these exact 4 numbers via lib/ui/motion.ts —
+     keep both in sync if this changes. (Continuous target-seeking motion,
+     like PixelPlay's orbit/burst, is deliberately NOT on this curve — it's
+     an ongoing simulation, not a fixed-duration transition.) */
+  --ease-motion: cubic-bezier(0.65, 0, 0.35, 1);
 
   /* durations: keep UI under 300ms per emil-design-eng */
   --d-tap: 140ms;
@@ -68,10 +73,25 @@ body {
   font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* This is an instrument, not a document — dragging a slider or swatch
+     shouldn't ever paint a text selection underneath the pointer. iOS'
+     long-press callout (the copy/lookup menu) is suppressed for the same
+     reason. Form fields opt back in below, so typing/editing still works
+     normally. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 body {
   font-size: 15px;
   line-height: 1.5;
   letter-spacing: 0; /* body sits near 0 per apple-design typography */
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }

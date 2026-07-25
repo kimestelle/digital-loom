@@ -19,10 +19,10 @@
   color: var(--fg);
   background: transparent;
   transition:
-    transform var(--d-tap) var(--ease-out),
-    background var(--d-fast) var(--ease-out),
-    border-color var(--d-fast) var(--ease-out),
-    color var(--d-fast) var(--ease-out);
+    transform var(--d-tap) var(--ease-motion),
+    background var(--d-fast) var(--ease-motion),
+    border-color var(--d-fast) var(--ease-motion),
+    color var(--d-fast) var(--ease-motion);
 }
 
 .btn:active {
