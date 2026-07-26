@@ -287,19 +287,6 @@
   grid-template-columns: repeat(3, 1fr);
   gap: 6px;
   margin-bottom: 10px;
-  padding: 6px;
-  border-radius: var(--radius);
-  background: color-mix(in oklab, var(--bg-elev-2) 65%, transparent);
-  /* Same dish the mode-orb sits its thread in — one shadow language across
-     every PixelPlay host. */
-  box-shadow: var(--shadow-dish);
-  transition: background var(--d-fast) var(--ease-motion);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .weave-picker:hover {
-    background: color-mix(in oklab, var(--bg-elev-2) 80%, transparent);
-  }
 }
 
 .weave-tile {
