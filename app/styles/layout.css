@@ -76,13 +76,15 @@
   left: 0;
   right: 0;
   z-index: 30;
-  border-bottom: 1px solid var(--line);
+  /* No hard border-bottom — the gradient below IS the edge, dissolving
+     into the stage. A solid hairline sitting right where the tint fades to
+     transparent would read as a mismatched hard cutoff against a soft fade. */
   /* Overrides .glass's flat background with a curved fade — .glass's own
      30% tint at the very top edge (where the brand/controls actually sit),
-     easing (not linearly ramping) down to transparent by the border-bottom
-     divider, so the bar dissolves into the stage rather than cutting off
-     hard. Stops are spaced like an ease-out curve (most of the falloff
-     happens in the second half) rather than three even steps. */
+     easing (not linearly ramping) down to fully transparent, so the bar
+     dissolves into the stage rather than cutting off hard. Stops are
+     spaced like an ease-out curve (most of the falloff happens in the
+     second half) rather than three even steps. */
   background: linear-gradient(
     to bottom,
     color-mix(in oklab, var(--bg) 30%, transparent) 0%,
