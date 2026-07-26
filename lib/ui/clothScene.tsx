@@ -9,6 +9,7 @@ import {
   createClothMaterial,
   createSkyMaterial,
   createLensFlareMaterial,
+  createWireMaterial,
 } from "@/lib/ui/clothSceneNodes";
 import { easeMotion } from "@/lib/ui/motion";
 
@@ -221,9 +222,16 @@ export default function ClothScene(props: Props) {
     // of ~1300 puts the visible view height near ~695 units → cloth at
     // ~60% vertical.
     const camera = new THREE.PerspectiveCamera(30, 1, 1, 8000);
-    camera.position.set(0, 0, 1300);
+    // Starting framing: a low, oblique angle nearly along the clothesline's
+    // own length — the line reads as a long diagonal across the frame
+    // instead of a level bar, and the cloth looms large and a little
+    // twisted, more editorial than a dead-on catalog shot. Target stays the
+    // origin (OrbitControls' own default target), so this only shapes the
+    // opening frame — the orbit pivot for later interaction is unaffected,
+    // and there's no target mismatch for controls.update() to snap away on
+    // the first drag.
+    camera.position.set(0, -720, -1200);
     camera.lookAt(0, 0, 0);
-
     // Orbit controls — dynamic import so the example addon doesn't drag
     // into the initial bundle chunk. Camera can rotate around the fabric
     // and zoom in/out within the configured distance limits. Damping
@@ -980,11 +988,11 @@ export default function ClothScene(props: Props) {
     // distance; cost is trivial since the tube is a single thin strip that
     // only rebuilds when it's actually moved (see ROPE_REBUILD_EPS below).
     const WIRE_RADIAL_SEGMENTS = 16;
-    const wireMat = new THREE.MeshStandardMaterial({
-      color: 0x141414,
-      roughness: 0.75,
-      metalness: 0.15,
-    });
+    // Fixes the *other* half of rope aliasing: a soft analytic silhouette
+    // fade instead of a hard rasterized edge (see createWireMaterial) — the
+    // 16-segment tessellation above stops the facets from glinting, this
+    // stops the sub-pixel-wide silhouette itself from shimmering.
+    const wireMat = createWireMaterial();
     let wireTube = new THREE.TubeGeometry(
       ropeCurve,
       100,
@@ -1053,14 +1061,25 @@ export default function ClothScene(props: Props) {
     // component keeps it above the horizon most of the time and dips
     // beneath so the cloth cycles between back and front lit.
     const sunRadius = 1600;
-    let sunPhase = 0.35; // starting angle
+    // Starting angle: with the camera now looking back along the
+    // clothesline (see camera.position above), this phase puts the sun
+    // almost directly on the far side of the cloth from the camera, so the
+    // very first frame shows it backlit/glowing rather than front-lit.
+    let sunPhase = 0.9;
     // Scratch objects — all reused each frame to avoid per-tick GC churn.
     const SUN_COOL = new THREE.Color(1.0, 0.95, 0.86);
     const SUN_WARM = new THREE.Color(1.0, 0.7, 0.42);
     const SKY_TOP_DAY = new THREE.Color(0x2c5990);
-    const SKY_TOP_HORIZON = new THREE.Color(0x4a6d95);
+    // Darkened from the original 0x4a6d95 / 0xe8dcb8 — those two are what the
+    // midday sky (high sun altitude) actually blends toward, and the old
+    // bottom tone in particular was light cream, near-white — exactly what
+    // washes out the chromeless tuning panel's white text (see
+    // side-panel-right in panels.css). Sun color/intensity and the shader's
+    // halo/glow/disk terms are untouched: the light itself should still read
+    // as bright, only the flat backdrop it sits against is dimmer now.
+    const SKY_TOP_HORIZON = new THREE.Color(0x3a5878);
     const SKY_BOTTOM_HORIZON = new THREE.Color(0xd88a4a);
-    const SKY_BOTTOM_DAY = new THREE.Color(0xe8dcb8);
+    const SKY_BOTTOM_DAY = new THREE.Color(0xa39572);
     const sunDir = new THREE.Vector3();
     const sunTint = new THREE.Color();
     const skyTopScratch = new THREE.Color();
@@ -1324,6 +1343,7 @@ export default function ClothScene(props: Props) {
       // the transition or spike the FPS meter.
       const now = performance.now();
       const dtMs = Math.min(100, now - lastNow);
+
       lastNow = now;
 
       syncAnisotropy();

@@ -195,7 +195,6 @@ export function PanelHeader({
 }: PanelHeaderProps) {
   // Panels collapse downward (roll up into the header bar); the caret points
   // down to invite the collapse and flips up (via CSS) once collapsed.
-  const chevron = "⌄";
   const label = collapsed ? `expand ${title}` : `collapse ${title}`;
   const toggle = (
     <button
@@ -205,9 +204,7 @@ export function PanelHeader({
       aria-label={label}
       aria-expanded={!collapsed}
     >
-      <span className="chevron" aria-hidden="true">
-        {chevron}
-      </span>
+      <span className="chevron" aria-hidden="true" />
     </button>
   );
   const titleEl = tabs ? (

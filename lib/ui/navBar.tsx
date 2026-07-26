@@ -7,7 +7,6 @@
 // Styles live in app/styles/layout.css (.app-header / .mode-tabs / .status-*).
 
 import { memo } from "react";
-import { shortHash } from "@/lib/ui/panelPrimitives";
 import ModeButton from "@/lib/ui/modeButton";
 
 
@@ -21,8 +20,14 @@ export type PipelineStatus =
 export type StageMode = "cloth" | "object";
 
 export function StatusPill({ status }: { status: PipelineStatus }) {
+  // "done" surfaces nothing actionable — a cache-hit/fresh hash only ever
+  // meant something to a developer watching the network tab, not the
+  // person using the instrument. Loading/error still earn a pill; a
+  // successful load speaks for itself in the viewport.
+  if (status.kind === "done") return null;
+
   let label: string;
-  let tone: "idle" | "loading" | "error" | "done";
+  let tone: "idle" | "loading" | "error";
   switch (status.kind) {
     case "idle":
       label = "ready";
@@ -35,12 +40,6 @@ export function StatusPill({ status }: { status: PipelineStatus }) {
     case "error":
       label = "error";
       tone = "error";
-      break;
-    case "done":
-      label = status.cacheHit
-        ? `cache · ${shortHash(status.hash)}`
-        : `fresh · ${shortHash(status.hash)}`;
-      tone = "done";
       break;
   }
   return (
@@ -63,7 +62,7 @@ export const NavBar = memo(function NavBar({
   status,
 }: NavBarProps) {
   return (
-    <header className="nav-bar">
+    <header className="nav-bar glass">
       <div className="nav-bar-inner">
         <div className="nav-brand">
           <span className="nav-brand-name">digital loom</span>

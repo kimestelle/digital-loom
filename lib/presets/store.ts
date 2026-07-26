@@ -13,17 +13,23 @@ import {
   type MaterialPreset,
 } from "./types";
 
-// Two roots: the repo's committed presets are the read-only SEED (the sample
-// materials' tuned params ship there), and PRESETS_ROOT is where new writes
-// land. Locally both are the same directory — behavior unchanged. On Vercel
-// (read-only repo tree) writes go to /tmp: functional within an instance,
-// ephemeral across cold starts; the collection zip is the durable backup.
+// Two roots: the repo's committed presets are the read-only SEED (materials
+// someone deliberately checked in live there), and PRESETS_ROOT is where new
+// writes land. These must NOT be the same directory locally — autosave
+// rewrites a preset's hash-named file on every knob tweak, and a seed
+// directory that's also the autosave target means every tweak of any
+// material dirties version control. PRESETS_ROOT instead reuses cache/,
+// the same gitignored, already-writable root lib/fal/cache.ts uses for the
+// generated map bundles a preset's pkgHash pairs with — one gitignore
+// pattern covers both halves. On Vercel (read-only repo tree) writes go to
+// /tmp instead: functional within an instance, ephemeral across cold
+// starts; the collection zip is the durable backup either way.
 export const SEED_ROOT = path.resolve(process.cwd(), "fabrics", "presets");
 export const PRESETS_ROOT = process.env.LOOM_PRESETS_DIR
   ? path.resolve(process.env.LOOM_PRESETS_DIR)
   : process.env.VERCEL
     ? "/tmp/loom-presets"
-    : SEED_ROOT;
+    : path.resolve(process.cwd(), "cache", "presets");
 
 const SLUG_RE = /^[a-z0-9-]{1,64}$/;
 

@@ -57,11 +57,19 @@
 }
 
 .material-thumbnail img {
-  transition: opacity 80ms linear;
+  opacity: 1;
 }
 
+/* The fly-layer canvas covers these exact pixels for the whole time the
+   thumbnail is "away", so only the outgoing edge needs a transition (to
+   soften the handoff as the canvas takes over) — coming back needs none,
+   since the canvas's last frame already shows this image at full opacity
+   in this exact spot. A transition on both edges left a ~80ms gap where
+   the canvas had already been removed but this img was still ramping up
+   from 0, reading as a flicker/flash right when the pointer left. */
 .material-thumbnail[data-away="true"] img {
   opacity: 0;
+  transition: opacity 80ms linear;
 }
 
 .material-thumbnail-ghost {
@@ -136,7 +144,7 @@
   width: 100%;
   padding: 0;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   background: color-mix(in oklab, var(--bg-elev-2) 80%, transparent);
   color: var(--fg);
   font-family: var(--font-mono);
@@ -167,7 +175,7 @@
   border: 0;
   width: 18px;
   height: 18px;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1;
@@ -238,7 +246,7 @@
   height: 18px;
   display: grid;
   place-items: center;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
   line-height: 1;
   color: #fff;
@@ -266,7 +274,7 @@
   top: 4%;
   bottom: 4%;
   width: 3px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: var(--cat, var(--accent));
   box-shadow: 0 0 6px color-mix(in oklab, var(--cat, var(--accent)) 60%, transparent);
   pointer-events: none;
@@ -284,6 +292,15 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
+}
+
+/* .btn is inline-flex with no justify-content, so it only self-centers
+   when its box is exactly content-sized — stretched to the grid column
+   here, its label was packing to the start (left) instead of centering.
+   (.collection-load sidesteps this with its own display:grid + place-items,
+   but the download-zip <button> next to it needed the same fix.) */
+.collection-actions .btn {
+  justify-content: center;
 }
 
 .collection-load {

@@ -34,6 +34,7 @@ import {
   BackSide,
   LinearFilter,
   MeshBasicNodeMaterial,
+  MeshStandardNodeMaterial,
   RepeatWrapping,
   Vector2,
   Vector3,
@@ -54,10 +55,12 @@ import {
   floor,
   fract,
   length,
+  materialOpacity,
   max,
   min,
   mix,
   normalLocal,
+  normalWorld,
   modelWorldMatrix,
   positionGeometry,
   positionWorld,
@@ -822,4 +825,33 @@ export function createLensFlareMaterial() {
   })();
 
   return { material, u };
+}
+
+/** Clothesline rope/wire. A thin cylinder is the worst case for silhouette
+ *  aliasing: at any real camera distance its screen footprint is only a few
+ *  pixels wide, so its ENTIRE visible strip is silhouette edge — there's no
+ *  interior fill for MSAA/supersampling to blend into, just a hard edge on
+ *  both sides sweeping almost the full width. More samples raise the
+ *  sampling rate, but a genuinely sub-pixel edge that shifts a fraction of a
+ *  pixel every frame still shimmers no matter how high that rate goes.
+ *  Instead of sampling harder, fade opacity analytically as the surface
+ *  normal approaches edge-on to the camera (dot ≈ 0), so the rasterized cut
+ *  is never hard in the first place — one dot product + smoothstep per
+ *  fragment, negligible next to the geometry's own cost, independent of
+ *  MSAA/pixelScale. */
+export function createWireMaterial() {
+  const material = new MeshStandardNodeMaterial();
+  material.color = new Color(0x141414);
+  material.roughness = 0.75;
+  material.metalness = 0.15;
+  material.transparent = true;
+  material.side = DoubleSide;
+  const viewDir = cameraPosition.sub(positionWorld).normalize();
+  const facing = dot(normalWorld, viewDir).abs();
+  // opacityNode REPLACES the material's own `.opacity` uniform rather than
+  // multiplying it (NodeMaterial only reads one or the other) — fold
+  // materialOpacity back in so the runtime fade-in/out via `wireMat.opacity`
+  // still works.
+  material.opacityNode = smoothstep(0.0, 0.6, facing).mul(materialOpacity);
+  return material;
 }

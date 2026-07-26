@@ -26,10 +26,24 @@
 
 .side-panel-left {
   left: 16px;
+  /* Raised glass, not a recessed dish — this panel floats above the
+     stage, it isn't punched into it. Darkness level matches the other
+     PixelPlay-family surfaces; the elevation shadow plus .glass's own
+     top-edge highlight and conic sheen sell the "floating" read. Overrides
+     .glass's own 30% background; .glass itself stays untouched since it's
+     the shared header/dock surface too. */
+  background: color-mix(in oklab, var(--bg) 50%, transparent);
+  box-shadow: var(--shadow-raised);
 }
 
 .side-panel-right {
   right: 16px;
+  /* Chromeless (no glass backing), so its light text floats straight over
+     the sky/cloth — legibility shouldn't hinge entirely on how bright that
+     backdrop happens to be at a given sun angle. A soft dark shadow gives
+     text a floor of contrast against any sky tone, on top of (not instead
+     of) darkening the midday sky itself in clothScene.tsx. */
+  text-shadow: var(--shadow-text);
 }
 
 /* Collapse downward: unpin the bottom so the panel shrinks to just its header
@@ -142,7 +156,7 @@
   height: 24px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   border: 1px solid transparent;
   cursor: pointer;
@@ -172,9 +186,26 @@
   outline-offset: 2px;
 }
 
+/* Feather "arrow-down" glyph (public/icons/arrow-down.svg), masked so it
+   inherits the toggle's currentColor — same technique as .info-icon below.
+   Replaces the old "⌄" text-character DIY arrow. drop-shadow is the
+   text-shadow equivalent for a masked/background element — same offset,
+   blur, and color as the panel text's shadow so icon and text read as one
+   consistent depth treatment. */
 .side-panel-toggle .chevron {
-  font-size: 15px;
-  line-height: 1;
+  display: block;
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  mask-image: url("/icons/arrow-down.svg");
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-image: url("/icons/arrow-down.svg");
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  filter: drop-shadow(var(--shadow-text));
   transition: transform var(--d-med) var(--ease-motion);
 }
 
@@ -215,10 +246,11 @@
   align-items: center;
   gap: 6px;
   font-family: var(--font-mono);
+  font-weight: 600;
   font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--fg-dim);
+  color: var(--fg-light);
   padding-bottom: 2px;
   border-bottom: 1px solid var(--line);
   margin-bottom: 2px;
@@ -226,7 +258,7 @@
 
 .cache-count {
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in oklab, var(--bg-elev-2) 82%, transparent);
   border: 1px solid var(--line-strong);
   color: var(--fg-mute);
@@ -255,6 +287,19 @@
   grid-template-columns: repeat(3, 1fr);
   gap: 6px;
   margin-bottom: 10px;
+  padding: 6px;
+  border-radius: var(--radius);
+  background: color-mix(in oklab, var(--bg-elev-2) 65%, transparent);
+  /* Same dish the mode-orb sits its thread in — one shadow language across
+     every PixelPlay host. */
+  box-shadow: var(--shadow-dish);
+  transition: background var(--d-fast) var(--ease-motion);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .weave-picker:hover {
+    background: color-mix(in oklab, var(--bg-elev-2) 80%, transparent);
+  }
 }
 
 .weave-tile {
@@ -264,7 +309,7 @@
   align-items: center;
   gap: 4px;
   padding: 8px 4px 6px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--line-strong);
   background: color-mix(in oklab, var(--bg-elev-2) 70%, transparent);
   color: var(--fg-mute);
@@ -316,7 +361,7 @@
   align-items: center;
   gap: 1px;
   padding: 6px 2px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--line-strong);
   background: color-mix(in oklab, var(--bg-elev-2) 70%, transparent);
 }
@@ -394,7 +439,7 @@
   color: var(--fg);
   background: transparent;
   border: 1px solid var(--line-strong);
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   padding: 3px 6px;
   cursor: pointer;
   min-width: 0;
@@ -465,6 +510,10 @@
   -webkit-mask-size: contain;
   -webkit-mask-repeat: no-repeat;
   -webkit-mask-position: center;
+  /* text-shadow equivalent for a masked element — same offset/blur/color
+     as the panel text's shadow, so the icon and its neighboring text read
+     with one consistent depth. */
+  filter: drop-shadow(var(--shadow-text));
 }
 
 .info-bubble {
@@ -472,7 +521,7 @@
   width: max-content;
   max-width: 230px;
   padding: 6px 9px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   /* plain grey card, chromeless — no border/outline */
   background: #3d4046;
   border: none;
@@ -522,7 +571,7 @@
     color-mix(in oklab, #fff 45%, transparent),
     var(--cat, var(--accent))
   );
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .slider input[type="range"]::-webkit-slider-thumb {
@@ -548,7 +597,7 @@
     color-mix(in oklab, #fff 45%, transparent),
     var(--cat, var(--accent))
   );
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .slider input[type="range"]::-moz-range-thumb {
@@ -570,10 +619,20 @@
 .tx-mode-picker {
   display: inline-flex;
   padding: 0px;
-  border-radius: 10px;
+  border-radius: var(--radius);
   background: color-mix(in oklab, var(--bg-elev-2) 65%, transparent);
   /* border: 1px solid var(--line-strong); */
   gap: 2px;
+  /* Same dish the mode-orb sits its thread in — one shadow language across
+     every PixelPlay host. */
+  box-shadow: var(--shadow-dish);
+  transition: background var(--d-fast) var(--ease-motion);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tx-mode-picker:hover {
+    background: color-mix(in oklab, var(--bg-elev-2) 80%, transparent);
+  }
 }
 
 .tx-mode-picker-wide {
@@ -587,7 +646,7 @@
   background: transparent;
   border: 0;
   padding: 4px 10px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   color: var(--fg-mute);
   font-family: var(--font-mono);
   font-size: 11px;

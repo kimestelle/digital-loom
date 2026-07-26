@@ -86,13 +86,13 @@ export const InsertPanel = memo(function InsertPanel({
         />
       </label>
       <label className="prompt-field prompt-field-compact">
-        <span className="prompt-label">fal key</span>
+        <span className="prompt-label">fal.ai api key</span>
         <input
           type="password"
           className="prompt-input"
           value={falKey}
           onChange={(e) => saveFalKey(e.currentTarget.value)}
-          placeholder="optional — your own key"
+          placeholder="optional — for gen model"
           autoComplete="off"
           spellCheck={false}
         />

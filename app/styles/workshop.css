@@ -5,7 +5,7 @@
 
 .mini-drop {
   border: 1px dashed var(--line-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
   display: flex;
   align-items: center;
@@ -47,7 +47,7 @@
   align-items: center;
   gap: 8px;
   padding: 4px 6px 4px 12px;
-  border-radius: 10px;
+  border-radius: var(--radius);
   border: 1px solid var(--line-strong);
   background: var(--bg-elev-2);
 }

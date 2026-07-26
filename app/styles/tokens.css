@@ -25,9 +25,44 @@
   --error: #e58a7f;
   --ok: #9ccf9b;
 
+  /* Five steps, chosen from an audit of every border-radius in the
+     codebase: the raw values in the wild clustered at ~2-3px, ~5-8px,
+     10px, 14px, and 999px, so those five clusters are what got named
+     rather than an arbitrary progression. --radius-sm in particular
+     absorbs a 5/6/7/8px cluster that was all doing the same "small
+     control" job with no real distinction between the values — collapsed
+     to one so it's an actual scale, not drift. True circles (50%) aren't
+     part of this scale; that's a shape keyword, not a radius size. */
+  --radius-xs: 3px;
   --radius-sm: 6px;
   --radius: 10px;
   --radius-lg: 14px;
+  --radius-full: 999px;
+
+  /* The ONE inset-shadow dish, shared by every surface that reads as
+     "recessed" rather than "raised" — mode-orb, tx-mode-picker,
+     weave-picker. Was duplicated verbatim across all four (plus
+     side-panel-left, since moved to --shadow-raised below) and a stray
+     inset-rim "outline" layer on top of it; one token now, so a depth
+     tweak is a one-line change instead of a four-file grep. */
+  --shadow-dish: inset 0 2px 5px color-mix(in oklab, black 40%, transparent);
+
+  /* The floating-glass elevation shadow — an outer drop shadow (not
+     inset) for surfaces that read as sitting ABOVE the stage rather than
+     recessed into it. Two layers: a big soft one for the general lift, a
+     tighter one close to the edge so the panel still feels grounded
+     rather than adrift. Pairs with .glass's own top-edge highlight
+     (layout.css) and conic sheen — those already sell "glass", this
+     sells "raised". */
+  --shadow-raised:
+    0 16px 32px -12px color-mix(in oklab, black 55%, transparent),
+    0 4px 10px -4px color-mix(in oklab, black 35%, transparent);
+
+  /* Legibility floor for light content sitting directly over the stage —
+     the chromeless tuning panel's text plus its chevron/info icons (via
+     filter: drop-shadow, the non-text equivalent). Was duplicated across
+     three declarations at a heavier 0.55 alpha; softened and centralized. */
+  --shadow-text: 0 1px 2px rgba(0, 0, 0, 0.35);
 
   /* The interface's ONE motion curve — every discrete state transition
      (fades, slides, panel/tab expand-contract, the cloth transitions, the

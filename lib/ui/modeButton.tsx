@@ -94,16 +94,24 @@ function draw(cv: HTMLCanvasElement, s: AnimState) {
     ctx.fillRect(gx * cell + inset, gy * cell + inset, cell - inset * 2, cell - inset * 2);
   };
 
-  // Ghost scaffolds cross-fading with the morph: warp threads for cloth,
-  // a dotted wrap-ring for object. These are what the pixel weaves through
-  // and orbits around — they make the two destinations legible mid-morph.
+  // Ghost scaffolds cross-fading with the morph: a centered 3x3 warp grid
+  // for cloth, a dotted wrap-ring for object. These are what the pixel
+  // weaves through and orbits around — they make the two destinations
+  // legible mid-morph.
   const warpA = (1 - m) * 0.22;
   if (warpA > 0.02) {
     ctx.fillStyle = `rgba(${CLOTH_RGB[0]}, ${CLOTH_RGB[1]}, ${CLOTH_RGB[2]}, ${warpA})`;
-    for (let i = 1; i <= 3; i++) {
-      const gx = (i * GRID) / 4 / GRID + 0.001;
-      for (let gy = 1; gy < GRID; gy += 2) {
-        cellRect(gx, (gy + 0.5) / GRID, 0.5);
+    // Drawn directly in continuous pixel space, NOT through cellRect's
+    // floor(x*GRID) quantization — GRID is even (8), so there's no single
+    // cell centered on the canvas's true midpoint, and snapping 3 columns
+    // to that grid always lands them a half-cell off-center in the same
+    // direction on both axes (a visible diagonal bias, not a rounding
+    // wobble). Centering on px/2 directly sidesteps the parity issue.
+    const dot = cell * 0.5;
+    const gap = cell * 2;
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        ctx.fillRect(px / 2 + i * gap - dot / 2, px / 2 + j * gap - dot / 2, dot, dot);
       }
     }
   }
