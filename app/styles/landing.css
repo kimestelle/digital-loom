@@ -1,0 +1,837 @@
+/* ─── landing.css ─────────────────────────────────────────────────────────────
+   The marketing page for digital loom.
+
+   The studio is a dark instrument — you want the room dim so the cloth is the
+   only lit thing in it. A landing page has the opposite job: it's read, not
+   operated, so it gets a warm paper ground and ink type. The two share the same
+   typefaces, the same motion curve, and the same natural-dye accents, so it
+   still reads as one hand even though the value scale is inverted.
+
+   Scoped under .lp so none of this leaks into the studio's chrome. */
+
+.lp {
+  /* Warm neutral ground. Not white — undyed linen, so the dye accents have
+     something to sit against and the whole page keeps a little body heat. */
+  --paper: #e9e2d5;
+  --paper-2: #f2ece1;
+  --paper-3: #ded5c5;
+  --ink: #221e18;
+  --ink-mute: rgba(34, 30, 24, 0.66);
+  --ink-dim: rgba(34, 30, 24, 0.42);
+  --rule: rgba(34, 30, 24, 0.13);
+  --rule-strong: rgba(34, 30, 24, 0.24);
+
+  /* The studio's dark stage, borrowed for the one section that shows cloth —
+     fabric needs a dim room to read, even on a light page. */
+  --stage: #16130d;
+
+  --lp-max: 1180px;
+  --lp-gutter: 30px;
+
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-display);
+  /* The studio suppresses selection because it's an instrument. A landing page
+     is a document — let people select and copy the text. */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.lp ::selection {
+  background: var(--dye-gardenia);
+  color: var(--ink);
+}
+
+.lp-wrap {
+  max-width: var(--lp-max);
+  margin: 0 auto;
+  padding: 0 var(--lp-gutter);
+}
+
+/* ── type scale ──────────────────────────────────────────────────────────────
+   Three sizes and two roles. Display is Absans, tightened as it grows (large
+   type needs negative tracking to hold together); mono is Necto, uppercase and
+   wide, used only for labels that name a thing. */
+
+.lp-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.lp-h1 {
+  font-size: clamp(40px, 7.4vw, 82px);
+  line-height: 0.98;
+  letter-spacing: -0.032em;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.lp-h2 {
+  font-size: clamp(28px, 4vw, 44px);
+  line-height: 1.06;
+  letter-spacing: -0.024em;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.lp-lede {
+  font-size: clamp(16.5px, 1.5vw, 19px);
+  line-height: 1.58;
+  color: var(--ink-mute);
+  max-width: 54ch;
+  margin: 0;
+}
+
+.lp-body {
+  font-size: 15.5px;
+  line-height: 1.62;
+  color: var(--ink-mute);
+  max-width: 62ch;
+  margin: 0;
+}
+
+.lp-mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}
+
+/* ── nav ─────────────────────────────────────────────────────────────────── */
+
+.lp-nav {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: color-mix(in oklab, var(--paper) 86%, transparent);
+  backdrop-filter: saturate(1.4) blur(14px);
+  -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--d-med) var(--ease-motion);
+}
+
+.lp-nav[data-stuck="true"] {
+  border-bottom-color: var(--rule);
+}
+
+.lp-nav-in {
+  max-width: var(--lp-max);
+  margin: 0 auto;
+  padding: 15px var(--lp-gutter);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.lp-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  letter-spacing: -0.012em;
+  text-decoration: none;
+  color: var(--ink);
+}
+
+/* The favicon's 3x3 dye grid, rebuilt in DOM so it can animate. It's the only
+   mark the product has; making it breathe is cheaper than inventing a logo. */
+.lp-mark {
+  display: grid;
+  grid-template-columns: repeat(3, 4px);
+  grid-auto-rows: 4px;
+  gap: 2px;
+}
+
+.lp-mark i {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 1px;
+  background: var(--ink-dim);
+  transition: background var(--d-slow) var(--ease-motion);
+}
+
+.lp-brand:hover .lp-mark i[data-on="1"] { background: var(--dye-indigo); }
+.lp-brand:hover .lp-mark i[data-on="2"] { background: var(--dye-madder); }
+.lp-brand:hover .lp-mark i[data-on="3"] { background: var(--dye-gardenia); }
+.lp-brand:hover .lp-mark i[data-on="4"] { background: var(--dye-persimmon); }
+.lp-brand:hover .lp-mark i[data-on="5"] { background: var(--dye-mugwort); }
+
+.lp-nav-spacer { flex: 1; }
+
+.lp-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.lp-nav-link {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: var(--ink-mute);
+  text-decoration: none;
+  transition: color var(--d-fast) var(--ease-motion);
+}
+
+.lp-nav-link:hover { color: var(--ink); }
+
+@media (max-width: 720px) {
+  .lp-nav-links { display: none; }
+}
+
+/* ── buttons ─────────────────────────────────────────────────────────────── */
+
+.lp-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 18px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper-2);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    transform var(--d-tap) var(--ease-motion),
+    background var(--d-fast) var(--ease-motion);
+}
+
+.lp-btn:hover { transform: translateY(-1px); }
+.lp-btn:active { transform: translateY(0); }
+
+.lp-btn .lp-arrow {
+  transition: transform var(--d-med) var(--ease-motion);
+}
+
+.lp-btn:hover .lp-arrow { transform: translateX(3px); }
+
+.lp-btn-ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--rule-strong);
+}
+
+.lp-btn-ghost:hover {
+  background: color-mix(in oklab, var(--ink) 5%, transparent);
+}
+
+/* ── reveal ──────────────────────────────────────────────────────────────────
+   One shared entrance. Deliberately small — 14px and a fade. A landing page
+   that throws every section 60px into the air reads as a template; the motion
+   people remember here should be the cloth, not the paragraphs. */
+
+.lp-reveal {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 620ms var(--ease-motion),
+    transform 620ms var(--ease-motion);
+}
+
+.lp-reveal[data-in="true"] {
+  opacity: 1;
+  transform: none;
+}
+
+/* ── hero ────────────────────────────────────────────────────────────────── */
+
+.lp-hero {
+  padding: clamp(56px, 9vh, 104px) 0 0;
+}
+
+.lp-hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 28px;
+}
+
+.lp-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+/* The one word that carries the whole promise gets the madder underline —
+   drawn, not underlined, so it sits below the descenders. */
+.lp-mark-word {
+  position: relative;
+  white-space: nowrap;
+}
+
+.lp-mark-word::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0.06em;
+  height: 0.055em;
+  background: var(--dye-madder);
+  border-radius: var(--radius-full);
+  transform: scaleX(var(--draw, 0));
+  transform-origin: left;
+  transition: transform 900ms var(--ease-motion) 260ms;
+}
+
+/* ── the stage: full-bleed live cloth ────────────────────────────────────── */
+
+.lp-stage {
+  margin-top: clamp(34px, 6vw, 62px);
+  padding: 0 var(--lp-gutter);
+}
+
+.lp-stage-frame {
+  max-width: calc(var(--lp-max) + 120px);
+  margin: 0 auto;
+  height: clamp(360px, 62vh, 620px);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--stage);
+  border: 1px solid var(--rule);
+  position: relative;
+}
+
+.lp-stage-cap {
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(232, 226, 212, 0.5);
+  pointer-events: none;
+}
+
+.lp-live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--dye-mugwort);
+  animation: lp-pulse 2.6s var(--ease-motion) infinite;
+}
+
+@keyframes lp-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+.lp-stage-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  color: rgba(232, 226, 212, 0.34);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+/* ── section chrome ──────────────────────────────────────────────────────── */
+
+.lp-section {
+  padding: clamp(72px, 11vw, 132px) 0;
+}
+
+.lp-section + .lp-section {
+  border-top: 1px solid var(--rule);
+}
+
+.lp-section-head {
+  display: grid;
+  gap: 16px;
+  margin-bottom: clamp(34px, 5vw, 56px);
+}
+
+.lp-num {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  color: var(--ink-dim);
+}
+
+/* ── set piece: photograph → maps ────────────────────────────────────────────
+   A sticky viewport driven by scroll progress. The photograph separates into
+   the five maps Patina factors it into, they hold as a labelled row, then the
+   albedo re-forms as the material. It's the product's actual pipeline, so the
+   motion is explanatory rather than decorative — which is the only reason a
+   scroll-jack earns its keep. */
+
+.lp-sticky {
+  position: relative;
+  /* Scroll distance = how long the sequence has to play. */
+  height: 320vh;
+}
+
+.lp-sticky-vp {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-content: center;
+  gap: 22px;
+  padding: 76px 0 40px;
+}
+
+.lp-seq-head {
+  text-align: center;
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+
+.lp-seq-title {
+  font-size: clamp(19px, 2.3vw, 26px);
+  letter-spacing: -0.018em;
+  margin: 0;
+  transition: opacity var(--d-slow) var(--ease-motion);
+}
+
+.lp-seq-sub {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: var(--ink-dim);
+  max-width: 46ch;
+  line-height: 1.6;
+  min-height: 2.4em;
+  transition: opacity var(--d-slow) var(--ease-motion);
+}
+
+.lp-seq-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+}
+
+/* Each map is an absolutely-positioned card; JS writes --x/--s/--o per frame.
+   Transform + opacity only, so the whole sequence stays on the compositor. */
+.lp-card {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: clamp(150px, 21vw, 244px);
+  aspect-ratio: 1;
+  margin: 0;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--paper-3);
+  border: 1px solid var(--rule);
+  box-shadow: 0 18px 34px -22px rgba(34, 30, 24, 0.5);
+  transform:
+    translate3d(calc(-50% + var(--x, 0px)), calc(-50% + var(--y, 0px)), 0)
+    scale(var(--s, 1));
+  opacity: var(--o, 1);
+  will-change: transform, opacity;
+}
+
+.lp-card img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lp-card figcaption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 16px 10px 8px;
+  background: linear-gradient(to top, rgba(20, 17, 11, 0.82), transparent);
+  color: #f2ece1;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: center;
+  opacity: var(--cap, 0);
+  transition: opacity var(--d-med) var(--ease-motion);
+}
+
+.lp-scroll-cue {
+  justify-self: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  transition: opacity var(--d-slow) var(--ease-motion);
+}
+
+/* Reduced-motion / no-JS fallback: the same five maps, laid out as a plain
+   row. The information survives; only the choreography is dropped. */
+.lp-seq-static {
+  display: none;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+}
+
+.lp-seq-static .lp-card {
+  position: static;
+  transform: none;
+  opacity: 1;
+  width: auto;
+}
+
+.lp-seq-static .lp-card figcaption { opacity: 1; }
+
+/* ── map glossary ────────────────────────────────────────────────────────── */
+
+.lp-defs {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.lp-def {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 24px;
+  padding: 17px 0;
+  border-bottom: 1px solid var(--rule);
+  align-items: baseline;
+}
+
+.lp-def dt {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.lp-def dd {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--ink-mute);
+}
+
+@media (max-width: 620px) {
+  .lp-def { grid-template-columns: 1fr; gap: 5px; }
+}
+
+/* ── specimens ───────────────────────────────────────────────────────────── */
+
+.lp-specimens {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: clamp(16px, 2.4vw, 28px);
+}
+
+.lp-spec {
+  display: grid;
+  gap: 12px;
+}
+
+/* Source photo and extracted albedo, cross-faded on hover: the before/after is
+   the claim, so make it something you do rather than something you read. */
+.lp-spec-pair {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--paper-3);
+  border: 1px solid var(--rule);
+  cursor: crosshair;
+}
+
+.lp-spec-pair img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lp-spec-after {
+  /* Wiped by a cursor-tracked clip, so you scrub between photo and material. */
+  clip-path: inset(0 0 0 var(--wipe, 100%));
+  transition: clip-path var(--d-slow) var(--ease-motion);
+}
+
+.lp-spec-pair[data-active="true"] .lp-spec-after {
+  transition: clip-path 90ms linear;
+}
+
+.lp-spec-seam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--wipe, 100%);
+  width: 1px;
+  background: var(--dye-gardenia);
+  opacity: 0;
+  transition: opacity var(--d-fast) var(--ease-motion);
+}
+
+.lp-spec-pair[data-active="true"] .lp-spec-seam { opacity: 1; }
+
+.lp-spec-tag {
+  position: absolute;
+  top: 10px;
+  left: 11px;
+  padding: 4px 8px;
+  border-radius: var(--radius-xs);
+  background: rgba(20, 17, 11, 0.6);
+  backdrop-filter: blur(6px);
+  color: #f2ece1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.lp-spec-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.lp-spec-name { font-size: 15px; }
+
+.lp-spec-prompt {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  text-align: right;
+}
+
+/* ── weave / fabrics ─────────────────────────────────────────────────────── */
+
+.lp-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(28px, 5vw, 72px);
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .lp-split { grid-template-columns: minmax(0, 1fr); }
+}
+
+.lp-fabrics {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.lp-fabric {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 16px;
+  padding: 15px 2px;
+  border-bottom: 1px solid var(--rule);
+  transition: padding-left var(--d-med) var(--ease-motion);
+}
+
+.lp-fabric:hover { padding-left: 8px; }
+
+.lp-fabric-ko {
+  font-size: 17px;
+  min-width: 3.2em;
+  letter-spacing: 0.02em;
+}
+
+.lp-fabric-en {
+  font-size: 14.5px;
+  color: var(--ink-mute);
+}
+
+.lp-fabric-roman {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-dim);
+  text-transform: uppercase;
+}
+
+.lp-fabric-gsm {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The four constraint families, drawn rather than described. */
+.lp-weave-fig {
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  background: var(--paper-2);
+}
+
+.lp-constraints {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 20px;
+  margin-top: 18px;
+}
+
+.lp-constraint {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 7px 0;
+  font-size: 13.5px;
+  color: var(--ink-mute);
+}
+
+.lp-constraint b {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+  font-weight: 400;
+}
+
+.lp-swatch-line {
+  width: 14px;
+  height: 2px;
+  border-radius: var(--radius-full);
+  flex: none;
+  transform: translateY(-3px);
+}
+
+/* ── export ──────────────────────────────────────────────────────────────── */
+
+.lp-tree {
+  margin: 0;
+  padding: 20px 22px;
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.95;
+  color: var(--ink-mute);
+  overflow-x: auto;
+}
+
+.lp-tree b {
+  color: var(--ink);
+  font-weight: 400;
+}
+
+.lp-tree span { color: var(--ink-dim); }
+
+.lp-engines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.lp-chip {
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--rule-strong);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  color: var(--ink-mute);
+}
+
+/* ── code ────────────────────────────────────────────────────────────────── */
+
+.lp-code {
+  margin: 0;
+  padding: 20px 22px;
+  border-radius: var(--radius);
+  background: var(--stage);
+  color: #d9d2c2;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.8;
+  overflow-x: auto;
+}
+
+.lp-code .t { color: var(--dye-mugwort); }
+.lp-code .a { color: var(--dye-gardenia); }
+.lp-code .s { color: var(--dye-persimmon); }
+.lp-code .c { color: rgba(217, 210, 194, 0.4); }
+
+/* ── closing ─────────────────────────────────────────────────────────────── */
+
+.lp-close {
+  padding: clamp(80px, 12vw, 150px) 0;
+  border-top: 1px solid var(--rule);
+  text-align: center;
+  display: grid;
+  gap: 24px;
+  justify-items: center;
+}
+
+.lp-foot {
+  padding: 26px 0 46px;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 26px;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-dim);
+}
+
+.lp-foot a {
+  color: var(--ink-mute);
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.lp-foot a:hover { color: var(--ink); }
+
+.lp-foot-spacer { flex: 1; }
+
+/* ── reduced motion ──────────────────────────────────────────────────────────
+   The scroll sequence is the one thing on this page that genuinely can't be
+   made safe by shortening it — it IS movement tied to scroll. So it's replaced
+   wholesale by the static row, and the sticky container collapses to its
+   natural height rather than reserving 320vh of empty scroll. */
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  .lp-mark-word::after { transform: scaleX(1); transition: none; }
+
+  .lp-sticky { height: auto; }
+
+  .lp-sticky-vp {
+    position: static;
+    height: auto;
+    padding: 0;
+  }
+
+  .lp-seq-stage { display: none; }
+  .lp-seq-static { display: grid; }
+  .lp-scroll-cue { display: none; }
+  .lp-live-dot { animation: none; opacity: 0.8; }
+
+  .lp-btn:hover { transform: none; }
+  .lp-spec-after { transition: none; }
+}

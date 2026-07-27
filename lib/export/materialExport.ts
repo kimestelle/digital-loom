@@ -13,6 +13,7 @@ import type * as THREE from "three"; // types only — runtime is dynamic-import
 import type { MaterialPackage } from "@/lib/core/materialPackage";
 import type { FabricKnobs } from "@/lib/ui/knobs";
 import type { FabricProfile } from "@/lib/cloth/fabrics";
+import { getCachedMap, putCachedMap } from "@/lib/export/mapCache";
 
 export interface ExportInput {
   /** Display name; also the folder + file-stem (slugified). */
@@ -49,10 +50,21 @@ const SUFFIX: Record<string, string> = {
   ao: "AO",
 };
 
-async function fetchBuf(url: string): Promise<ArrayBuffer> {
+/** Bytes for a map, browser-cache first. Same reliability path as the
+ *  collection export: the server extraction cache is a plain directory,
+ *  ephemeral on serverless hosts (see lib/fal/cache.ts), so a map the user is
+ *  looking at right now can still 404 there. Read the IndexedDB copy warmed on
+ *  selection before touching the network. Returns null (rather than throwing)
+ *  when a map is genuinely unavailable, so one missing map doesn't sink the
+ *  whole bundle — the README/json are generated from the maps that made it in. */
+async function fetchMapBytes(url: string): Promise<ArrayBuffer | null> {
+  const cached = await getCachedMap(url);
+  if (cached) return cached;
   const r = await fetch(url);
-  if (!r.ok) throw new Error(`fetch ${url} → ${r.status}`);
-  return r.arrayBuffer();
+  if (!r.ok) return null;
+  const bytes = await r.arrayBuffer();
+  void putCachedMap(url, bytes);
+  return bytes;
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
@@ -308,10 +320,16 @@ export async function exportMaterial(input: ExportInput): Promise<string> {
     if (!entry) continue;
     const fname = `${stem}_${suffix}.png`;
     const key = cloth === "albedo" ? "baseColor" : cloth === "metalness" ? "metallic" : cloth;
-    files[key] = fname;
     rawJobs.push(
-      fetchBuf(entry.url).then((buf) => {
+      fetchMapBytes(entry.url).then((buf) => {
+        if (!buf) {
+          console.warn(`[export] map unavailable, skipped: ${entry.url}`);
+          return;
+        }
         folder.file(fname, buf);
+        // Record only maps that made it in, so material.json + README never
+        // reference a file that isn't in the zip.
+        files[key] = fname;
       }),
     );
   }

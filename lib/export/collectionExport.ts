@@ -22,6 +22,7 @@
 
 import type { FabricKnobs } from "@/lib/ui/knobs";
 import type { MaterialPreset } from "@/lib/presets/types";
+import { getCachedMap, putCachedMap } from "@/lib/export/mapCache";
 
 export interface CollectionMaterial {
   id: string;
@@ -110,10 +111,23 @@ export async function exportCollection(
     slugByHash.set(item.pkgHash, slug);
     const maps: Record<string, string> = {};
     for (const m of item.entry!.maps) {
-      const r = await fetch(m.url);
-      if (!r.ok) continue;
+      // The server-side extraction cache is a plain directory on disk —
+      // ephemeral on serverless hosts (see lib/fal/cache.ts) — so a map the
+      // user is actively looking at right now can still 404 there. Read
+      // from the browser's own IndexedDB cache first (warmed on selection
+      // by warmMapCache); only hit the network if it's genuinely not local.
+      let bytes = await getCachedMap(m.url);
+      if (!bytes) {
+        const r = await fetch(m.url);
+        if (!r.ok) {
+          console.warn(`[export] map unavailable, skipped: ${m.url}`);
+          continue;
+        }
+        bytes = await r.arrayBuffer();
+        void putCachedMap(m.url, bytes);
+      }
       const path = `${slug}/${m.file}`;
-      zip.file(path, await r.arrayBuffer());
+      zip.file(path, bytes);
       maps[m.name] = path;
       onProgress?.(++done, total);
     }
@@ -173,11 +187,17 @@ export async function exportCollection(
 }
 
 export interface ImportResult {
-  /** Materials restored (maps and/or params). */
+  /** Materials restored fully (all their maps and params landed). */
   restored: number;
+  /** Materials that partially failed — some maps or params didn't restore. */
+  failed: number;
   /** Item ids in the manifest's display order (for libraryOrder). */
   order: string[];
 }
+
+/** Newest collection layout this build knows how to read. Bump alongside the
+ *  CollectionManifest.version literal when the format changes. */
+const SUPPORTED_VERSION = 1;
 
 export async function importCollection(file: File): Promise<ImportResult> {
   const { default: JSZip } = await import("jszip");
@@ -187,14 +207,38 @@ export async function importCollection(file: File): Promise<ImportResult> {
   const manifest = JSON.parse(
     await manifestFile.async("string"),
   ) as CollectionManifest;
-  if (manifest.kind !== "collection") {
+  // Reject anything that isn't a loom collection before touching the cache — a
+  // foreign zip that happens to carry a manifest.json shouldn't half-import.
+  if (manifest.app !== "digital-loom" || manifest.kind !== "collection") {
     throw new Error("not a loom collection zip");
   }
+  // A newer export could restructure maps/params in ways this importer would
+  // silently mishandle; refuse rather than corrupt the cache.
+  if (manifest.version !== SUPPORTED_VERSION) {
+    throw new Error(
+      `unsupported collection version ${manifest.version} — this build reads version ${SUPPORTED_VERSION}`,
+    );
+  }
+
+  // The durable restore target is the browser vault (IndexedDB), not the
+  // server cache: on serverless hosts the server cache is per-instance and
+  // wiped on cold start, so materials written there scatter across instances
+  // and a later read sees only a subset (often one). The vault lives on the
+  // user's device and survives reloads and instance churn. The server writes
+  // below are kept purely best-effort — they help local dev (./cache) and a
+  // still-warm serverless instance, but their failure does NOT fail an import.
+  const { putVaultMaterial, putVaultPreset } = await import("@/lib/library/vault");
+  const { PRESET_VERSION } = await import("@/lib/presets/types");
+  const importedAt = manifest.exportedAt ?? new Date().toISOString();
 
   let restored = 0;
+  let failed = 0;
   for (const mat of manifest.materials) {
-    // 1. Maps → the extraction cache, under the original hash.
+    let ok = true;
+    // 1. Maps → the browser vault (durable) + the server cache (best-effort).
     if (mat.maps && Object.keys(mat.maps).length > 0) {
+      const bytesByFile = new Map<string, ArrayBuffer>();
+      const vaultMaps: { name: string; file: string }[] = [];
       const form = new FormData();
       form.set("hash", mat.pkgHash);
       if (mat.prompt) form.set("prompt", mat.prompt);
@@ -202,28 +246,69 @@ export async function importCollection(file: File): Promise<ImportResult> {
       for (const [name, path] of Object.entries(mat.maps)) {
         const entry = zip.file(path);
         if (!entry) continue;
-        const blob = await entry.async("blob");
-        form.append(name, new File([blob], path.split("/").pop()!));
+        const bytes = await entry.async("arraybuffer");
+        const file = path.split("/").pop()!;
+        bytesByFile.set(file, bytes);
+        vaultMaps.push({ name, file });
+        form.append(name, new File([bytes], file));
       }
-      const r = await fetch("/api/cache/import", { method: "POST", body: form });
-      if (!r.ok) continue;
+      if (vaultMaps.length === 0) {
+        // The manifest listed maps but none were in the zip — a broken bundle.
+        console.warn(`[import] no map files found in zip for "${mat.name}" (${mat.pkgHash})`);
+        ok = false;
+      } else {
+        const vaulted = await putVaultMaterial(
+          {
+            hash: mat.pkgHash,
+            prompt: mat.prompt ?? null,
+            sourceFilename: mat.sourceFilename ?? null,
+            createdAt: importedAt,
+            maps: vaultMaps,
+          },
+          bytesByFile,
+        );
+        if (!vaulted) {
+          console.warn(`[import] vault write failed for "${mat.name}" (${mat.pkgHash})`);
+          ok = false;
+        }
+        try {
+          await fetch("/api/cache/import", { method: "POST", body: form });
+        } catch {
+          // best-effort — the vault is the durable copy
+        }
+      }
     }
-    // 2. Parameters → a preset under the original id.
+    // 2. Parameters → the vault preset (durable) + the server preset (best-effort).
     if (mat.params) {
-      await fetch("/api/presets", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          slug: mat.id,
-          name: mat.name,
-          fabricId: mat.params.fabricId,
-          pkgHash: mat.pkgHash,
-          metalness: mat.params.metalness,
-          knobs: mat.params.knobs,
-        }),
+      await putVaultPreset({
+        version: PRESET_VERSION,
+        name: mat.name,
+        slug: mat.id,
+        createdAt: importedAt,
+        fabricId: mat.params.fabricId as MaterialPreset["fabricId"],
+        pkgHash: mat.pkgHash,
+        metalness: mat.params.metalness,
+        knobs: mat.params.knobs,
       });
+      try {
+        await fetch("/api/presets", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            slug: mat.id,
+            name: mat.name,
+            fabricId: mat.params.fabricId,
+            pkgHash: mat.pkgHash,
+            metalness: mat.params.metalness,
+            knobs: mat.params.knobs,
+          }),
+        });
+      } catch {
+        // best-effort — the vault preset is the durable copy
+      }
     }
-    restored++;
+    if (ok) restored++;
+    else failed++;
   }
-  return { restored, order: manifest.materials.map((m) => m.id) };
+  return { restored, failed, order: manifest.materials.map((m) => m.id) };
 }

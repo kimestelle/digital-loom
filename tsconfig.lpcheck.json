@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "paths": {
+      "@/lib/ui/fabricViewer": ["./.lpcheck/fabricViewer.d.ts"],
+      "@/*": ["./*"]
+    }
+  },
+  "include": ["next-env.d.ts", "app/landing/page.tsx", ".lpcheck/**/*.d.ts"]
+}

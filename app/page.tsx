@@ -49,6 +49,7 @@ import {
 import { MapsStrip, type ExportState } from "@/lib/ui/mapsStrip";
 import { PixelPlay } from "@/lib/ui/pixelPlay";
 import { InsertPanel } from "@/lib/ui/insertPanel";
+import { warmMapCache } from "@/lib/export/mapCache";
 import {
   LibraryGrid,
   SampleGrid,
@@ -331,26 +332,45 @@ export default function Home() {
   }, []);
 
   // ── keep a running cache history ────────────────────────────────────────
-  const refreshCache = useCallback(async () => {
+  // Browser-local durable library. The server cache is ephemeral on serverless
+  // hosts (per-instance /tmp, wiped on cold start), so imported materials live
+  // in IndexedDB and are folded in here. Held in refs so refreshCache /
+  // refreshPresets can merge them without an extra render pass.
+  const vaultEntriesRef = useRef<CacheEntry[]>([]);
+  const vaultPresetsRef = useRef<MaterialPreset[]>([]);
+  const refreshVault = useCallback(async () => {
     try {
-      const r = await fetch("/api/cache", { cache: "no-store" });
-      if (!r.ok) return;
-      const data = (await r.json()) as { entries: CacheEntry[] };
-      setCacheEntries(data.entries);
+      const { hydrateVaultEntries, getVaultPresets } = await import(
+        "@/lib/library/vault"
+      );
+      const [entries, vpresets] = await Promise.all([
+        hydrateVaultEntries(),
+        getVaultPresets(),
+      ]);
+      vaultEntriesRef.current = entries;
+      vaultPresetsRef.current = vpresets;
     } catch {
-      // ignore
+      vaultEntriesRef.current = [];
+      vaultPresetsRef.current = [];
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (!cancelled) void refreshCache();
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshCache]);
+  const refreshCache = useCallback(async () => {
+    let server: CacheEntry[] = [];
+    try {
+      const r = await fetch("/api/cache", { cache: "no-store" });
+      if (r.ok) server = ((await r.json()) as { entries: CacheEntry[] }).entries;
+    } catch {
+      // ignore — the vault may still supply entries
+    }
+    // Vault entries win over a same-hash server entry: their blob: URLs are
+    // always readable this session, while a server URL 404s once its serverless
+    // instance recycles.
+    const byHash = new Map<string, CacheEntry>();
+    for (const e of server) byHash.set(e.hash, e);
+    for (const e of vaultEntriesRef.current) byHash.set(e.hash, e);
+    setCacheEntries([...byHash.values()]);
+  }, []);
 
   // ── stage measure ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -457,48 +477,76 @@ export default function Home() {
     }
     setPkg(p);
     setStatus({ kind: "done", cacheHit: true, hash: entry.hash });
+    // Best-effort: prime the browser-local map cache the moment this
+    // material's maps are known, so a later zip export of it can read
+    // bytes locally instead of depending on the server cache still having
+    // them (see lib/export/mapCache.ts).
+    warmMapCache(entry.maps.map((m) => m.url));
   }, []);
 
   // ── cache deletion (two-stage arm → confirm) ───────────────────────────
   const deleteCachedEntry = useCallback(
     async (entry: CacheEntry) => {
+      // Remove the durable vault copy first — that's what actually keeps a
+      // material alive across reloads. The server DELETE is best-effort: on a
+      // serverless host the entry may not exist on the instance that answers,
+      // and a 404 there must not abort the vault removal.
       try {
-        const r = await fetch(`/api/cache/${entry.hash}`, { method: "DELETE" });
-        if (!r.ok) return;
-        // If the deleted run is what's on the loom, drop back to the base
-        // fabric rather than leaving map URLs that will 404.
-        setPkg((cur) => (cur?.id === entry.hash ? null : cur));
-        void refreshCache();
+        const { deleteVaultMaterial } = await import("@/lib/library/vault");
+        await deleteVaultMaterial(entry.hash);
       } catch {
-        // network hiccup — leave the row; user can retry
+        // ignore
       }
+      try {
+        await fetch(`/api/cache/${entry.hash}`, { method: "DELETE" });
+      } catch {
+        // best-effort
+      }
+      // If the deleted run is what's on the loom, drop back to the base fabric
+      // rather than leaving map URLs that will 404.
+      setPkg((cur) => (cur?.id === entry.hash ? null : cur));
+      await refreshVault();
+      void refreshCache();
     },
-    [refreshCache],
+    [refreshVault, refreshCache],
   );
 
   // ── material presets ───────────────────────────────────────────────────
   const refreshPresets = useCallback(async () => {
+    let server: MaterialPreset[] = [];
     try {
       const r = await fetch("/api/presets", { cache: "no-store" });
-      if (!r.ok) return;
-      const data = (await r.json()) as { presets: MaterialPreset[] };
-      setPresets(data.presets);
+      if (r.ok) server = ((await r.json()) as { presets: MaterialPreset[] }).presets;
     } catch {
       // ignore
-    } finally {
-      setPresetsLoaded(true);
     }
+    const bySlug = new Map<string, MaterialPreset>();
+    for (const p of server) bySlug.set(p.slug, p);
+    // Vault fills only the gaps the server didn't return — the server stays
+    // authoritative for presets it DID return (seeded/curated ones like red silk).
+    for (const p of vaultPresetsRef.current) {
+      if (!bySlug.has(p.slug)) bySlug.set(p.slug, p);
+    }
+    setPresets([...bySlug.values()]);
+    setPresetsLoaded(true);
   }, []);
 
+  // One mount pass: load the durable vault first, then fold it into the cache +
+  // preset lists. Both refreshes read vaultEntriesRef/vaultPresetsRef, so the
+  // vault must be populated before they run.
   useEffect(() => {
     let cancelled = false;
-    queueMicrotask(() => {
-      if (!cancelled) void refreshPresets();
+    queueMicrotask(async () => {
+      if (cancelled) return;
+      await refreshVault();
+      if (cancelled) return;
+      void refreshCache();
+      void refreshPresets();
     });
     return () => {
       cancelled = true;
     };
-  }, [refreshPresets]);
+  }, [refreshVault, refreshCache, refreshPresets]);
 
   // Built-in samples — fetched once; served from samples/ as baked bundles.
   useEffect(() => {
@@ -875,6 +923,17 @@ export default function Home() {
         // A user cache run (not a clone, canonical id) — remove the extraction.
         await deleteCachedEntry(item.entry);
       }
+      // Durable vault preset (imported/clone params) + server preset. Prune the
+      // in-memory vault ref too, so a later refresh can't resurrect the row.
+      try {
+        const { deleteVaultPreset } = await import("@/lib/library/vault");
+        await deleteVaultPreset(item.id);
+        vaultPresetsRef.current = vaultPresetsRef.current.filter(
+          (p) => p.slug !== item.id,
+        );
+      } catch {
+        // ignore
+      }
       try {
         await fetch(`/api/presets?slug=${encodeURIComponent(item.id)}`, {
           method: "DELETE",
@@ -1213,6 +1272,9 @@ export default function Home() {
           "@/lib/export/collectionExport"
         );
         const res = await importCollection(file);
+        // Re-read the vault (import wrote the durable copy there) before folding
+        // it into the cache + preset lists.
+        await refreshVault();
         await refreshCache();
         await refreshPresets();
         // Restored ids adopt the manifest's order; existing items keep theirs.
@@ -1220,6 +1282,14 @@ export default function Home() {
           const merged = [...cur.filter((id) => !res.order.includes(id)), ...res.order];
           return merged;
         });
+        // A partial import (some maps/params didn't restore) is not an
+        // exception — surface it so it doesn't read as a clean success.
+        if (res.failed > 0) {
+          setStatus({
+            kind: "error",
+            message: `Imported ${res.restored} material${res.restored === 1 ? "" : "s"}, but ${res.failed} didn't restore fully — see console for details.`,
+          });
+        }
       } catch (err) {
         setStatus({
           kind: "error",
@@ -1229,7 +1299,7 @@ export default function Home() {
         setCollectionBusy(null);
       }
     },
-    [collectionBusy, refreshCache, refreshPresets],
+    [collectionBusy, refreshVault, refreshCache, refreshPresets],
   );
 
   const materialTransfer = useMaterialTransfer({
