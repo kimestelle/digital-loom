@@ -20,9 +20,27 @@
 // (content identity survives the round-trip, so presets and clones re-attach
 // by construction), re-posts every preset, and hands back the display order.
 
-import type { FabricKnobs } from "@/lib/ui/knobs";
-import type { MaterialPreset } from "@/lib/presets/types";
-import { getCachedMap, putCachedMap } from "@/lib/export/mapCache";
+import type { MaterialPreset } from "../presets/types";
+import { FABRICS } from "../cloth/fabrics";
+import type { MapName, Provenance } from "../core/materialPackage";
+import {
+  LOOM_MATERIAL_SCHEMA,
+  type LoomMaterialV2,
+} from "../core/loomMaterial";
+import { getCachedMap, putCachedMap } from "./mapCache";
+import { detectMapFormat } from "./materialExport";
+import {
+  collectionOrderIds,
+  validateCollectionManifest,
+  type CollectionManifest,
+  type ManifestMaterial,
+} from "./collectionManifest";
+export {
+  collectionOrderIds,
+  validateCollectionManifest,
+  type CollectionManifest,
+  type ManifestMaterial,
+} from "./collectionManifest";
 
 export interface CollectionMaterial {
   id: string;
@@ -33,38 +51,15 @@ export interface CollectionMaterial {
     hash: string;
     prompt?: string | null;
     sourceFilename?: string | null;
-    maps: { name: string; file: string; url: string }[];
+    maps: {
+      name: MapName;
+      file: string;
+      url: string;
+      provenance?: Provenance;
+      sourceHash?: string;
+    }[];
   };
   preset?: MaterialPreset;
-}
-
-interface ManifestMaterial {
-  slug: string;
-  name: string;
-  id: string;
-  pkgHash: string;
-  prompt?: string;
-  sourceFilename?: string;
-  /** Map name → path inside the zip (own maps). */
-  maps?: Record<string, string>;
-  /** Clone: folder slug of the material whose maps it wears. */
-  mapsOf?: string;
-  /** Tuned parameters, when the material has been saved. */
-  params?: {
-    fabricId: string;
-    metalness: number;
-    knobs: FabricKnobs;
-  };
-}
-
-interface CollectionManifest {
-  app: "digital-loom";
-  kind: "collection";
-  version: 1;
-  exportedAt: string;
-  /** Display order, as manifest slugs. */
-  order: string[];
-  materials: ManifestMaterial[];
 }
 
 function slugify(name: string): string {
@@ -89,6 +84,44 @@ function slugAllocator() {
   };
 }
 
+function canonicalMaterialFor(
+  item: CollectionMaterial,
+  maps: LoomMaterialV2["maps"],
+): LoomMaterialV2 | undefined {
+  const preset = item.preset;
+  if (!preset) return undefined;
+  const fabric = FABRICS[preset.fabricId];
+  return {
+    schema: LOOM_MATERIAL_SCHEMA,
+    id: item.id,
+    name: item.label,
+    createdAt: preset.createdAt,
+    source: {
+      identity: item.pkgHash,
+      packageId: item.pkgHash,
+      // The collection registry historically retained the prompt/hash but not
+      // the extractor name. Do not reconstruct provenance we no longer know.
+      extractor: null,
+      captureNotes: item.entry?.prompt ?? null,
+    },
+    fabric: {
+      id: fabric.id,
+      names: {
+        ko: fabric.nameKo,
+        roman: fabric.nameRoman,
+        en: fabric.nameEn,
+      },
+      core: { ...fabric.core },
+    },
+    authored: {
+      knobs: { ...preset.knobs },
+      metalness: preset.metalness,
+    },
+    maps: { ...maps },
+    artifacts: {},
+  };
+}
+
 export async function exportCollection(
   items: CollectionMaterial[],
   onProgress?: (done: number, total: number) => void,
@@ -96,20 +129,43 @@ export async function exportCollection(
   const { default: JSZip } = await import("jszip");
   const zip = new JSZip();
   const nextSlug = slugAllocator();
+  // Allocate identities in the visible library order before grouping by map
+  // ownership. Packaging owners first must not reorder the archive on restore.
+  const slugById = new Map(items.map((item) => [item.id, nextSlug(item.label)]));
   const slugByHash = new Map<string, string>();
-  const materials: ManifestMaterial[] = [];
+  const descriptorsByHash = new Map<string, LoomMaterialV2["maps"]>();
+  const materialById = new Map<string, ManifestMaterial>();
 
-  // Map-owning materials first so clones can point at their folders.
-  const owners = items.filter((i) => !i.clone && i.entry);
-  const rest = items.filter((i) => i.clone || !i.entry);
+  // Choose exactly one map owner per package. Prefer its canonical material,
+  // but let a clone carry the bytes when the original is a built-in sample and
+  // therefore is not itself part of the user's library.
+  const byHash = new Map<string, CollectionMaterial[]>();
+  for (const item of items) {
+    const group = byHash.get(item.pkgHash) ?? [];
+    group.push(item);
+    byHash.set(item.pkgHash, group);
+  }
+  const owners: CollectionMaterial[] = [];
+  for (const group of byHash.values()) {
+    const owner = group.find((item) => !item.clone && item.entry) ?? group.find((item) => item.entry);
+    if (!owner) {
+      throw new Error(
+        `Cannot back up ${group[0]?.label ?? "material"}: its maps are unavailable`,
+      );
+    }
+    owners.push(owner);
+  }
+  const ownerIds = new Set(owners.map((item) => item.id));
+  const rest = items.filter((item) => !ownerIds.has(item.id));
 
   let done = 0;
   const total = owners.reduce((n, i) => n + (i.entry?.maps.length ?? 0), 0);
 
   for (const item of owners) {
-    const slug = nextSlug(item.label);
+    const slug = slugById.get(item.id)!;
     slugByHash.set(item.pkgHash, slug);
     const maps: Record<string, string> = {};
+    const descriptors: LoomMaterialV2["maps"] = {};
     for (const m of item.entry!.maps) {
       // The server-side extraction cache is a plain directory on disk —
       // ephemeral on serverless hosts (see lib/fal/cache.ts) — so a map the
@@ -119,19 +175,43 @@ export async function exportCollection(
       let bytes = await getCachedMap(m.url);
       if (!bytes) {
         const r = await fetch(m.url);
-        if (!r.ok) {
-          console.warn(`[export] map unavailable, skipped: ${m.url}`);
-          continue;
-        }
+        if (!r.ok) throw new Error(`Cannot back up ${item.label}: ${m.name} returned ${r.status}`);
         bytes = await r.arrayBuffer();
         void putCachedMap(m.url, bytes);
+      }
+      const format = detectMapFormat(bytes, { url: m.url, extension: m.file });
+      if (!format) {
+        throw new Error(
+          `Cannot back up ${item.label}: ${m.name} has an unsupported image format`,
+        );
+      }
+      if (!m.file.toLowerCase().endsWith(`.${format.extension}`)) {
+        throw new Error(
+          `Cannot back up ${item.label}: ${m.file} does not match its image bytes`,
+        );
       }
       const path = `${slug}/${m.file}`;
       zip.file(path, bytes);
       maps[m.name] = path;
+      const name = m.name as MapName;
+      descriptors[name] = {
+        name,
+        file: m.file,
+        mimeType: format.mimeType,
+        extension: format.extension,
+        colorSpace: name === "albedo" ? "srgb" : "linear",
+        normalConvention: name === "normal" ? "opengl-y+" : undefined,
+        provenance: m.provenance ?? "patina",
+        sourceHash: m.sourceHash ?? item.pkgHash,
+      };
       onProgress?.(++done, total);
     }
-    materials.push({
+    if (Object.keys(maps).length !== item.entry!.maps.length) {
+      throw new Error(`Cannot back up ${item.label}: its map set is incomplete`);
+    }
+    descriptorsByHash.set(item.pkgHash, descriptors);
+    const material = canonicalMaterialFor(item, descriptors);
+    materialById.set(item.id, {
       slug,
       name: item.label,
       id: item.id,
@@ -139,6 +219,7 @@ export async function exportCollection(
       prompt: item.entry!.prompt ?? undefined,
       sourceFilename: item.entry!.sourceFilename ?? undefined,
       maps,
+      material,
       params: item.preset
         ? {
             fabricId: item.preset.fabricId,
@@ -151,12 +232,21 @@ export async function exportCollection(
 
   for (const item of rest) {
     // Clones + params-only items: parameters travel, maps are referenced.
-    materials.push({
-      slug: nextSlug(item.label),
+    const mapsOf = slugByHash.get(item.pkgHash);
+    if (!mapsOf) {
+      throw new Error(`Cannot back up ${item.label}: its map owner is unavailable`);
+    }
+    const material = canonicalMaterialFor(
+      item,
+      descriptorsByHash.get(item.pkgHash) ?? {},
+    );
+    materialById.set(item.id, {
+      slug: slugById.get(item.id)!,
       name: item.label,
       id: item.id,
       pkgHash: item.pkgHash,
-      mapsOf: slugByHash.get(item.pkgHash),
+      mapsOf,
+      material,
       params: item.preset
         ? {
             fabricId: item.preset.fabricId,
@@ -167,12 +257,14 @@ export async function exportCollection(
     });
   }
 
+  const materials = items.map((item) => materialById.get(item.id)!);
+
   const manifest: CollectionManifest = {
     app: "digital-loom",
     kind: "collection",
     version: 1,
     exportedAt: new Date().toISOString(),
-    order: materials.map((m) => m.slug),
+    order: items.map((item) => slugById.get(item.id)!),
     materials,
   };
   zip.file("manifest.json", JSON.stringify(manifest, null, 2));
@@ -180,10 +272,14 @@ export async function exportCollection(
   const blob = await zip.generateAsync({ type: "blob" });
   const stamp = new Date().toISOString().slice(0, 10);
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(blob);
+  a.href = url;
   a.download = `loom-collection-${stamp}.zip`;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(a.href);
+  a.remove();
+  // Embedded WebKit may dereference the object URL after the click task.
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 export interface ImportResult {
@@ -195,30 +291,14 @@ export interface ImportResult {
   order: string[];
 }
 
-/** Newest collection layout this build knows how to read. Bump alongside the
- *  CollectionManifest.version literal when the format changes. */
-const SUPPORTED_VERSION = 1;
-
 export async function importCollection(file: File): Promise<ImportResult> {
   const { default: JSZip } = await import("jszip");
   const zip = await JSZip.loadAsync(file);
   const manifestFile = zip.file("manifest.json");
   if (!manifestFile) throw new Error("not a loom collection (no manifest.json)");
-  const manifest = JSON.parse(
-    await manifestFile.async("string"),
-  ) as CollectionManifest;
-  // Reject anything that isn't a loom collection before touching the cache — a
-  // foreign zip that happens to carry a manifest.json shouldn't half-import.
-  if (manifest.app !== "digital-loom" || manifest.kind !== "collection") {
-    throw new Error("not a loom collection zip");
-  }
-  // A newer export could restructure maps/params in ways this importer would
-  // silently mishandle; refuse rather than corrupt the cache.
-  if (manifest.version !== SUPPORTED_VERSION) {
-    throw new Error(
-      `unsupported collection version ${manifest.version} — this build reads version ${SUPPORTED_VERSION}`,
-    );
-  }
+  const manifest = validateCollectionManifest(
+    JSON.parse(await manifestFile.async("string")),
+  );
 
   // The durable restore target is the browser vault (IndexedDB), not the
   // server cache: on serverless hosts the server cache is per-instance and
@@ -227,88 +307,90 @@ export async function importCollection(file: File): Promise<ImportResult> {
   // user's device and survives reloads and instance churn. The server writes
   // below are kept purely best-effort — they help local dev (./cache) and a
   // still-warm serverless instance, but their failure does NOT fail an import.
-  const { putVaultMaterial, putVaultPreset } = await import("@/lib/library/vault");
+  const { putVaultCollection } = await import("@/lib/library/vault");
   const { PRESET_VERSION } = await import("@/lib/presets/types");
   const importedAt = manifest.exportedAt ?? new Date().toISOString();
-
-  let restored = 0;
-  let failed = 0;
+  const order = collectionOrderIds(manifest);
+  const packages: Parameters<typeof putVaultCollection>[0] = [];
+  const presets: MaterialPreset[] = [];
+  const cacheMirrors: FormData[] = [];
   for (const mat of manifest.materials) {
-    let ok = true;
-    // 1. Maps → the browser vault (durable) + the server cache (best-effort).
-    if (mat.maps && Object.keys(mat.maps).length > 0) {
+    if (mat.maps) {
       const bytesByFile = new Map<string, ArrayBuffer>();
-      const vaultMaps: { name: string; file: string }[] = [];
+      const maps: Parameters<typeof putVaultCollection>[0][number]["material"]["maps"] = [];
       const form = new FormData();
       form.set("hash", mat.pkgHash);
       if (mat.prompt) form.set("prompt", mat.prompt);
       if (mat.sourceFilename) form.set("sourceFilename", mat.sourceFilename);
       for (const [name, path] of Object.entries(mat.maps)) {
         const entry = zip.file(path);
-        if (!entry) continue;
+        if (!entry) {
+          throw new Error(`Collection is incomplete: missing ${path}`);
+        }
         const bytes = await entry.async("arraybuffer");
-        const file = path.split("/").pop()!;
-        bytesByFile.set(file, bytes);
-        vaultMaps.push({ name, file });
-        form.append(name, new File([bytes], file));
-      }
-      if (vaultMaps.length === 0) {
-        // The manifest listed maps but none were in the zip — a broken bundle.
-        console.warn(`[import] no map files found in zip for "${mat.name}" (${mat.pkgHash})`);
-        ok = false;
-      } else {
-        const vaulted = await putVaultMaterial(
-          {
-            hash: mat.pkgHash,
-            prompt: mat.prompt ?? null,
-            sourceFilename: mat.sourceFilename ?? null,
-            createdAt: importedAt,
-            maps: vaultMaps,
-          },
-          bytesByFile,
-        );
-        if (!vaulted) {
-          console.warn(`[import] vault write failed for "${mat.name}" (${mat.pkgHash})`);
-          ok = false;
+        if (bytes.byteLength === 0) {
+          throw new Error(`Collection is incomplete: ${path} is empty`);
         }
-        try {
-          await fetch("/api/cache/import", { method: "POST", body: form });
-        } catch {
-          // best-effort — the vault is the durable copy
-        }
+        const fileName = path.split("/").pop()!;
+        bytesByFile.set(fileName, bytes);
+        const mapName = name as MapName;
+        const descriptor = mat.material?.maps[mapName];
+        maps.push({
+          name: mapName,
+          file: fileName,
+          provenance: descriptor?.provenance ?? "patina",
+          sourceHash: descriptor?.sourceHash ?? mat.pkgHash,
+        });
+        form.append(name, new File([bytes], fileName));
       }
+      packages.push({
+        material: {
+          hash: mat.pkgHash,
+          prompt: mat.prompt ?? null,
+          sourceFilename: mat.sourceFilename ?? null,
+          createdAt: importedAt,
+          maps,
+          hidden: mat.id !== mat.pkgHash,
+        },
+        bytesByFile,
+      });
+      cacheMirrors.push(form);
     }
-    // 2. Parameters → the vault preset (durable) + the server preset (best-effort).
-    if (mat.params) {
-      await putVaultPreset({
+    const authored = mat.material
+      ? {
+          fabricId: mat.material.fabric.id,
+          metalness: mat.material.authored.metalness,
+          knobs: mat.material.authored.knobs,
+        }
+      : mat.params;
+    if (authored) {
+      presets.push({
         version: PRESET_VERSION,
         name: mat.name,
         slug: mat.id,
         createdAt: importedAt,
-        fabricId: mat.params.fabricId as MaterialPreset["fabricId"],
+        fabricId: authored.fabricId as MaterialPreset["fabricId"],
         pkgHash: mat.pkgHash,
-        metalness: mat.params.metalness,
-        knobs: mat.params.knobs,
+        metalness: authored.metalness,
+        knobs: authored.knobs,
       });
-      try {
-        await fetch("/api/presets", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            slug: mat.id,
-            name: mat.name,
-            fabricId: mat.params.fabricId,
-            pkgHash: mat.pkgHash,
-            metalness: mat.params.metalness,
-            knobs: mat.params.knobs,
-          }),
-        });
-      } catch {
-        // best-effort — the vault preset is the durable copy
-      }
     }
-    if (ok) restored++;
-    else failed++;
   }
-  return { restored, failed, order: manifest.materials.map((m) => m.id) };
+  await putVaultCollection(packages, presets, order);
+
+  // Server filesystem mirrors never participate in the success result. The
+  // browser transaction above is already complete and authoritative.
+  for (const form of cacheMirrors) {
+    void fetch("/api/cache/import", { method: "POST", body: form }).catch(
+      () => undefined,
+    );
+  }
+  for (const preset of presets) {
+    void fetch("/api/presets", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(preset),
+    }).catch(() => undefined);
+  }
+  return { restored: manifest.materials.length, failed: 0, order };
 }

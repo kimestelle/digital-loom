@@ -77,7 +77,7 @@ const MAP_DEFS: { name: string; body: string }[] = [
   },
   {
     name: "metalness",
-    body: "Where the surface is metal. Mostly empty for cloth, and the reason sequins and foils survive the trip.",
+    body: "Where the source reads as metal. It is preserved in the map bundle even though the current cloth view remains dielectric.",
   },
 ];
 
@@ -564,10 +564,9 @@ export default function Landing() {
               <p className="lp-body">
                 The cloth is a grid of point masses held together by distance
                 constraints, relaxed six times a step under XPBD. There are no
-                rest-position springs and no keyframes: a soft body is pulled
-                back toward a shape it remembers, but cloth has no rest shape at
-                all. It has neighbours, gravity, and a grain. Drape is what falls
-                out of that.
+                rest-position targets or keyframes. The solver preserves yarn
+                lengths and bend memory while gravity, wind, and directional
+                compliance decide the current shape.
               </p>
               <p className="lp-body" style={{ marginTop: 16 }}>
                 Constraints are tagged by direction, which is why a twill hangs
@@ -591,12 +590,11 @@ export default function Landing() {
               </div>
 
               <p className="lp-body" style={{ marginTop: 22 }}>
-                Those parameters aren’t dialed in by hand. Each fabric is
-                described the way a mill would describe it — grams per square
-                metre, cover factor, thickness, fibre modulus, twist — and the
-                solver settings are derived from that. Jersey and denim ship with
-                empty override blocks on purpose: proof the mapping holds without
-                anyone nudging it.
+                Each fabric starts from a compact textile profile — grams per
+                square metre, cover factor, thickness, fibre modulus, twist —
+                which is mapped into solver and rendering defaults. The mapping
+                is physically motivated and remains tunable; it is not a claim
+                of measured material calibration.
               </p>
             </div>
 
@@ -626,11 +624,11 @@ export default function Landing() {
             <span className="lp-num">04 / export</span>
             <h2 className="lp-h2">It leaves as a folder, not a screenshot.</h2>
             <p className="lp-body">
-              Every material exports as a zip with the map suffixes Blender’s Node
-              Wrangler, Unity and Unreal already key off, a packed ORM, a
-              self-contained glb specimen, and a json that records its own
-              provenance. Packed in the browser — the maps are already there and
-              the numbers already live in state.
+              Every material exports as a zip with its available source maps and
+              a strict material document that can be opened by the studio again.
+              Packed ORM and a glb specimen are derived from the same resolved
+              bytes when the browser can build them; any omission is named in the
+              returned status and the bundle README.
             </p>
           </div>
 
@@ -645,7 +643,7 @@ export default function Landing() {
 ├─ `}<b>sage-linen_Height.png</b>{`
 ├─ `}<b>sage-linen_ORM.png</b>{`      `}<span>occlusion · roughness · metallic</span>{`
 ├─ `}<b>sage-linen.glb</b>{`          `}<span>sheen + transmission specimen</span>{`
-├─ `}<b>material.json</b>{`           `}<span>schema loom.material/1</span>{`
+├─ `}<b>material.json</b>{`           `}<span>schema loom.material/2</span>{`
 └─ `}<b>README.md</b>{`               `}<span>per-engine import steps</span>
               </pre>
               <div className="lp-engines">
@@ -660,22 +658,22 @@ export default function Landing() {
             <div className="lp-reveal">
               <pre className="lp-code">
 {`{
-  `}<span className="a">&quot;schema&quot;</span>{`: `}<span className="s">&quot;loom.material/1&quot;</span>{`,
-  `}<span className="a">&quot;cloth&quot;</span>{`: {
-    `}<span className="a">&quot;weaveType&quot;</span>{`: `}<span className="s">&quot;plain&quot;</span>{`,
-    `}<span className="a">&quot;fiberType&quot;</span>{`: `}<span className="s">&quot;staple&quot;</span>{`,
-    `}<span className="a">&quot;warp&quot;</span>{`: 0.86, `}<span className="a">&quot;weft&quot;</span>{`: 0.84,
-    `}<span className="a">&quot;shear&quot;</span>{`: 0.21, `}<span className="a">&quot;bend&quot;</span>{`: 0.07
-  },
-  `}<span className="a">&quot;provenance&quot;</span>{`: {
+  `}<span className="a">&quot;schema&quot;</span>{`: `}<span className="s">&quot;loom.material/2&quot;</span>{`,
+  `}<span className="a">&quot;source&quot;</span>{`: {
+    `}<span className="a">&quot;identity&quot;</span>{`: `}<span className="s">&quot;8c91…e3a2&quot;</span>{`,
     `}<span className="a">&quot;extractor&quot;</span>{`: `}<span className="s">&quot;fal-ai/patina/material/extract&quot;</span>{`
-  }
+  },
+  `}<span className="a">&quot;fabric&quot;</span>{`: { `}<span className="a">&quot;id&quot;</span>{`: `}<span className="s">&quot;mumyeong&quot;</span>{`, `}<span className="a">&quot;core&quot;</span>{`: { … } },
+  `}<span className="a">&quot;authored&quot;</span>{`: {
+    `}<span className="a">&quot;knobs&quot;</span>{`: { `}<span className="a">&quot;warpStiffness&quot;</span>{`: 0.86, `}<span className="a">&quot;bendStiffness&quot;</span>{`: 0.07, … }
+  },
+  `}<span className="a">&quot;maps&quot;</span>{`: { … }
 }`}
               </pre>
               <p className="lp-body" style={{ marginTop: 18 }}>
-                The whole library exports too — one dated archive that reimports
-                cleanly, maps re-attaching to their presets by content hash. It’s
-                the durable copy, and it’s yours.
+                The whole library exports too. Import preflights every map, then
+                commits maps, materials, variants, and order in one browser
+                transaction. A broken archive leaves the existing library alone.
               </p>
             </div>
           </div>
@@ -689,11 +687,10 @@ export default function Landing() {
             <span className="lp-num">05 / embed</span>
             <h2 className="lp-h2">The viewer is a component.</h2>
             <p className="lp-body">
-              The cloth at the top of this page is the same one-line embed. It
-              owns a ResizeObserver and paints to its container, so it fills
-              whatever box you give it and reflows with the window — no size
-              math on your side. Embeds default to mid quality; a viewer in
-              someone else’s page shouldn’t grab the heaviest settings uninvited.
+              The cloth at the top of this page and the viewer route use the
+              same internal component. It owns a ResizeObserver, paints to its
+              container, and defaults to mid quality. It is a reusable boundary
+              inside this codebase, not a published SDK yet.
             </p>
           </div>
 

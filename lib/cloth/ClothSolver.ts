@@ -11,8 +11,9 @@
 // makes stiff, near-inextensible constraints stable; explicit-Euler springs
 // would explode here.
 //
-// Solver: XPBD (Extended Position-Based Dynamics). Each frame we run several
-// relaxation iterations; each iteration projects every constraint, nudging
+// Solver: XPBD (Extended Position-Based Dynamics). Each simulation step runs
+// several relaxation iterations; each iteration projects every constraint,
+// nudging
 // particle positions to satisfy it. Stiffness is expressed as "compliance"
 // (inverse stiffness) so it stays stable regardless of iteration count.
 //
@@ -52,6 +53,95 @@ interface Constraint {
   /** Bend constraints only: flat-state bow of the mid particle off the
    *  a–b line. The reference the live bow is compared against. */
   flatBow: number;
+  /** XPBD Lagrange multiplier accumulated across relaxation iterations within
+   *  one simulation step. Reset at the start of the next step. */
+  lambda: number;
+}
+
+export interface FixedStepAccumulatorOptions {
+  /** Wall-clock duration of one simulation tick. Defaults to 60 Hz. */
+  stepSeconds?: number;
+  /** Maximum simulation ticks paid in one rendered frame. */
+  maxSubSteps?: number;
+  /** Ignore wall-clock time beyond this per rendered frame. */
+  maxFrameSeconds?: number;
+}
+
+/** Small fixed-step clock shared by the scene and solver tests.
+ *
+ * The cloth's forces are tuned in normalized 60 Hz ticks, so this class owns
+ * only the wall-clock scheduling: a 30 fps render advances two identical
+ * simulation ticks, a 120 fps render advances one every other frame, and a
+ * background-tab stall can never trigger an unbounded catch-up spiral. */
+export class FixedStepAccumulator {
+  readonly stepSeconds: number;
+  readonly maxSubSteps: number;
+  readonly maxFrameSeconds: number;
+  private accumulatorSeconds = 0;
+
+  constructor(options: FixedStepAccumulatorOptions = {}) {
+    this.stepSeconds = options.stepSeconds ?? 1 / 60;
+    const requestedSubSteps = options.maxSubSteps ?? 4;
+    if (!Number.isFinite(requestedSubSteps) || requestedSubSteps <= 0) {
+      throw new Error(
+        "FixedStepAccumulator: maxSubSteps must be positive and finite",
+      );
+    }
+    this.maxSubSteps = Math.max(1, Math.floor(requestedSubSteps));
+    this.maxFrameSeconds = options.maxFrameSeconds ?? 0.25;
+    if (!Number.isFinite(this.stepSeconds) || this.stepSeconds <= 0) {
+      throw new Error(
+        "FixedStepAccumulator: stepSeconds must be positive and finite",
+      );
+    }
+    if (!Number.isFinite(this.maxFrameSeconds) || this.maxFrameSeconds <= 0) {
+      throw new Error(
+        "FixedStepAccumulator: maxFrameSeconds must be positive and finite",
+      );
+    }
+  }
+
+  /** Consume a rendered-frame delta and invoke `step` zero or more times.
+   *  Returns the number of fixed ticks that ran. Excess backlog is discarded
+   *  deliberately once maxSubSteps is reached. */
+  advance(frameSeconds: number, step: () => void): number {
+    if (!Number.isFinite(frameSeconds) || frameSeconds <= 0) return 0;
+    const boundedFrame = Math.min(frameSeconds, this.maxFrameSeconds);
+    const maxBacklog = this.stepSeconds * this.maxSubSteps;
+    this.accumulatorSeconds = Math.min(
+      this.accumulatorSeconds + boundedFrame,
+      maxBacklog,
+    );
+
+    let count = 0;
+    // The epsilon absorbs binary rounding at exact rates such as 120 fps.
+    const epsilon = this.stepSeconds * 1e-9;
+    while (
+      count < this.maxSubSteps &&
+      this.accumulatorSeconds + epsilon >= this.stepSeconds
+    ) {
+      step();
+      this.accumulatorSeconds = Math.max(
+        0,
+        this.accumulatorSeconds - this.stepSeconds,
+      );
+      count++;
+    }
+
+    // A callback should be cheap and synchronous, but dropping any remaining
+    // whole-tick backlog here makes the bound explicit even if inputs change.
+    if (
+      count === this.maxSubSteps &&
+      this.accumulatorSeconds >= this.stepSeconds
+    ) {
+      this.accumulatorSeconds %= this.stepSeconds;
+    }
+    return count;
+  }
+
+  reset(): void {
+    this.accumulatorSeconds = 0;
+  }
 }
 
 export interface ClothConfig {
@@ -64,8 +154,8 @@ export interface ClothConfig {
   originY: number;
   /** Gravity in world units / step^2 (positive = downward). */
   gravity: number;
-  /** Relaxation iterations per frame. 4–8 is typical. More = stiffer/stabler,
-   *  but linearly more expensive. A key knob for the perf gate. */
+  /** Relaxation iterations per simulation step. 4–8 is typical. More yields
+   *  better convergence but is linearly more expensive. */
   iterations: number;
 }
 
@@ -204,6 +294,7 @@ export class ClothSolver {
         origRestLength: len,
         mid,
         flatBow: mid >= 0 ? this.bow(a, b, mid) : 0,
+        lambda: 0,
       });
     };
 
@@ -479,12 +570,26 @@ export class ClothSolver {
   // ── The step ──────────────────────────────────────────────────────────────
   // 1. Verlet integrate (gravity + accumulated forces + implicit velocity).
   // 2. Relaxation: N iterations projecting every constraint.
-  // 3. Plasticity: ONCE per frame, let sustained bend folds set as creases.
+  // 3. Plasticity: ONCE per step, let sustained bend folds set as creases.
   // 4. Clear forces.
   step(dt = 1): void {
+    if (!Number.isFinite(dt) || dt <= 0) {
+      throw new Error(
+        `ClothSolver.step: dt must be positive and finite, got ${dt}`,
+      );
+    }
     this.stepCount++;
     this.integrate(dt);
-    for (let it = 0; it < this.cfg.iterations; it++) this.projectConstraints();
+    // XPBD multipliers accumulate across iterations within this time step, then
+    // reset. Warm-starting across steps would preserve stale forces after a
+    // fabric hot-swap or plastic rest-length migration.
+    for (let i = 0; i < this.constraints.length; i++) {
+      this.constraints[i].lambda = 0;
+    }
+    const dtSq = dt * dt;
+    for (let it = 0; it < this.cfg.iterations; it++) {
+      this.projectConstraints(dtSq);
+    }
     // Self-collision: push non-adjacent particle pairs apart so folded
     // sections of the cloth can't sail through each other. Thickness is a
     // fraction of spacing — big enough to matter, small enough not to
@@ -496,7 +601,7 @@ export class ClothSolver {
     ) {
       this.selfCollide(this.cfg.spacing * 0.55);
     }
-    this.updatePlasticity(); // once per frame, NOT per iteration — see below
+    this.updatePlasticity(); // once per step, NOT per iteration — see below
     this.accel.fill(0);
   }
 
@@ -513,15 +618,36 @@ export class ClothSolver {
   // soft push rather than a hard barrier — the cloth can still fold, just
   // not intersect itself.
   //
-  // Cell keys are packed integers rather than strings: three signed 20-bit
-  // coordinates (biased) into a single number. Avoids allocating per-key
-  // template strings each frame and per-cell get/set hashing. The
-  // per-frame Map itself is reused (cleared instead of reallocated).
-  private static readonly HASH_BIAS = 1 << 19; // 524288 — fits ±524287 cells
-  private static readonly HASH_MOD = 1 << 20; // 1048576
-  private collisionCells: Map<number, number[]> = new Map();
+  // Cell keys use three signed 17-bit coordinates, packed into 51 bits. The
+  // former 3×20-bit packing produced ~60-bit values, beyond JavaScript's
+  // 53-bit safe-integer range; nearby Z cells silently collapsed to one key.
+  // 17 bits still covers ±65k cells (hundreds of thousands of world units for
+  // this solver). An exact string fallback handles anything outside that range.
+  private static readonly HASH_BIAS = 1 << 16; // 65536
+  private static readonly HASH_MOD = 1 << 17; // 131072; 3 axes => 51 safe bits
+  private static readonly HASH_MIN = -(1 << 16);
+  private static readonly HASH_MAX = (1 << 16) - 1;
+  private collisionCells: Map<number | string, number[]> = new Map();
   private collisionBuckets: number[][] = []; // pool, reused across frames
   private collisionBucketCount = 0;
+  private collisionCellKey(cx: number, cy: number, cz: number): number | string {
+    if (
+      cx < ClothSolver.HASH_MIN ||
+      cx > ClothSolver.HASH_MAX ||
+      cy < ClothSolver.HASH_MIN ||
+      cy > ClothSolver.HASH_MAX ||
+      cz < ClothSolver.HASH_MIN ||
+      cz > ClothSolver.HASH_MAX
+    ) {
+      return `${cx},${cy},${cz}`;
+    }
+    return (
+      ((cx + ClothSolver.HASH_BIAS) * ClothSolver.HASH_MOD +
+        (cy + ClothSolver.HASH_BIAS)) *
+        ClothSolver.HASH_MOD +
+      (cz + ClothSolver.HASH_BIAS)
+    );
+  }
   selfCollide(thickness: number): void {
     const cs = Math.max(6, thickness * 2.0);
     const cells = this.collisionCells;
@@ -529,18 +655,13 @@ export class ClothSolver {
     cells.clear();
     this.collisionBucketCount = 0;
 
-    const HASH_BIAS = ClothSolver.HASH_BIAS;
-    const HASH_MOD = ClothSolver.HASH_MOD;
-
     // Populate buckets.
     for (let i = 0; i < this.count; i++) {
       const ix = i * 3;
       const cx = Math.floor(this.pos[ix] / cs);
       const cy = Math.floor(this.pos[ix + 1] / cs);
       const cz = Math.floor(this.pos[ix + 2] / cs);
-      const key =
-        ((cx + HASH_BIAS) * HASH_MOD + (cy + HASH_BIAS)) * HASH_MOD +
-        (cz + HASH_BIAS);
+      const key = this.collisionCellKey(cx, cy, cz);
       let arr = cells.get(key);
       if (!arr) {
         arr = bucketPool[this.collisionBucketCount++] ?? [];
@@ -556,12 +677,9 @@ export class ClothSolver {
 
     for (let i = 0; i < this.count; i++) {
       const ix = i * 3;
-      const pxi = this.pos[ix];
-      const pyi = this.pos[ix + 1];
-      const pzi = this.pos[ix + 2];
-      const cx = Math.floor(pxi / cs);
-      const cy = Math.floor(pyi / cs);
-      const cz = Math.floor(pzi / cs);
+      const cx = Math.floor(this.pos[ix] / cs);
+      const cy = Math.floor(this.pos[ix + 1] / cs);
+      const cz = Math.floor(this.pos[ix + 2] / cs);
       const ri = (i / cols) | 0;
       const ci = i % cols;
       const wA = this.invMass[i];
@@ -569,10 +687,7 @@ export class ClothSolver {
       for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {
           for (let dz = -1; dz <= 1; dz++) {
-            const key =
-              ((cx + dx + HASH_BIAS) * HASH_MOD + (cy + dy + HASH_BIAS)) *
-                HASH_MOD +
-              (cz + dz + HASH_BIAS);
+            const key = this.collisionCellKey(cx + dx, cy + dy, cz + dz);
             const bucket = cells.get(key);
             if (!bucket) continue;
 
@@ -589,9 +704,12 @@ export class ClothSolver {
               if (drr <= 2 && drr >= -2 && dcc <= 2 && dcc >= -2) continue;
 
               const jx = j * 3;
-              const px = this.pos[jx] - pxi;
-              const py = this.pos[jx + 1] - pyi;
-              const pz = this.pos[jx + 2] - pzi;
+              // Read i's CURRENT position for every contact. The old code held
+              // one snapshot outside the loops, so a later pair overwrote the
+              // correction from an earlier pair instead of accumulating it.
+              const px = this.pos[jx] - this.pos[ix];
+              const py = this.pos[jx + 1] - this.pos[ix + 1];
+              const pz = this.pos[jx + 2] - this.pos[ix + 2];
               const d2 = px * px + py * py + pz * pz;
               if (d2 >= t2 || d2 < 1e-6) continue;
 
@@ -607,9 +725,9 @@ export class ClothSolver {
               const scale = overlap * invD;
               const shareA = (wA / sum) * scale;
               const shareB = (wB / sum) * scale;
-              this.pos[ix] = pxi - px * shareA;
-              this.pos[ix + 1] = pyi - py * shareA;
-              this.pos[ix + 2] = pzi - pz * shareA;
+              this.pos[ix] -= px * shareA;
+              this.pos[ix + 1] -= py * shareA;
+              this.pos[ix + 2] -= pz * shareA;
               this.pos[jx] += px * shareB;
               this.pos[jx + 1] += py * shareB;
               this.pos[jx + 2] += pz * shareB;
@@ -625,9 +743,9 @@ export class ClothSolver {
   // constraint's restLength. Plasticity is the slow migration of that
   // restLength ITSELF, so a fold can acquire a new, set shape — a crease.
   //
-  // Runs once per frame, not once per relaxation iteration: a crease is the
-  // result of a fold being *held* over time, so it must integrate at frame
-  // rate, not get multiplied by the iteration count.
+  // Runs once per fixed simulation step, not once per relaxation iteration: a
+  // crease is the result of a fold being *held* over time, so it must integrate
+  // at the fixed-tick rate, not get multiplied by the iteration count.
   //
   // STRICTLY bend constraints only. If a warp/weft (structural) rest length
   // migrated, the cloth would permanently STRETCH and the entire
@@ -726,11 +844,12 @@ export class ClothSolver {
     }
   }
 
-  // XPBD constraint projection. For each distance constraint, compute how far
-  // it is from its rest length and move both particles to correct it, split
-  // by inverse mass (heavier particle moves less; pinned particle invMass 0
-  // moves not at all). Compliance softens the correction per constraint type.
-  private projectConstraints(): void {
+  // XPBD constraint projection. Each distance constraint accumulates a
+  // Lagrange multiplier over the relaxation iterations in this time step.
+  // Compliance is scaled by dt², which makes its physical meaning independent
+  // of the chosen fixed step; iteration count controls convergence, not an
+  // accidental extra dose of stiffness.
+  private projectConstraints(dtSq: number): void {
     const cs = this.constraints;
     for (let n = 0; n < cs.length; n++) {
       const con = cs[n];
@@ -745,12 +864,14 @@ export class ClothSolver {
       let dz = this.pos[bx + 2] - this.pos[ax + 2];
       const len = Math.hypot(dx, dy, dz) || 1e-6;
 
-      const compliance = this.complianceFor(con.type);
-      // XPBD correction factor. The +compliance term in the denominator is
-      // what makes a soft (high-compliance) constraint give, and what keeps
-      // the solver stable independent of iteration count.
-      const diff = (len - con.restLength) / (len * (wSum + compliance));
-
+      const alphaTilde = this.complianceFor(con.type) / dtSq;
+      const C = len - con.restLength;
+      const deltaLambda =
+        (-C - alphaTilde * con.lambda) / (wSum + alphaTilde);
+      con.lambda += deltaLambda;
+      // gradA = -n, gradB = n. Folding the signs into `diff` preserves the
+      // former update layout while applying the true XPBD delta-lambda.
+      const diff = -deltaLambda / len;
       dx *= diff; dy *= diff; dz *= diff;
       this.pos[ax]     += dx * wA;
       this.pos[ax + 1] += dy * wA;

@@ -2,7 +2,12 @@
 
 import { useEffect, useRef, type MutableRefObject } from "react";
 import * as THREE from "three/webgpu";
-import { ClothSolver, DEFAULT_CONFIG, type ClothConfig } from "@/lib/cloth/ClothSolver";
+import {
+  ClothSolver,
+  DEFAULT_CONFIG,
+  FixedStepAccumulator,
+  type ClothConfig,
+} from "@/lib/cloth/ClothSolver";
 import type { ResolvedFabric } from "@/lib/cloth/fabrics";
 import type { MapName, MaterialPackage } from "@/lib/core/materialPackage";
 import {
@@ -53,8 +58,8 @@ interface Props {
    *  2 = roughness, 3 = metalness. Dark regions of the chosen map go sheer;
    *  sources without a loaded map fall back to height. */
   alphaBoostSource?: 0 | 1 | 2 | 3;
-  /** Optional roughness map URL (from the Patina pipeline). Only consumed by
-   *  the threadbare boost when alphaBoostSource = 2. */
+  /** Optional roughness map URL (from the Patina pipeline). It shapes the
+   *  surface sheen and metallic highlight, and can also drive threadbare wear. */
   roughnessMapURL?: string;
   /** Optional transmission map URL. When set, each cloth particle's porosity
    *  is sampled from this image at its UV; higher luminance → more porous →
@@ -141,6 +146,8 @@ export interface ClothStats {
   fps: number;
   /** CPU ms spent in the solver step, EMA-smoothed. */
   simMs: number;
+  /** GPU render-pass duration when timestamp queries are supported. */
+  gpuMs?: number;
   /** Triangles drawn last frame (renderer.info). */
   tris: number;
   /** Draw calls last frame (renderer.info). */
@@ -195,6 +202,10 @@ export default function ClothScene(props: Props) {
       alpha: false,
       powerPreference: "high-performance",
       forceWebGL: FORCE_WEBGL,
+      // Gives the in-product meter an actual GPU duration instead of asking
+      // FPS to stand in for both CPU and fragment cost. Unsupported backends
+      // simply leave gpuMs absent.
+      trackTimestamp: true,
     });
     renderer.setPixelRatio(pixelScale);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -340,7 +351,19 @@ export default function ClothScene(props: Props) {
     // coords (solver Y+ is down, world Y+ is up). Solver's applyCursor
     // operates in XY so we don't need per-triangle intersection — the
     // Z-plane projection is accurate enough for hover interaction.
-    const mouse = { x: 0, y: 0, active: false };
+    // Pointer travel is consumed once, while hover pressure remains active on
+    // every simulation tick. The old version used strength 1.2 continuously;
+    // that was enough to drive the sheet into pathological self-intersections.
+    // A much smaller sustained pressure still compounds visibly, while the
+    // fabric's damping and constraints can reach an equilibrium.
+    const mouse = {
+      x: 0,
+      y: 0,
+      dx: 0,
+      dy: 0,
+      active: false,
+      pending: false,
+    };
     const raycaster = new THREE.Raycaster();
     const cursorPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
     const cursorPoint = new THREE.Vector3();
@@ -352,13 +375,25 @@ export default function ClothScene(props: Props) {
       raycaster.setFromCamera(ndc, camera);
       const hit = raycaster.ray.intersectPlane(cursorPlane, cursorPoint);
       if (hit) {
-        mouse.x = cursorPoint.x;
-        mouse.y = -cursorPoint.y; // world Y+ up → solver Y+ down
+        const nextX = cursorPoint.x;
+        const nextY = -cursorPoint.y; // world Y+ up → solver Y+ down
+        if (mouse.active) {
+          // Accumulate events between fixed ticks; the solver consumes the
+          // total path once rather than multiplying work by pointer-event rate.
+          mouse.dx += nextX - mouse.x;
+          mouse.dy += nextY - mouse.y;
+        }
+        mouse.x = nextX;
+        mouse.y = nextY;
         mouse.active = true;
+        mouse.pending = true;
       }
     };
     const onPointerLeave = () => {
       mouse.active = false;
+      mouse.pending = false;
+      mouse.dx = 0;
+      mouse.dy = 0;
     };
     renderer.domElement.addEventListener("pointermove", onPointerMove);
     renderer.domElement.addEventListener("pointerleave", onPointerLeave);
@@ -414,9 +449,9 @@ export default function ClothScene(props: Props) {
     // during a resolution/pin change two coexist briefly while the old slides
     // off and the new slides in. `ropeAt` / `clothGroup` are referenced lazily
     // (defined below) — the factory is only *called* after they exist.
-    const WIRE_V_MAX = 8; // wire-view velocity→white clip (solver units/frame)
+    const WIRE_V_MAX = 8; // wire-view velocity→white clip (units/fixed tick)
     const SETTLE_STEPS = 110; // off-screen pre-drape steps at a unit's birth
-    const WIND_RAMP = 90; // frames to fade breeze in on a fresh unit
+    const WIND_RAMP = 90; // fixed ticks to fade breeze in on a fresh unit
     const SNAP_VEC = new THREE.Vector3();
     // Self-collision cadence knob → step divisor (0 disables).
     const SC_EVERY: Record<"full" | "half" | "off", number> = {
@@ -437,6 +472,7 @@ export default function ClothScene(props: Props) {
       lastFabric: ResolvedFabric;
       snapPins: () => void;
       stepSim: (time: number, allowCursor: boolean) => void;
+      syncView: () => void;
       setVisible: (wf: boolean) => void;
       settle: () => void;
       dispose: () => void;
@@ -688,19 +724,39 @@ export default function ClothScene(props: Props) {
           solver.setIterations(propsRef.current.iterations ?? 6);
           solver.selfCollisionEvery =
             SC_EVERY[propsRef.current.selfCollide ?? "full"];
-          // Wind fades in over WIND_RAMP frames so a just-born unit isn't
+          // Wind fades in over WIND_RAMP fixed ticks so a just-born unit isn't
           // kicked before it has finished settling.
           const windScale = Math.min(1, (time - unit.birth) / WIND_RAMP);
           snapPins();
           solver.applyWind(time, (propsRef.current.breeze ?? 0.06) * windScale);
           if (allowCursor && mouse.active) {
-            solver.applyCursor(mouse.x - group.position.x, mouse.y, 140, 1.2);
+            const localX = mouse.x - group.position.x;
+            if (mouse.pending) {
+              // Directional travel is an event impulse; event-rate deltas are
+              // accumulated and consumed once by the next fixed tick.
+              solver.applyDrag(
+                localX,
+                mouse.y,
+                mouse.dx,
+                mouse.dy,
+                140,
+                0.018,
+              );
+              mouse.dx = 0;
+              mouse.dy = 0;
+              mouse.pending = false;
+            }
+            // Continuous hover pressure: ~27× gentler than the previous 1.2
+            // force, but applied every fixed tick so dwelling keeps pushing.
+            solver.applyCursor(localX, mouse.y, 140, 0.045);
           }
+          syncPorosity();
           solver.step(1);
+        },
+        syncView: () => {
           syncGeometry();
           if (propsRef.current.wireframe === true) syncWireColors();
           syncPins();
-          syncPorosity();
         },
         setVisible: (wf) => {
           clothMesh.visible = !wf;
@@ -767,6 +823,10 @@ export default function ClothScene(props: Props) {
       blank: THREE.Texture;
       hasFlag?: { value: number };
       isColor: boolean;
+      /** POM repeatedly samples density inside a divergent ray march. Capping
+       * anisotropy there avoids multiplying every step by 8 taps; the final
+       * albedo and normal reads retain the user-selected sharpness. */
+      anisotropyCap?: number;
       current: THREE.Texture | null;
       currentUrl: string;
       lastUrl: string;
@@ -776,7 +836,15 @@ export default function ClothScene(props: Props) {
       TexSlot
     > = {
       albedo: { node: clothTex.albedo, blank: clothBlanks.albedo, isColor: true, current: null, currentUrl: "", lastUrl: "" },
-      density: { node: clothTex.density, blank: clothBlanks.density, isColor: false, current: null, currentUrl: "", lastUrl: "" },
+      density: {
+        node: clothTex.density,
+        blank: clothBlanks.density,
+        isColor: false,
+        anisotropyCap: 2,
+        current: null,
+        currentUrl: "",
+        lastUrl: "",
+      },
       metalness: {
         node: clothTex.metalness,
         blank: clothBlanks.metalness,
@@ -805,31 +873,48 @@ export default function ClothScene(props: Props) {
         lastUrl: "",
       },
     };
+    const clearSlot = (slot: TexSlot) => {
+      slot.current?.dispose();
+      slot.current = null;
+      slot.currentUrl = "";
+      slot.node.value = slot.blank;
+      if (slot.hasFlag) slot.hasFlag.value = 0;
+    };
     const setSlotUrl = (slot: TexSlot, url: string) => {
       if (url === slot.lastUrl) return;
       slot.lastUrl = url;
+      // A slot belongs to exactly one material. Clear the previous texture as
+      // soon as ownership changes so a failed request cannot leave pixels from
+      // the prior swatch bound to the new one.
+      clearSlot(slot);
       if (!url) {
-        // Cleared — drop the texture and flag so the shader falls back.
-        slot.current?.dispose();
-        slot.current = null;
-        slot.currentUrl = "";
-        slot.node.value = slot.blank;
-        if (slot.hasFlag) slot.hasFlag.value = 0;
         return;
       }
-      texLoader.load(url, (tex) => {
-        // Bail if unmounted or the slot was re-targeted while loading.
-        if (disposed || slot.lastUrl !== url) {
-          tex.dispose();
-          return;
-        }
-        configureTex(tex, slot.isColor);
-        slot.current?.dispose();
-        slot.current = tex;
-        slot.currentUrl = url;
-        slot.node.value = tex;
-        if (slot.hasFlag) slot.hasFlag.value = 1;
-      });
+      texLoader.load(
+        url,
+        (tex) => {
+          // Bail if unmounted or the slot was re-targeted while loading.
+          if (disposed || slot.lastUrl !== url) {
+            tex.dispose();
+            return;
+          }
+          configureTex(tex, slot.isColor);
+          tex.anisotropy = Math.min(
+            tex.anisotropy,
+            slot.anisotropyCap ?? tex.anisotropy,
+          );
+          tex.needsUpdate = true;
+          slot.current = tex;
+          slot.currentUrl = url;
+          slot.node.value = tex;
+          if (slot.hasFlag) slot.hasFlag.value = 1;
+        },
+        undefined,
+        () => {
+          if (disposed || slot.lastUrl !== url) return;
+          clearSlot(slot);
+        },
+      );
     };
     const syncTextures = () => {
       const fab = fabricRef.current;
@@ -855,7 +940,7 @@ export default function ClothScene(props: Props) {
       lastAniso = a;
       for (const slot of Object.values(texSlots)) {
         if (slot.current) {
-          slot.current.anisotropy = a;
+          slot.current.anisotropy = Math.min(a, slot.anisotropyCap ?? a);
           slot.current.needsUpdate = true;
         }
       }
@@ -1086,8 +1171,10 @@ export default function ClothScene(props: Props) {
     const skyBottomScratch = new THREE.Color();
     const fogScratch = new THREE.Color();
     const sceneFog = scene.fog as THREE.FogExp2;
-    const updateSun = () => {
-      sunPhase += 0.00025 * (2 * Math.PI);
+    const updateSun = (dtSeconds: number) => {
+      // Preserve the authored 60 Hz orbit speed while keeping it wall-clock
+      // correct on throttled, high-refresh, and temporarily slow displays.
+      sunPhase += 0.00025 * (2 * Math.PI) * dtSeconds * 60;
       const alt = Math.sin(sunPhase * 0.5 + 0.4) * 0.7;
       sun.position.set(
         Math.cos(sunPhase) * sunRadius,
@@ -1325,23 +1412,55 @@ export default function ClothScene(props: Props) {
     let objectSpin = 0;
 
     // ── Loop ────────────────────────────────────────────────────────────
-    let time = 0;
-    let raf = 0;
+    // Physics targets normalized 60 Hz ticks but pays at most one per rendered
+    // frame. When a device cannot hold 60 fps, temporal fidelity yields instead
+    // of multiplying solver cost and preventing the renderer from recovering.
+    // Render-facing geometry is synchronized once after that fixed tick.
+    const simClock = new FixedStepAccumulator({
+      stepSeconds: 1 / 60,
+      maxSubSteps: 1,
+      maxFrameSeconds: 0.1,
+    });
+    let simulationTick = 0;
+    // Rendering faster than 60 Hz only repeats this expensive fragment pass;
+    // the simulation and interaction model are authored for 60 Hz. A small
+    // budget accumulator produces 60 renders/sec on 90/120/144 Hz displays
+    // without degrading the 2× backing store or slowing wall-clock motion.
+    const RENDER_INTERVAL_MS = 1000 / 60;
+    // rAF timestamps on nominal 60 Hz panels often arrive around 15.8–16.4ms.
+    // A small tolerance prevents the limiter from mistakenly halving those
+    // displays while 90/120/144 Hz callbacks still fall well below the gate.
+    const RENDER_TOLERANCE_MS = 1.5;
+    let lastAnimationNow = performance.now();
+    let renderBudgetMs = RENDER_INTERVAL_MS;
     let lastPixelRatio = pixelScale;
     let lastNow = performance.now();
     // Stats accumulators — averaged and emitted ~2 Hz via onStats.
     let statFrames = 0;
     let statDtMs = 0;
     let statSimMs = 0;
+    let gpuMs = 0;
+    let gpuTimingPending = false;
     // (Fabric hot-swap is per unit now — each unit re-runs setFabric only
     // when the fabric object identity actually changes; see stepSim.)
 
-    const tick = () => {
-      time++;
+    const tick = (animationNow = performance.now()) => {
+      const animationDt = Math.min(
+        100,
+        Math.max(0, animationNow - lastAnimationNow),
+      );
+      lastAnimationNow = animationNow;
+      renderBudgetMs = Math.min(
+        RENDER_INTERVAL_MS * 2,
+        renderBudgetMs + animationDt,
+      );
+      if (renderBudgetMs + RENDER_TOLERANCE_MS < RENDER_INTERVAL_MS) return;
+      renderBudgetMs = Math.max(0, renderBudgetMs - RENDER_INTERVAL_MS);
+
       const p = propsRef.current;
       // Wall-clock delta, clamped so a background-tab stall doesn't teleport
       // the transition or spike the FPS meter.
-      const now = performance.now();
+      const now = animationNow;
       const dtMs = Math.min(100, now - lastNow);
 
       lastNow = now;
@@ -1350,7 +1469,7 @@ export default function ClothScene(props: Props) {
 
       // Sun / sky / fog advance every frame — both stages share that
       // atmosphere, so this runs regardless of the transition state.
-      updateSun();
+      updateSun(dtMs / 1000);
 
       // Advance the cloth↔object blend toward the target mode, ease it, and
       // derive the two visibility gates.
@@ -1389,7 +1508,13 @@ export default function ClothScene(props: Props) {
         lastMeshCols = mc;
         lastMeshRows = mr;
         lastPinMode = pm;
-        const incoming = makeClothUnit(mc, mr, pm, -SLIDE_DIST, time);
+        const incoming = makeClothUnit(
+          mc,
+          mr,
+          pm,
+          -SLIDE_DIST,
+          simulationTick,
+        );
         incoming.settle();
         clothGroup.add(incoming.group);
         for (const un of units) {
@@ -1417,14 +1542,19 @@ export default function ClothScene(props: Props) {
       // invisible sheet (this is the "don't re-render everything" win).
       const simStart = performance.now();
       if (clothVisible) {
-        // Rope physics runs first — its positions drive both cloth pinning
-        // and the visible wire geometry this frame.
-        stepRope(time, p.breeze ?? 0.06);
-        // Only the CURRENT unit simulates. During a slide the departing
-        // sheet(s) ride off as frozen drapes — nobody inspects their physics
-        // at slide speed, and this keeps a res-switch from double-billing the
-        // solver (self-collision especially).
-        units[units.length - 1].stepSim(time, true);
+        const currentUnit = units[units.length - 1];
+        const simSteps = simClock.advance(dtMs / 1000, () => {
+          simulationTick++;
+          // Rope physics runs first — its positions drive both cloth pinning
+          // and the visible wire geometry in this fixed simulation tick.
+          stepRope(simulationTick, p.breeze ?? 0.06);
+          // Only the CURRENT unit simulates. During a slide the departing
+          // sheet(s) ride off as frozen drapes — nobody inspects their physics
+          // at slide speed, and this keeps a res-switch from double-billing the
+          // solver (self-collision especially).
+          currentUnit.stepSim(simulationTick, true);
+        });
+        if (simSteps > 0) currentUnit.syncView();
         // rebuildWireTube syncs curve points itself, and only when the rope
         // has actually drifted since the last built tube.
         rebuildWireTube();
@@ -1441,13 +1571,29 @@ export default function ClothScene(props: Props) {
         const expectedReady = expectedAlbedo
           ? toAbs(loadedAlbedo) === toAbs(expectedAlbedo)
           : loadedAlbedo === fabricRef.current.albedoURL;
+        const allDeclaredMapsReady = [
+          [texSlots.albedo, fabricRef.current.albedoURL],
+          [texSlots.density, fabricRef.current.textureURL],
+          [texSlots.normal, propsRef.current.normalMapURL ?? ""],
+          [texSlots.roughness, propsRef.current.roughnessMapURL ?? ""],
+          [texSlots.metalness, propsRef.current.metalnessMapURL ?? ""],
+        ].every(([slot, url]) =>
+          typeof url === "string" && url
+            ? toAbs((slot as TexSlot).currentUrl) === toAbs(url)
+            : true,
+        );
         if (
           readyKey !== lastReadyKey &&
-          expectedReady
+          expectedReady &&
+          allDeclaredMapsReady
         ) {
           lastReadyKey = readyKey;
           propsRef.current.onMaterialReady?.(readyKey);
         }
+      } else {
+        // Invisible time should not become catch-up debt. The cloth resumes
+        // from its last stable state when object mode gives it back.
+        simClock.reset();
       }
       statSimMs += performance.now() - simStart;
 
@@ -1604,9 +1750,29 @@ export default function ClothScene(props: Props) {
       statFrames++;
       statDtMs += dtMs;
       if (statFrames >= 30) {
+        const timingBackend = renderer.backend as typeof renderer.backend & {
+          trackTimestamp?: boolean;
+        };
+        if (timingBackend.trackTimestamp && !gpuTimingPending) {
+          gpuTimingPending = true;
+          void renderer
+            .resolveTimestampsAsync("render")
+            .then((duration) => {
+              if (typeof duration === "number" && Number.isFinite(duration)) {
+                // Timestamp results arrive at a lower cadence than FPS. Smooth
+                // them so one folded/grazing frame does not make the meter
+                // oscillate between unrelated samples.
+                gpuMs = gpuMs > 0 ? gpuMs * 0.8 + duration * 0.2 : duration;
+              }
+            })
+            .finally(() => {
+              gpuTimingPending = false;
+            });
+        }
         propsRef.current.onStats?.({
           fps: statDtMs > 0 ? 1000 / (statDtMs / statFrames) : 0,
           simMs: statSimMs / statFrames,
+          ...(gpuMs > 0 ? { gpuMs } : {}),
           tris: renderer.info.render.triangles,
           calls: renderer.info.render.drawCalls,
         });
@@ -1614,8 +1780,6 @@ export default function ClothScene(props: Props) {
         statDtMs = 0;
         statSimMs = 0;
       }
-
-      raf = requestAnimationFrame(tick);
     };
     // WebGPURenderer.render() throws until the backend has initialized, so
     // the loop (and the first texture loads, which read backend capabilities)
@@ -1632,7 +1796,16 @@ export default function ClothScene(props: Props) {
         }
         resize();
         syncTextures();
-        tick();
+        // WebGPU initialization can take several rendered-frame intervals.
+        // Do not reinterpret that startup latency as physics catch-up: the
+        // first cloth is already pre-settled and its geometry is ready.
+        lastNow = performance.now();
+        lastAnimationNow = lastNow;
+        renderBudgetMs = RENDER_INTERVAL_MS;
+        simClock.reset();
+        // Three owns the rAF lifecycle so renderer.info and WebGPU timestamp
+        // frame IDs advance in the same loop as the render they describe.
+        void renderer.setAnimationLoop(tick);
       })
       .catch((err) => {
         console.error("ClothScene: renderer init failed", err);
@@ -1640,7 +1813,9 @@ export default function ClothScene(props: Props) {
 
     return () => {
       disposed = true;
-      cancelAnimationFrame(raf);
+      if (renderer.getAnimationLoop() !== null) {
+        void renderer.setAnimationLoop(null);
+      }
       cancelAnimationFrame(resizeRaf);
       ro.disconnect();
       controls?.dispose();

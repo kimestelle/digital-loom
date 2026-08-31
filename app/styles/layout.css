@@ -125,6 +125,14 @@
   letter-spacing: 0.02em;
 }
 
+.nav-status-group {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  min-width: 0;
+}
+
 .app-main {
   flex: 1;
   max-width: 1400px;
@@ -380,6 +388,14 @@
     display: none;
   }
 
+  .nav-status-group {
+    margin-left: auto;
+  }
+
+  .save-status-label {
+    max-width: 116px;
+  }
+
   .mode-orb {
     position: static;
     transform: none;
@@ -395,6 +411,62 @@
 }
 
 /* ---- status pill ---- */
+
+.save-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-mute);
+  white-space: nowrap;
+}
+
+.save-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--fg-dim);
+}
+
+.save-status-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.save-status[data-status="dirty"] {
+  color: var(--fg);
+}
+
+.save-status[data-status="saving"] .save-status-dot {
+  background: var(--accent-cool);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.save-status[data-status="saved"] .save-status-dot {
+  background: var(--ok);
+}
+
+.save-status[data-status="error"] {
+  color: var(--error);
+}
+
+.save-status[data-status="error"] .save-status-dot {
+  background: var(--error);
+}
+
+.save-status-retry {
+  appearance: none;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
 
 .status-pill {
   display: inline-flex;

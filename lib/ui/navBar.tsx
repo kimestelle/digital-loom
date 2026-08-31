@@ -8,6 +8,10 @@
 
 import { memo } from "react";
 import ModeButton from "@/lib/ui/modeButton";
+import {
+  SaveStatus,
+  type SaveStatusKind,
+} from "@/lib/ui/saveStatus";
 
 
 /** Lifecycle of the current extraction/selection, as shown in the pill. */
@@ -54,12 +58,18 @@ export interface NavBarProps {
   mode: StageMode;
   onMode: (m: StageMode) => void;
   status: PipelineStatus;
+  saveStatus: SaveStatusKind;
+  saveMessage?: string | null;
+  onRetrySave: () => void;
 }
 
 export const NavBar = memo(function NavBar({
   mode,
   onMode,
   status,
+  saveStatus,
+  saveMessage,
+  onRetrySave,
 }: NavBarProps) {
   return (
     <header className="nav-bar glass">
@@ -69,7 +79,14 @@ export const NavBar = memo(function NavBar({
           <span className="nav-brand-sub">fabric material instrument</span>
         </div>
         <ModeButton mode={mode} onMode={onMode} />
-        <StatusPill status={status} />
+        <div className="nav-status-group">
+          <StatusPill status={status} />
+          <SaveStatus
+            status={saveStatus}
+            message={saveMessage}
+            onRetry={onRetrySave}
+          />
+        </div>
       </div>
     </header>
   );

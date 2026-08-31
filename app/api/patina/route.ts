@@ -3,6 +3,19 @@ import type { CachedMap } from "@/lib/fal/cache";
 
 export const runtime = "nodejs";
 
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const ACCEPTED_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+]);
+const IMAGE_TYPE_BY_EXTENSION: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+};
+
 interface MapPayload extends CachedMap {
   url: string;
 }
@@ -19,12 +32,33 @@ export async function POST(request: Request): Promise<Response> {
   if (!(file instanceof File)) {
     return Response.json({ error: "missing 'image' file field" }, { status: 400 });
   }
+  if (file.size === 0 || file.size > MAX_IMAGE_BYTES) {
+    return Response.json(
+      { error: "image must be between 1 byte and 4 MB" },
+      { status: 413 },
+    );
+  }
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  const contentType =
+    file.type.toLowerCase() || IMAGE_TYPE_BY_EXTENSION[extension] || "";
+  if (!ACCEPTED_IMAGE_TYPES.has(contentType)) {
+    return Response.json(
+      { error: "image must be PNG, JPEG, or WebP" },
+      { status: 415 },
+    );
+  }
 
   const rawPrompt = formData.get("prompt");
   const prompt =
     typeof rawPrompt === "string" && rawPrompt.trim().length > 0
       ? rawPrompt.trim()
       : "fabric";
+  if (prompt.length > 500) {
+    return Response.json(
+      { error: "prompt must be 500 characters or fewer" },
+      { status: 400 },
+    );
+  }
 
   const bytes = new Uint8Array(await file.arrayBuffer());
 
@@ -35,6 +69,7 @@ export async function POST(request: Request): Promise<Response> {
     const { hash, manifest, cacheHit } = await extractPatina(
       bytes,
       file.name,
+      contentType,
       prompt,
       userKey,
     );

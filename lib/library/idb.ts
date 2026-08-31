@@ -9,7 +9,8 @@
 // Stores:
 //   maps      — raw map bytes (ArrayBuffer), keyed by their /api/cache/<hash>/<file> URL.
 //   materials — imported material metadata (VaultMaterial), keyed by pkg hash.
-//   presets   — imported material params (MaterialPreset), keyed by slug.
+//   presets   — material params (MaterialPreset), keyed by slug.
+//   settings  — durable library preferences such as swatch order.
 //
 // Why this exists at all: on serverless hosts the server-side extraction cache
 // lives in /tmp, which is per-instance and wiped on cold start (see
@@ -23,11 +24,15 @@
 
 export const DB_NAME = "loom-map-cache";
 // v1 shipped with only the `maps` store; v2 adds `materials` + `presets`.
-export const DB_VERSION = 2;
+// v3 adds the settings store. More importantly, the higher-level repository now
+// treats this database as the primary authoring store rather than an import-only
+// cache; server filesystem writes are compatibility mirrors.
+export const DB_VERSION = 3;
 
 export const STORE_MAPS = "maps";
 export const STORE_MATERIALS = "materials";
 export const STORE_PRESETS = "presets";
+export const STORE_SETTINGS = "settings";
 
 export function openLoomDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -48,6 +53,9 @@ export function openLoomDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_PRESETS)) {
         db.createObjectStore(STORE_PRESETS);
+      }
+      if (!db.objectStoreNames.contains(STORE_SETTINGS)) {
+        db.createObjectStore(STORE_SETTINGS);
       }
     };
     req.onsuccess = () => resolve(req.result);

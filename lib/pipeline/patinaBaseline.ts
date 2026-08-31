@@ -81,6 +81,12 @@ export async function runPatinaBaseline(
   const data = (await res.json()) as PatinaResponse;
 
   const pkg = emptyPackage(opts.fabricName);
+  // The extraction hash is the stable source identity used by the cache,
+  // vault, clones, provenance, and exported LoomMaterial document. A fresh
+  // run used to retain emptyPackage()'s random UUID here, which made the same
+  // extraction acquire a different identity until it was reloaded.
+  pkg.id = data.hash;
+  pkg.meta.createdAt = data.createdAt;
   if (opts.captureNotes) pkg.meta.captureNotes = opts.captureNotes;
 
   for (const m of data.maps) {

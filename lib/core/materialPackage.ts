@@ -88,10 +88,16 @@ export function pkgFromMaps(
   return pkg;
 }
 
+/**
+ * @deprecated Runtime snapshot only. It omits the authored fabric state and map
+ * file metadata; use loomMaterial.ts + the single-material bundle reader/writer
+ * for interchange.
+ */
 export function serialize(pkg: MaterialPackage): string {
   return JSON.stringify(pkg, null, 2);
 }
 
+/** @deprecated Runtime snapshot reader; not a Loom interchange parser. */
 export function deserialize(json: string): MaterialPackage {
   const parsed = JSON.parse(json) as MaterialPackage;
   if (!parsed.id || !parsed.maps || !parsed.meta) {

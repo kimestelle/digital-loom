@@ -27,6 +27,46 @@ export interface Manifest {
   rawResponsePath: string;
 }
 
+const HASH_RE = /^[a-f0-9]{8,64}$/;
+const FILE_RE = /^[A-Za-z0-9_.-]+$/;
+
+export function isManifestShape(
+  value: unknown,
+  expectedHash?: string,
+): value is Manifest {
+  if (!value || typeof value !== "object") return false;
+  const manifest = value as Partial<Manifest>;
+  if (
+    typeof manifest.endpoint !== "string" ||
+    typeof manifest.hash !== "string" ||
+    !HASH_RE.test(manifest.hash) ||
+    (expectedHash !== undefined && manifest.hash !== expectedHash) ||
+    typeof manifest.createdAt !== "string" ||
+    typeof manifest.rawResponsePath !== "string" ||
+    !Array.isArray(manifest.maps) ||
+    manifest.maps.length === 0
+  ) {
+    return false;
+  }
+  const names = new Set<string>();
+  const files = new Set<string>();
+  for (const map of manifest.maps) {
+    if (
+      !map ||
+      typeof map.name !== "string" ||
+      typeof map.file !== "string" ||
+      !FILE_RE.test(map.file) ||
+      names.has(map.name) ||
+      files.has(map.file)
+    ) {
+      return false;
+    }
+    names.add(map.name);
+    files.add(map.file);
+  }
+  return true;
+}
+
 export function hashBytes(bytes: Uint8Array, salt: string): string {
   const h = createHash("sha256");
   h.update(salt);
@@ -39,10 +79,23 @@ export function cacheDir(hash: string): string {
 }
 
 export async function readManifest(hash: string): Promise<Manifest | null> {
+  if (!HASH_RE.test(hash)) return null;
   const dir = cacheDir(hash);
   try {
     const raw = await fs.readFile(path.join(dir, "manifest.json"), "utf8");
-    return JSON.parse(raw) as Manifest;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isManifestShape(parsed, hash)) return null;
+    const complete = await Promise.all(
+      parsed.maps.map(async (map) => {
+        try {
+          const stat = await fs.stat(path.join(dir, map.file));
+          return stat.isFile() && stat.size > 0;
+        } catch {
+          return false;
+        }
+      }),
+    );
+    return complete.every(Boolean) ? parsed : null;
   } catch {
     return null;
   }
@@ -102,7 +155,7 @@ export async function readCachedFile(
 /** Remove a cached extraction (its whole directory). Only accepts names
  *  that look like our hex hashes so a bad hash can't escape CACHE_ROOT. */
 export async function deleteCacheEntry(hash: string): Promise<boolean> {
-  if (!/^[a-f0-9]{8,64}$/.test(hash)) return false;
+  if (!HASH_RE.test(hash)) return false;
   const dir = cacheDir(hash);
   // Belt-and-braces: resolved dir must stay inside the cache root.
   if (!dir.startsWith(CACHE_ROOT + path.sep)) return false;

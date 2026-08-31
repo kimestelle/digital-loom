@@ -8,12 +8,13 @@
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
 .swatch {
   position: relative;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -38,7 +39,7 @@
 }
 
 /* Don't scale-bounce while renaming — the field would zoom with the face. */
-.swatch-face:has(.swatch-rename):active {
+.swatch:has(.swatch-rename) .swatch-face:active {
   transform: none;
 }
 
@@ -129,7 +130,7 @@
   box-shadow: none;
 }
 
-.swatch-face[data-active="true"] .swatch-label {
+.swatch-face[data-active="true"] + .swatch-label {
   color: var(--cat, var(--accent));
 }
 
@@ -307,4 +308,8 @@
   display: grid;
   place-items: center;
   cursor: pointer;
+}
+
+.material-load {
+  grid-column: 1 / -1;
 }

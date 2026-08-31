@@ -46,10 +46,13 @@ import {
   type PipelineStatus,
   type StageMode,
 } from "@/lib/ui/navBar";
-import { MapsStrip, type ExportState } from "@/lib/ui/mapsStrip";
+import {
+  MapsStrip,
+  type ExportState,
+} from "@/lib/ui/mapsStrip";
 import { PixelPlay } from "@/lib/ui/pixelPlay";
 import { InsertPanel } from "@/lib/ui/insertPanel";
-import { warmMapCache } from "@/lib/export/mapCache";
+import { getCachedMap, warmMapCache } from "@/lib/export/mapCache";
 import {
   LibraryGrid,
   SampleGrid,
@@ -60,6 +63,18 @@ import {
   useMaterialTransfer,
   type MaterialTransferController,
 } from "@/lib/ui/materialTransfer";
+import type { SaveStatusKind } from "@/lib/ui/saveStatus";
+import {
+  adoptServerPreset,
+  deleteAuthoringItem,
+  importAuthoringMaterialBytes,
+  loadAuthoringOrder,
+  normalizeAuthoringHash,
+  saveAuthoringMaterial,
+  saveAuthoringOrder,
+  saveAuthoringPreset,
+  type AuthoringMaterial,
+} from "@/lib/library/repository";
 
 const OBJECT_MODEL_URL = "/model/whale.glb";
 
@@ -68,7 +83,77 @@ interface CacheEntry {
   createdAt: string;
   prompt: string | null;
   sourceFilename: string | null;
-  maps: { name: string; file: string; url: string }[];
+  maps: {
+    name: MapName;
+    file: string;
+    url: string;
+    provenance?: MapEntry["provenance"];
+    sourceHash?: string;
+  }[];
+  /** A retained map owner for clones whose canonical row was deleted. */
+  hidden?: boolean;
+}
+
+function mapFileFromUrl(url: string, name: string): string {
+  try {
+    const path = new URL(url, "http://digital-loom.local").pathname;
+    const file = decodeURIComponent(path.split("/").pop() ?? "");
+    if (/^[A-Za-z0-9_.-]+$/.test(file)) return file;
+  } catch {
+    // Fall through to a deterministic filename for non-URL map sources.
+  }
+  return `${name}.png`;
+}
+
+function resolveMetalnessAmount(input: string | number, hasMap: boolean): number {
+  const parsed = typeof input === "number" ? input : parseFloat(input);
+  const clamped = Math.min(1, Math.max(0, Number.isFinite(parsed) ? parsed : 0));
+  // A generated metalness map already contains the physical per-pixel amount.
+  // With no exposed gain control, 1 is the honest neutral multiplier; zero was
+  // an artifact of the retired text field and silently disabled the map.
+  return hasMap && clamped === 0 ? 1 : clamped;
+}
+
+function authoringMaterialFromEntry(entry: CacheEntry): AuthoringMaterial {
+  return {
+    hash: entry.hash,
+    createdAt: entry.createdAt || new Date().toISOString(),
+    prompt: entry.prompt,
+    sourceFilename: entry.sourceFilename,
+    hidden: entry.hidden,
+    maps: entry.maps.map((map) => ({
+      ...map,
+      file: map.file || mapFileFromUrl(map.url, map.name),
+    })),
+  };
+}
+
+function cacheEntryFromPackage(
+  hash: string,
+  pkg: MaterialPackage,
+  prompt: string,
+  sourceFilename: string,
+): CacheEntry {
+  return {
+    hash,
+    createdAt: pkg.meta.createdAt,
+    prompt,
+    sourceFilename,
+    maps: MAP_ORDER.flatMap((name) => {
+      const map = pkg.maps[name];
+      return map
+        ? [
+            {
+              name,
+              file: mapFileFromUrl(map.url, name),
+              url: map.url,
+              provenance: map.provenance,
+              sourceHash: map.sourceHash,
+            },
+          ]
+        : [];
+    }),
+  };
 }
 
 // Order the mobile bottom sheet pages through (‹ prev / › next / swipe).
@@ -220,10 +305,18 @@ export default function Home() {
   const [cacheEntries, setCacheEntries] = useState<CacheEntry[]>([]);
   const [presets, setPresets] = useState<MaterialPreset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatusKind>("saved");
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const saveJobIdRef = useRef(0);
+  const savePendingRef = useRef(0);
+  const failedSaveJobsRef = useRef(
+    new Map<number, { job: () => Promise<void>; message: string }>(),
+  );
   // Id of the material currently on the loom — the key its params autosave
   // under. A canonical material's id is its hash; a clone's id is its own slug.
   // null = nothing selected yet.
   const [activeId, setActiveId] = useState<string | null>(null);
+  const activeIdRef = useRef<string | null>(null);
   // Last material signature loaded or saved. Keeping this in state makes the
   // autosave gate explicit and lets React sequence updates with material
   // selection instead of sharing mutable state across memoized callbacks.
@@ -240,8 +333,9 @@ export default function Home() {
     (commit) => commit(),
   );
   // User-defined order of the library section, by item id. Persists to
-  // localStorage so drag-reordering sticks and nothing shuffles on its own.
+  // IndexedDB so drag-reordering sticks and nothing shuffles on its own.
   const [libraryOrder, setLibraryOrder] = useState<string[]>([]);
+  const libraryOrderRef = useRef<string[]>([]);
   // Cross-grid drag state (samples → library clone drags share it).
   const drag = useSwatchDrag();
   // Built-in sample materials (baked patina bundles under samples/).
@@ -264,7 +358,89 @@ export default function Home() {
     knobsRef.current = knobs;
     fabricIdRef.current = fabricId;
     metalnessInputRef.current = metalnessInput;
-  }, [knobs, fabricId, metalnessInput]);
+    activeIdRef.current = activeId;
+  }, [knobs, fabricId, metalnessInput, activeId]);
+
+  const updateSaveIndicator = useCallback(() => {
+    const failures = failedSaveJobsRef.current;
+    if (failures.size > 0) {
+      const latest = [...failures.values()].at(-1);
+      setSaveMessage(latest?.message ?? "Local save failed");
+      setSaveStatus("error");
+    } else if (savePendingRef.current > 0) {
+      setSaveMessage(null);
+      setSaveStatus("saving");
+    } else {
+      setSaveMessage(null);
+      setSaveStatus("saved");
+    }
+  }, []);
+
+  /** Run a complete, idempotent local mutation. Failed jobs stay queued until
+   *  retry succeeds; server compatibility failures are swallowed inside the
+   *  repository and therefore never masquerade as local-save failures. */
+  const runDurableSave = useCallback(
+    async (job: () => Promise<void>): Promise<boolean> => {
+      const id = ++saveJobIdRef.current;
+      savePendingRef.current++;
+      setSaveMessage(null);
+      setSaveStatus("saving");
+      try {
+        await job();
+        failedSaveJobsRef.current.delete(id);
+        return true;
+      } catch (error) {
+        failedSaveJobsRef.current.set(id, {
+          job,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      } finally {
+        savePendingRef.current--;
+        updateSaveIndicator();
+      }
+    },
+    [updateSaveIndicator],
+  );
+
+  const retryFailedSaves = useCallback(async () => {
+    if (failedSaveJobsRef.current.size === 0) return;
+    const jobs = [...failedSaveJobsRef.current.entries()];
+    savePendingRef.current += jobs.length;
+    setSaveMessage(null);
+    setSaveStatus("saving");
+    for (const [id, failed] of jobs) {
+      try {
+        await failed.job();
+        failedSaveJobsRef.current.delete(id);
+      } catch (error) {
+        failedSaveJobsRef.current.set(id, {
+          job: failed.job,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        savePendingRef.current--;
+      }
+    }
+    updateSaveIndicator();
+  }, [updateSaveIndicator]);
+
+  const markSaveDirty = useCallback(() => {
+    setSaveStatus((current) => (current === "error" ? current : "dirty"));
+  }, []);
+
+  // State + compatibility mirror only. Callers choose the right durable job so
+  // clone/delete/import can commit their preset and order as one user action.
+  const applyLibraryOrder = useCallback((next: string[]) => {
+    const snapshot = [...next];
+    libraryOrderRef.current = snapshot;
+    setLibraryOrder(snapshot);
+    try {
+      localStorage.setItem("loom.libraryOrder", JSON.stringify(snapshot));
+    } catch {
+      // IndexedDB remains the source of truth when localStorage is unavailable.
+    }
+  }, []);
 
   // Apply a material's saved params (fabric + knobs + metalness) and arm the
   // autosave baseline at that signature so restoring doesn't rewrite the file.
@@ -338,21 +514,27 @@ export default function Home() {
   // refreshPresets can merge them without an extra render pass.
   const vaultEntriesRef = useRef<CacheEntry[]>([]);
   const vaultPresetsRef = useRef<MaterialPreset[]>([]);
+  const deletedHashesRef = useRef(new Set<string>());
+  const deletedPresetSlugsRef = useRef(new Set<string>());
   const refreshVault = useCallback(async () => {
-    try {
-      const { hydrateVaultEntries, getVaultPresets } = await import(
-        "@/lib/library/vault"
-      );
-      const [entries, vpresets] = await Promise.all([
-        hydrateVaultEntries(),
-        getVaultPresets(),
-      ]);
-      vaultEntriesRef.current = entries;
-      vaultPresetsRef.current = vpresets;
-    } catch {
-      vaultEntriesRef.current = [];
-      vaultPresetsRef.current = [];
-    }
+    const {
+      getVaultDeletedMaterialHashes,
+      getVaultDeletedPresetSlugs,
+      getVaultPresets,
+      hydrateVaultEntries,
+    } = await import(
+      "@/lib/library/vault"
+    );
+    const [entries, vpresets, deletedHashes, deletedPresetSlugs] = await Promise.all([
+      hydrateVaultEntries(),
+      getVaultPresets(),
+      getVaultDeletedMaterialHashes(),
+      getVaultDeletedPresetSlugs(),
+    ]);
+    vaultEntriesRef.current = entries;
+    vaultPresetsRef.current = vpresets;
+    deletedHashesRef.current = deletedHashes;
+    deletedPresetSlugsRef.current = deletedPresetSlugs;
   }, []);
 
   const refreshCache = useCallback(async () => {
@@ -363,14 +545,29 @@ export default function Home() {
     } catch {
       // ignore — the vault may still supply entries
     }
+    const localHashes = new Set(vaultEntriesRef.current.map((entry) => entry.hash));
+    const migratable = server.filter(
+      (entry) =>
+        !deletedHashesRef.current.has(entry.hash) && !localHashes.has(entry.hash),
+    );
+    if (migratable.length > 0) {
+      await Promise.allSettled(
+        migratable.map((entry) =>
+          saveAuthoringMaterial(authoringMaterialFromEntry(entry)),
+        ),
+      );
+      await refreshVault();
+    }
     // Vault entries win over a same-hash server entry: their blob: URLs are
     // always readable this session, while a server URL 404s once its serverless
     // instance recycles.
     const byHash = new Map<string, CacheEntry>();
-    for (const e of server) byHash.set(e.hash, e);
+    for (const e of server) {
+      if (!deletedHashesRef.current.has(e.hash)) byHash.set(e.hash, e);
+    }
     for (const e of vaultEntriesRef.current) byHash.set(e.hash, e);
     setCacheEntries([...byHash.values()]);
-  }, []);
+  }, [refreshVault]);
 
   // ── stage measure ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -398,14 +595,36 @@ export default function Home() {
           fabricName: name,
           prompt,
         });
+        const durableEntry = cacheEntryFromPackage(
+          result.hash,
+          result.pkg,
+          prompt.trim() || "fabric",
+          front instanceof File ? front.name : "front-lit.png",
+        );
+        markSaveDirty();
+        // Canonical params for a material use slug === hash.
+        const saved = presets.find((preset) => preset.slug === result.hash);
+        let durableError: unknown = null;
+        const durable = await runDurableSave(async () => {
+          try {
+            await saveAuthoringMaterial(authoringMaterialFromEntry(durableEntry));
+            await refreshVault();
+            await refreshCache();
+          } catch (error) {
+            durableError = error;
+            throw error;
+          }
+        });
+        if (!durable) {
+          throw durableError instanceof Error
+            ? durableError
+            : new Error("The material was generated but could not be saved locally");
+        }
         setStatus({
           kind: "done",
           cacheHit: result.cacheHit,
           hash: result.hash,
         });
-        void refreshCache();
-        // Canonical params for a material use slug === hash.
-        const saved = presets.find((preset) => preset.slug === result.hash);
         // Wear the fresh maps behind a mesh pixel-dissolve: the cloth
         // dissolves out, the material-affecting state lands while it's fully
         // hidden, and the reveal gates on the new albedo actually loading.
@@ -436,7 +655,7 @@ export default function Home() {
             );
             const est = await estimateParams(result.pkg);
             setKnobs((k) => ({ ...k, ...est.knobs }));
-
+            setMetalnessInput(est.metalness > 0 ? String(est.metalness) : "");
           } catch {
             // estimation is a nicety — never let it break the extraction
           }
@@ -446,7 +665,15 @@ export default function Home() {
         setStatus({ kind: "error", message: msg });
       }
     },
-    [applyParams, presets, prompt, refreshCache],
+    [
+      applyParams,
+      markSaveDirty,
+      presets,
+      prompt,
+      refreshCache,
+      refreshVault,
+      runDurableSave,
+    ],
   );
 
   // Stage a dropped/selected photo without running anything. The user reviews
@@ -473,8 +700,13 @@ export default function Home() {
     // For cached entries the map.url is already the full path.
     for (const m of entry.maps) {
       const key = m.name as MapName;
-      if (p.maps[key]) p.maps[key]!.url = m.url;
+      const projected = p.maps[key];
+      if (!projected) continue;
+      projected.url = m.url;
+      projected.provenance = m.provenance ?? projected.provenance;
+      projected.sourceHash = m.sourceHash;
     }
+    if (entry.createdAt) p.meta.createdAt = entry.createdAt;
     setPkg(p);
     setStatus({ kind: "done", cacheHit: true, hash: entry.hash });
     // Best-effort: prime the browser-local map cache the moment this
@@ -483,33 +715,6 @@ export default function Home() {
     // them (see lib/export/mapCache.ts).
     warmMapCache(entry.maps.map((m) => m.url));
   }, []);
-
-  // ── cache deletion (two-stage arm → confirm) ───────────────────────────
-  const deleteCachedEntry = useCallback(
-    async (entry: CacheEntry) => {
-      // Remove the durable vault copy first — that's what actually keeps a
-      // material alive across reloads. The server DELETE is best-effort: on a
-      // serverless host the entry may not exist on the instance that answers,
-      // and a 404 there must not abort the vault removal.
-      try {
-        const { deleteVaultMaterial } = await import("@/lib/library/vault");
-        await deleteVaultMaterial(entry.hash);
-      } catch {
-        // ignore
-      }
-      try {
-        await fetch(`/api/cache/${entry.hash}`, { method: "DELETE" });
-      } catch {
-        // best-effort
-      }
-      // If the deleted run is what's on the loom, drop back to the base fabric
-      // rather than leaving map URLs that will 404.
-      setPkg((cur) => (cur?.id === entry.hash ? null : cur));
-      await refreshVault();
-      void refreshCache();
-    },
-    [refreshVault, refreshCache],
-  );
 
   // ── material presets ───────────────────────────────────────────────────
   const refreshPresets = useCallback(async () => {
@@ -520,13 +725,25 @@ export default function Home() {
     } catch {
       // ignore
     }
-    const bySlug = new Map<string, MaterialPreset>();
-    for (const p of server) bySlug.set(p.slug, p);
-    // Vault fills only the gaps the server didn't return — the server stays
-    // authoritative for presets it DID return (seeded/curated ones like red silk).
-    for (const p of vaultPresetsRef.current) {
-      if (!bySlug.has(p.slug)) bySlug.set(p.slug, p);
-    }
+    const localBySlug = new Map(
+      vaultPresetsRef.current.map((preset) => [preset.slug, preset]),
+    );
+    // Adopt server-only seeds once, then let the local copy own subsequent
+    // authoring. A stale instance response must never overwrite a newer local
+    // knob edit with the same slug.
+    const visibleServer = server.filter(
+      (preset) => !deletedPresetSlugsRef.current.has(preset.slug),
+    );
+    const missing = visibleServer.filter(
+      (preset) => !localBySlug.has(preset.slug),
+    );
+    await Promise.all(missing.map((preset) => adoptServerPreset(preset)));
+    for (const preset of missing) localBySlug.set(preset.slug, preset);
+    vaultPresetsRef.current = [...localBySlug.values()];
+    const bySlug = new Map(
+      visibleServer.map((preset) => [preset.slug, preset]),
+    );
+    for (const preset of localBySlug.values()) bySlug.set(preset.slug, preset);
     setPresets([...bySlug.values()]);
     setPresetsLoaded(true);
   }, []);
@@ -538,15 +755,16 @@ export default function Home() {
     let cancelled = false;
     queueMicrotask(async () => {
       if (cancelled) return;
-      await refreshVault();
-      if (cancelled) return;
-      void refreshCache();
-      void refreshPresets();
+      await runDurableSave(async () => {
+        await refreshVault();
+        if (cancelled) return;
+        await Promise.all([refreshCache(), refreshPresets()]);
+      });
     });
     return () => {
       cancelled = true;
     };
-  }, [refreshVault, refreshCache, refreshPresets]);
+  }, [refreshVault, refreshCache, refreshPresets, runDurableSave]);
 
   // Built-in samples — fetched once; served from samples/ as baked bundles.
   useEffect(() => {
@@ -568,7 +786,18 @@ export default function Home() {
             createdAt: "",
             prompt: s.prompt,
             sourceFilename: s.label,
-            maps: s.maps,
+            maps: s.maps.flatMap((map) =>
+              MAP_ORDER.includes(map.name as MapName)
+                ? [
+                    {
+                      ...map,
+                      name: map.name as MapName,
+                      provenance: "patina" as const,
+                      sourceHash: s.hash,
+                    },
+                  ]
+                : [],
+            ),
           })),
         );
       } catch {
@@ -577,35 +806,40 @@ export default function Home() {
     })();
   }, []);
 
-  // ── library order persists to localStorage (a view preference, not a
-  //    material) so drag-reordering sticks across reloads. ──────────────────
+  // ── library order: IndexedDB is authoritative. localStorage is read only as
+  //    a one-time migration from older builds and kept as a compatibility
+  //    mirror after local commits. ──────────────────────────────────────────
   const orderLoadedRef = useRef(false);
   useEffect(() => {
     let cancelled = false;
-    let savedOrder: string[] | null = null;
-    try {
-      const raw = localStorage.getItem("loom.libraryOrder");
-      if (raw) savedOrder = JSON.parse(raw) as string[];
-    } catch {
-      // corrupt/absent — start unordered (falls back to createdAt)
-    }
-    queueMicrotask(() => {
+    queueMicrotask(async () => {
       if (cancelled) return;
-      if (savedOrder) setLibraryOrder(savedOrder);
-      orderLoadedRef.current = true;
+      await runDurableSave(async () => {
+        let savedOrder = await loadAuthoringOrder();
+        if (!savedOrder) {
+          try {
+            const raw = localStorage.getItem("loom.libraryOrder");
+            const legacy: unknown = raw ? JSON.parse(raw) : null;
+            if (
+              Array.isArray(legacy) &&
+              legacy.every((id) => typeof id === "string")
+            ) {
+              savedOrder = legacy;
+              await saveAuthoringOrder(legacy);
+            }
+          } catch {
+            // Corrupt/absent legacy mirror — start unordered.
+          }
+        }
+        if (cancelled) return;
+        applyLibraryOrder(savedOrder ?? []);
+        orderLoadedRef.current = true;
+      });
     });
     return () => {
       cancelled = true;
     };
-  }, []);
-  useEffect(() => {
-    if (!orderLoadedRef.current) return; // don't clobber before the load runs
-    try {
-      localStorage.setItem("loom.libraryOrder", JSON.stringify(libraryOrder));
-    } catch {
-      // storage disabled — non-fatal
-    }
-  }, [libraryOrder]);
+  }, [applyLibraryOrder, runDurableSave]);
 
   // ── performance prefs persist to localStorage (device, not material) ────
   const perfLoadedRef = useRef(false);
@@ -783,7 +1017,7 @@ export default function Home() {
       const { estimateParams } = await import("@/lib/pipeline/estimateParams");
       const est = await estimateParams(p);
       setKnobs((k) => ({ ...k, ...est.knobs }));
-
+      setMetalnessInput(est.metalness > 0 ? String(est.metalness) : "");
     } catch {
       // estimation is a nicety — leave defaults if it fails
     }
@@ -813,24 +1047,26 @@ export default function Home() {
       fabricId: FabricId,
       metalness: number,
       knobs: FabricKnobs,
-    ) => {
-      try {
-        const r = await fetch("/api/presets", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ slug: id, name, fabricId, pkgHash, metalness, knobs }),
-        });
-        if (!r.ok) return;
-        const { preset } = (await r.json()) as { preset: MaterialPreset };
-        setPresets((cur) => {
-          const rest = cur.filter((p) => p.slug !== id);
-          return [...rest, preset].sort((a, b) =>
-            a.createdAt < b.createdAt ? -1 : 1,
-          );
-        });
-      } catch {
-        // network hiccup — the next edit will retry
-      }
+    ): Promise<MaterialPreset> => {
+      const preset = await saveAuthoringPreset({
+        slug: id,
+        name,
+        fabricId,
+        pkgHash,
+        metalness,
+        knobs,
+      });
+      vaultPresetsRef.current = [
+        ...vaultPresetsRef.current.filter((candidate) => candidate.slug !== id),
+        preset,
+      ];
+      setPresets((cur) => {
+        const rest = cur.filter((candidate) => candidate.slug !== id);
+        return [...rest, preset].sort((a, b) =>
+          a.createdAt < b.createdAt ? -1 : 1,
+        );
+      });
+      return preset;
     },
     [],
   );
@@ -841,7 +1077,22 @@ export default function Home() {
     (item: LibraryItem) => {
       activePkgHashRef.current = item.pkgHash;
       setActiveId(item.id);
-      if (item.entry) loadCachedEntry(item.entry);
+      if (item.entry) {
+        loadCachedEntry(item.entry);
+        // Migrate legacy server-only cache entries the first time they are used.
+        // Vault-hydrated entries already have blob URLs and need no rewrite.
+        const serverOnly = item.entry.maps.some(
+          (map) => !map.url.startsWith("blob:"),
+        );
+        const builtIn = samples.some((sample) => sample.hash === item.pkgHash);
+        if (serverOnly && !builtIn) {
+          void runDurableSave(async () => {
+            await saveAuthoringMaterial(authoringMaterialFromEntry(item.entry!));
+            await refreshVault();
+            await refreshCache();
+          });
+        }
+      }
       else void resolveMapsForHash(item.pkgHash);
       if (item.preset) {
         applyParams(item.preset);
@@ -851,7 +1102,16 @@ export default function Home() {
         void seedParamsFromEntry(item.entry);
       }
     },
-    [loadCachedEntry, resolveMapsForHash, applyParams, seedParamsFromEntry],
+    [
+      loadCachedEntry,
+      resolveMapsForHash,
+      applyParams,
+      seedParamsFromEntry,
+      samples,
+      runDurableSave,
+      refreshVault,
+      refreshCache,
+    ],
   );
 
   // ── autosave: persist the active material's params as knobs change ───────
@@ -861,16 +1121,46 @@ export default function Home() {
   useEffect(() => {
     if (!activeId) return;
     if (autosaveBaseline.id !== activeId) return; // not armed/hydrated yet
-    const metal = Math.min(1, Math.max(0, parseFloat(metalnessInput) || 0));
+    const hasMetalnessMap = Boolean(pkg?.maps.metalness);
+    const metal = resolveMetalnessAmount(metalnessInput, hasMetalnessMap);
     const fk = fabricKnobsOf(knobs);
     const sig = paramSig(fabricId, metal, fk);
     if (sig === autosaveBaseline.sig) return; // nothing material changed
     const pkgHash = activePkgHashRef.current ?? activeId;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) markSaveDirty();
+    });
     const t = setTimeout(() => {
-      setAutosaveBaseline({ id: activeId, sig });
-      void postParams(activeId, pkgHash, labelForId(activeId), fabricId, metal, fk);
+      void runDurableSave(async () => {
+        await postParams(
+          activeId,
+          pkgHash,
+          labelForId(activeId),
+          fabricId,
+          metal,
+          fk,
+        );
+        const currentMetal = resolveMetalnessAmount(
+          metalnessInputRef.current,
+          hasMetalnessMap,
+        );
+        const currentSig = paramSig(
+          fabricIdRef.current,
+          currentMetal,
+          fabricKnobsOf(knobsRef.current),
+        );
+        // A retry may finish after the user selected another material or made
+        // another edit. Only certify the exact state this write committed.
+        if (activeIdRef.current === activeId && currentSig === sig) {
+          setAutosaveBaseline({ id: activeId, sig });
+        }
+      });
     }, 1000);
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [
     knobs,
     metalnessInput,
@@ -878,7 +1168,10 @@ export default function Home() {
     activeId,
     autosaveBaseline,
     labelForId,
+    markSaveDirty,
     postParams,
+    pkg,
+    runDurableSave,
   ]);
 
   // ── boot hydration: once the material and its presets are both loaded, apply
@@ -889,7 +1182,10 @@ export default function Home() {
     if (bootedRef.current) return;
     if (!activeId || !presetsLoaded) return;
     const preset = presets.find((candidate) => candidate.slug === activeId);
-    const metal = Math.min(1, Math.max(0, parseFloat(metalnessInput) || 0));
+    const metal = resolveMetalnessAmount(
+      metalnessInput,
+      Boolean(pkg?.maps.metalness),
+    );
     const baseline = {
       id: activeId,
       sig: paramSig(fabricId, metal, fabricKnobsOf(knobs)),
@@ -912,6 +1208,7 @@ export default function Home() {
     fabricId,
     metalnessInput,
     knobs,
+    pkg,
   ]);
 
   // Remove a library material: its params file, plus the cache run behind it
@@ -919,37 +1216,50 @@ export default function Home() {
   // samples aren't deletable.
   const deleteLibraryItem = useCallback(
     async (item: LibraryItem) => {
-      if (!item.clone && item.entry && item.pkgHash === item.id) {
-        // A user cache run (not a clone, canonical id) — remove the extraction.
-        await deleteCachedEntry(item.entry);
-      }
-      // Durable vault preset (imported/clone params) + server preset. Prune the
-      // in-memory vault ref too, so a later refresh can't resurrect the row.
-      try {
-        const { deleteVaultPreset } = await import("@/lib/library/vault");
-        await deleteVaultPreset(item.id);
-        vaultPresetsRef.current = vaultPresetsRef.current.filter(
-          (p) => p.slug !== item.id,
-        );
-      } catch {
-        // ignore
-      }
-      try {
-        await fetch(`/api/presets?slug=${encodeURIComponent(item.id)}`, {
-          method: "DELETE",
+      const nextOrder = libraryOrderRef.current.filter((id) => id !== item.id);
+      const wasActive = activeIdRef.current === item.id;
+      markSaveDirty();
+      await runDurableSave(async () => {
+        await deleteAuthoringItem({
+          id: item.id,
+          pkgHash: item.pkgHash,
+          clone: item.clone,
         });
-      } catch {
-        // ignore
-      }
-      setPresets((cur) => cur.filter((p) => p.slug !== item.id));
-      setLibraryOrder((cur) => cur.filter((id) => id !== item.id));
-      if (activeId === item.id) {
-        // Deleting the worn material: dissolve the cloth out, drop to the
-        // base fabric while hidden, reveal once its albedo is back in.
-        materialSwapRef.current(() => setActiveId(null), { ownerAfter: null });
-      }
+        await saveAuthoringOrder(nextOrder);
+        vaultPresetsRef.current = vaultPresetsRef.current.filter(
+          (preset) => preset.slug !== item.id,
+        );
+        setPresets((cur) => cur.filter((preset) => preset.slug !== item.id));
+        applyLibraryOrder(nextOrder);
+        await refreshVault();
+        // Fold the durable result into the current list without immediately
+        // re-reading a lagging server mirror that may still contain the delete.
+        setCacheEntries((current) => [
+          ...current.filter((entry) => entry.hash !== item.pkgHash),
+          ...vaultEntriesRef.current.filter(
+            (entry) => entry.hash === item.pkgHash,
+          ),
+        ]);
+        if (wasActive && activeIdRef.current === item.id) {
+          materialSwapRef.current(
+            () => {
+              activeIdRef.current = null;
+              activePkgHashRef.current = null;
+              setActiveId(null);
+              setAutosaveBaseline({ id: null, sig: "" });
+              setPkg(null);
+            },
+            { ownerAfter: null },
+          );
+        }
+      });
     },
-    [deleteCachedEntry, activeId],
+    [
+      applyLibraryOrder,
+      markSaveDirty,
+      refreshVault,
+      runDurableSave,
+    ],
   );
 
   // ── clone: drag a swatch body → a private, tweakable copy in the library.
@@ -966,35 +1276,49 @@ export default function Home() {
       // is read through refs at call time — keeps this callback stable.
       const src = item.preset;
       const fId = src?.fabricId ?? fabricIdRef.current;
-      const metal =
-        src?.metalness ??
-        Math.min(1, Math.max(0, parseFloat(metalnessInputRef.current) || 0));
+      const metal = resolveMetalnessAmount(
+        src?.metalness ?? metalnessInputRef.current,
+        Boolean(item.entry?.maps.some((map) => map.name === "metalness")),
+      );
       const knobsToClone = src?.knobs ?? fabricKnobsOf(knobsRef.current);
       const name = `${item.label} copy`;
-      await postParams(slug, item.pkgHash, name, fId, metal, knobsToClone);
-      // Drop the clone in right after its source in the library order.
-      setLibraryOrder((cur) => {
-        const next = cur.filter((id) => id !== slug);
-        const at = next.indexOf(item.id);
-        if (at === -1) next.push(slug);
-        else next.splice(at + 1, 0, slug);
-        return next;
+      const nextOrder = libraryOrderRef.current.filter((id) => id !== slug);
+      const at = nextOrder.indexOf(item.id);
+      if (at === -1) nextOrder.push(slug);
+      else nextOrder.splice(at + 1, 0, slug);
+      markSaveDirty();
+      await runDurableSave(async () => {
+        // A clone never depends solely on a server cache URL. If the source's
+        // maps are available here, make the package durable before its preset.
+        if (item.entry) {
+          await saveAuthoringMaterial(authoringMaterialFromEntry(item.entry));
+          await refreshVault();
+        }
+        await postParams(slug, item.pkgHash, name, fId, metal, knobsToClone);
+        await saveAuthoringOrder(nextOrder);
+        applyLibraryOrder(nextOrder);
       });
     },
-    [postParams],
+    [
+      applyLibraryOrder,
+      markSaveDirty,
+      postParams,
+      refreshVault,
+      runDurableSave,
+    ],
   );
 
   // ── reorder: drag a grip → move an item before another in the library.
   const reorderLibrary = useCallback((dragId: string, beforeId: string) => {
     if (dragId === beforeId) return;
-    setLibraryOrder((cur) => {
-      const next = cur.filter((id) => id !== dragId);
-      const at = next.indexOf(beforeId);
-      if (at === -1) next.push(dragId);
-      else next.splice(at, 0, dragId);
-      return next;
-    });
-  }, []);
+    const next = libraryOrderRef.current.filter((id) => id !== dragId);
+    const at = next.indexOf(beforeId);
+    if (at === -1) next.push(dragId);
+    else next.splice(at, 0, dragId);
+    applyLibraryOrder(next);
+    markSaveDirty();
+    void runDurableSave(() => saveAuthoringOrder(next));
+  }, [applyLibraryOrder, markSaveDirty, runDurableSave]);
 
   const fabric = useMemo(
     () => fabricFromPkg(pkg, knobs, fabricId),
@@ -1009,17 +1333,15 @@ export default function Home() {
   // ObjectViewer only ever see the curved value.
   const opennessCurved = Math.pow(knobs.openness, 3);
 
-  // Empty field → 0 (non-metallic). Clamp so stray input can't push the shader
-  // past a physical 0..1 metalness.
-  // Metal is retired from the UI: presets still round-trip their stored
-  // metalness (so old files stay intact), but nothing renders metallic.
-  const metalness = 0;
+  const metalness = resolveMetalnessAmount(
+    metalnessInput,
+    Boolean(pkg?.maps.metalness),
+  );
 
   const mapEntries = useMemo<MapEntry[]>(() => {
     if (!pkg) return [];
     return MAP_ORDER.map((n) => pkg.maps[n]).filter((e): e is MapEntry => Boolean(e));
   }, [pkg]);
-
   // Fast hash → maps-source lookups, so a clone (or curated preset) can find
   // the maps + thumbnail behind its pkgHash.
   const sampleByHash = useMemo(
@@ -1068,7 +1390,7 @@ export default function Home() {
     const byId = new Map<string, LibraryItem>();
     // Cache runs that aren't themselves samples.
     for (const e of cacheEntries) {
-      if (sampleByHash.has(e.hash)) continue;
+      if (sampleByHash.has(e.hash) || e.hidden) continue;
       byId.set(e.hash, {
         id: e.hash,
         pkgHash: e.hash,
@@ -1125,18 +1447,231 @@ export default function Home() {
   useEffect(() => {
     if (!orderLoadedRef.current) return;
     const ids = libraryItems.map((i) => i.id);
-    setLibraryOrder((cur) => {
-      const kept = cur.filter((id) => ids.includes(id));
-      const missing = ids.filter((id) => !kept.includes(id));
-      if (missing.length === 0 && kept.length === cur.length) return cur;
-      return [...kept, ...missing];
+    const current = libraryOrderRef.current;
+    const kept = current.filter((id) => ids.includes(id));
+    const missing = ids.filter((id) => !kept.includes(id));
+    if (missing.length === 0 && kept.length === current.length) return;
+    const next = [...kept, ...missing];
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      applyLibraryOrder(next);
+      markSaveDirty();
+      void runDurableSave(() => saveAuthoringOrder(next));
     });
-  }, [libraryItems]);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    applyLibraryOrder,
+    libraryItems,
+    markSaveDirty,
+    runDurableSave,
+  ]);
+
+  const [exportState, setExportState] = useState<ExportState>("idle");
+
+  // ── map variations: never mutate a shared extraction in place. Read the
+  // complete current map set, vary one member, content-address the result,
+  // and commit it as a new authored swatch with the current controls. The
+  // original package (and any clones wearing it) stays intact.
+  const createMapVariation = useCallback(
+    async (name: MapName, file: File): Promise<void> => {
+      if (!pkg || !activeId) {
+        throw new Error("Select a material before creating a map variation");
+      }
+      if (file.size === 0) throw new Error("The selected map is empty");
+      if (file.size > 32 * 1024 * 1024) {
+        throw new Error("Map files must be 32 MB or smaller");
+      }
+      const sourceItem =
+        sampleItems.find((item) => item.id === activeId) ??
+        libraryItems.find((item) => item.id === activeId);
+      const sourceHash = sourceItem?.pkgHash ?? activePkgHashRef.current ?? pkg.id;
+      const sourceLabel =
+        sourceItem?.label ?? pkg.meta.fabricName ?? "material";
+      const itemId = crypto.randomUUID();
+      let failure: unknown = null;
+      markSaveDirty();
+      const saved = await runDurableSave(async () => {
+        try {
+          const { detectMapFormat } = await import(
+            "@/lib/export/materialExport"
+          );
+          const replacementBytes = await file.arrayBuffer();
+          const replacementFormat = detectMapFormat(replacementBytes, {
+            url: file.name,
+            mimeType: file.type,
+          });
+          if (
+            !replacementFormat ||
+            ![
+              "image/png",
+              "image/jpeg",
+              "image/webp",
+            ].includes(replacementFormat.mimeType)
+          ) {
+            throw new Error("Use a PNG, JPEG, or WebP map");
+          }
+
+          const prepared: {
+            name: MapName;
+            file: string;
+            bytes: ArrayBuffer;
+            provenance: MapEntry["provenance"];
+            sourceHash?: string;
+          }[] = [];
+          const bytesByFile = new Map<string, ArrayBuffer>();
+          for (const mapName of MAP_ORDER) {
+            const entry = pkg.maps[mapName];
+            if (!entry) continue;
+            let bytes: ArrayBuffer;
+            let format = replacementFormat;
+            if (mapName === name) {
+              bytes = replacementBytes;
+            } else {
+              bytes =
+                (await getCachedMap(entry.url)) ??
+                (await (async () => {
+                  const response = await fetch(entry.url);
+                  if (!response.ok) {
+                    throw new Error(
+                      `Could not reopen ${mapName}: map returned ${response.status}`,
+                    );
+                  }
+                  return response.arrayBuffer();
+                })());
+              const detected = detectMapFormat(bytes, { url: entry.url });
+              if (!detected) {
+                throw new Error(
+                  `Could not identify the current ${mapName} map format`,
+                );
+              }
+              format = detected;
+            }
+            const mapFile = `${mapName}.${format.extension}`;
+            bytesByFile.set(mapFile, bytes);
+            prepared.push({
+              name: mapName,
+              file: mapFile,
+              bytes,
+              provenance:
+                mapName === name ? "captured" : entry.provenance,
+              sourceHash: entry.sourceHash,
+            });
+          }
+          if (!prepared.some((map) => map.name === name)) {
+            throw new Error(`${name} is not present in this material`);
+          }
+
+          const pkgHash = await normalizeAuthoringHash(
+            `${sourceHash}:map-edit`,
+            bytesByFile,
+          );
+          const currentOrder = libraryOrderRef.current.filter(
+            (id) => id !== itemId,
+          );
+          const sourceIndex = currentOrder.indexOf(activeId);
+          if (sourceIndex === -1) currentOrder.push(itemId);
+          else currentOrder.splice(sourceIndex + 1, 0, itemId);
+          const currentMetalness = resolveMetalnessAmount(
+            parseFloat(metalnessInputRef.current) ||
+              sourceItem?.preset?.metalness ||
+              0,
+            Boolean(pkg.maps.metalness),
+          );
+          const label = `${sourceLabel} · ${name} edit`;
+          const preset = await importAuthoringMaterialBytes(
+            {
+              hash: pkgHash,
+              createdAt: new Date().toISOString(),
+              prompt: `map edit: ${sourceLabel} / ${name}`,
+              sourceFilename: file.name,
+              hidden: true,
+              maps: prepared.map((map) => ({
+                name: map.name,
+                file: map.file,
+                provenance: map.provenance,
+                sourceHash:
+                  map.name === name
+                    ? pkgHash
+                    : map.sourceHash ?? sourceHash,
+              })),
+            },
+            bytesByFile,
+            {
+              slug: itemId,
+              pkgHash,
+              name: label,
+              fabricId: fabricIdRef.current,
+              metalness: currentMetalness,
+              knobs: fabricKnobsOf(knobsRef.current),
+            },
+            currentOrder,
+          );
+          vaultPresetsRef.current = [
+            ...vaultPresetsRef.current.filter(
+              (candidate) => candidate.slug !== itemId,
+            ),
+            preset,
+          ];
+          setPresets((current) => [
+            ...current.filter((candidate) => candidate.slug !== itemId),
+            preset,
+          ]);
+          await refreshVault();
+          await refreshCache();
+          applyLibraryOrder(currentOrder);
+          const entry = vaultEntriesRef.current.find(
+            (candidate) => candidate.hash === pkgHash,
+          );
+          if (!entry) {
+            throw new Error("The map variation could not be reopened locally");
+          }
+          materialSwapRef.current(
+            () => {
+              loadCachedEntry(entry);
+              activePkgHashRef.current = pkgHash;
+              setActiveId(itemId);
+              applyParams(preset);
+              setExportState("idle");
+            },
+            {
+              expectedAlbedoURL: entry.maps.find(
+                (map) => map.name === "albedo",
+              )?.url,
+              ownerAfter: itemId,
+            },
+          );
+        } catch (error) {
+          failure = error;
+          throw error;
+        }
+      });
+      if (!saved) {
+        throw failure instanceof Error
+          ? failure
+          : new Error("The map variation was not saved");
+      }
+    },
+    [
+      activeId,
+      applyLibraryOrder,
+      applyParams,
+      libraryItems,
+      loadCachedEntry,
+      markSaveDirty,
+      pkg,
+      refreshCache,
+      refreshVault,
+      runDurableSave,
+      sampleItems,
+    ],
+  );
 
   // ── material export (zip: PBR maps + ORM + glb + json + README) ─────────
   // Live knob/metalness values are read through refs at click time so the
   // callback stays stable and the memoized MapsStrip skips knob-drag renders.
-  const [exportState, setExportState] = useState<ExportState>("idle");
   const handleExport = useCallback(async () => {
     if (!pkg || exportState === "working") return;
     setExportState("working");
@@ -1144,11 +1679,11 @@ export default function Home() {
       const { exportMaterial } = await import("@/lib/export/materialExport");
       const k = knobsRef.current;
       const fId = fabricIdRef.current;
-      const metal = Math.min(
-        1,
-        Math.max(0, parseFloat(metalnessInputRef.current) || 0),
+      const metal = resolveMetalnessAmount(
+        metalnessInputRef.current,
+        Boolean(pkg.maps.metalness),
       );
-      await exportMaterial({
+      const result = await exportMaterial({
         name: pkg.meta.fabricName || FABRICS[fId].nameRoman,
         pkg,
         knobs: fabricKnobsOf(k),
@@ -1156,7 +1691,15 @@ export default function Home() {
         openness: Math.pow(k.openness, 3),
         fabric: FABRICS[fId],
       });
-      setExportState("idle");
+      if (result.complete) {
+        setExportState("idle");
+      } else {
+        setExportState("partial");
+        setStatus({
+          kind: "error",
+          message: `Bundle downloaded with ${result.issues.length} omitted artifact${result.issues.length === 1 ? "" : "s"}. Open README.md for the exact list.`,
+        });
+      }
     } catch (e) {
       console.error("material export failed", e);
       setExportState("error");
@@ -1203,11 +1746,33 @@ export default function Home() {
         libraryItems.find((i) => i.id === id);
       if (!item) return;
       const preset = item.preset;
+      const persist = async (
+        targetId: string,
+        pkgHash: string,
+        nextFabricId: FabricId,
+        nextMetalness: number,
+        nextKnobs: FabricKnobs,
+      ) => {
+        markSaveDirty();
+        await runDurableSave(async () => {
+          if (item.entry) {
+            await saveAuthoringMaterial(authoringMaterialFromEntry(item.entry));
+            await refreshVault();
+          }
+          await postParams(
+            targetId,
+            pkgHash,
+            name,
+            nextFabricId,
+            nextMetalness,
+            nextKnobs,
+          );
+        });
+      };
       if (preset) {
-        await postParams(
+        await persist(
           preset.slug,
           preset.pkgHash ?? item.pkgHash,
-          name,
           preset.fabricId,
           preset.metalness,
           preset.knobs,
@@ -1215,10 +1780,12 @@ export default function Home() {
         return;
       }
       if (activeId === id) {
-        await postParams(id, item.pkgHash, name, fabricId, metalness, knobs);
+        await persist(id, item.pkgHash, fabricId, metalness, fabricKnobsOf(knobs));
         return;
       }
       if (!item.entry) return;
+      let estimatedMetalness = 0;
+      let estimatedKnobs = fabricKnobsOf(knobs);
       try {
         const p = pkgFromMaps(
           item.entry.sourceFilename ?? "material",
@@ -1236,20 +1803,39 @@ export default function Home() {
         }
         const { estimateParams } = await import("@/lib/pipeline/estimateParams");
         const est = await estimateParams(p);
-        await postParams(id, item.pkgHash, name, fabricId, est.metalness, {
+        estimatedMetalness = est.metalness;
+        estimatedKnobs = {
           ...knobs,
           ...est.knobs,
-        });
+        };
       } catch {
-        await postParams(id, item.pkgHash, name, fabricId, 0, knobs);
+        // Estimation is optional; persist the current material controls.
       }
+      await persist(
+        id,
+        item.pkgHash,
+        fabricId,
+        estimatedMetalness,
+        estimatedKnobs,
+      );
     },
-    [sampleItems, libraryItems, activeId, fabricId, metalness, knobs, postParams],
+    [
+      activeId,
+      fabricId,
+      libraryItems,
+      markSaveDirty,
+      metalness,
+      knobs,
+      postParams,
+      refreshVault,
+      runDurableSave,
+      sampleItems,
+    ],
   );
 
   // ── collection zip: download everything / restore everything ───────────
   const [collectionBusy, setCollectionBusy] = useState<
-    "export" | "import" | null
+    "export" | "import" | "material-import" | null
   >(null);
   const exportCollectionZip = useCallback(async () => {
     if (collectionBusy) return;
@@ -1267,39 +1853,185 @@ export default function Home() {
     async (file: File) => {
       if (collectionBusy) return;
       setCollectionBusy("import");
-      try {
-        const { importCollection } = await import(
-          "@/lib/export/collectionExport"
-        );
-        const res = await importCollection(file);
-        // Re-read the vault (import wrote the durable copy there) before folding
-        // it into the cache + preset lists.
-        await refreshVault();
-        await refreshCache();
-        await refreshPresets();
-        // Restored ids adopt the manifest's order; existing items keep theirs.
-        setLibraryOrder((cur) => {
-          const merged = [...cur.filter((id) => !res.order.includes(id)), ...res.order];
-          return merged;
-        });
-        // A partial import (some maps/params didn't restore) is not an
-        // exception — surface it so it doesn't read as a clean success.
-        if (res.failed > 0) {
-          setStatus({
-            kind: "error",
-            message: `Imported ${res.restored} material${res.restored === 1 ? "" : "s"}, but ${res.failed} didn't restore fully — see console for details.`,
-          });
+      markSaveDirty();
+      let failure: unknown = null;
+      const saved = await runDurableSave(async () => {
+        try {
+          const { importCollection } = await import(
+            "@/lib/export/collectionExport"
+          );
+          const res = await importCollection(file);
+          // Restored ids adopt the archive order; existing local items retain
+          // their relative order. Commit that merged order before showing rows.
+          const merged = [
+            ...libraryOrderRef.current.filter(
+              (id) => !res.order.includes(id),
+            ),
+            ...res.order,
+          ];
+          await saveAuthoringOrder(merged);
+          await refreshVault();
+          await Promise.all([refreshCache(), refreshPresets()]);
+          applyLibraryOrder(merged);
+        } catch (error) {
+          failure = error;
+          throw error;
         }
-      } catch (err) {
+      });
+      if (!saved) {
         setStatus({
           kind: "error",
-          message: err instanceof Error ? err.message : String(err),
+          message:
+            failure instanceof Error
+              ? failure.message
+              : "Collection import did not complete",
         });
-      } finally {
-        setCollectionBusy(null);
       }
+      setCollectionBusy(null);
     },
-    [collectionBusy, refreshVault, refreshCache, refreshPresets],
+    [
+      applyLibraryOrder,
+      collectionBusy,
+      markSaveDirty,
+      refreshVault,
+      refreshCache,
+      refreshPresets,
+      runDurableSave,
+    ],
+  );
+
+  // A single exported material is also an input. Validate or migrate its
+  // LoomMaterial document, commit all declared maps and authored controls in
+  // one local transaction, then wear the IndexedDB-hydrated copy.
+  const importMaterialZip = useCallback(
+    async (file: File) => {
+      if (collectionBusy) return;
+      setCollectionBusy("material-import");
+      markSaveDirty();
+      // Keep the identity stable if this durable job has to be retried.
+      const itemId = crypto.randomUUID();
+      let failure: unknown = null;
+      const saved = await runDurableSave(async () => {
+        try {
+          const { readMaterialBundle } = await import(
+            "@/lib/export/materialExport"
+          );
+          const reopened = await readMaterialBundle(file);
+          try {
+            const bytesByFile = new Map<string, ArrayBuffer>();
+            const vaultMaps: {
+              name: MapName;
+              file: string;
+              provenance: MapEntry["provenance"];
+              sourceHash?: string;
+            }[] = [];
+            for (const name of MAP_ORDER) {
+              const descriptor = reopened.document.maps[name];
+              const bytes = reopened.mapBytes[name];
+              if (!descriptor || !bytes) continue;
+              bytesByFile.set(descriptor.file, bytes);
+              vaultMaps.push({
+                name,
+                file: descriptor.file,
+                provenance: descriptor.provenance,
+                sourceHash: descriptor.sourceHash,
+              });
+            }
+            const pkgHash = await normalizeAuthoringHash(
+              reopened.document.source.identity,
+              bytesByFile,
+            );
+            const nextOrder = [
+              ...libraryOrderRef.current.filter((id) => id !== itemId),
+              itemId,
+            ];
+            const preset = await importAuthoringMaterialBytes(
+              {
+                hash: pkgHash,
+                createdAt: reopened.document.createdAt,
+                prompt: reopened.document.source.captureNotes,
+                sourceFilename: reopened.document.name,
+                maps: vaultMaps,
+                // The imported authored item gets its own UUID. Keep the shared
+                // source package as a hidden map owner so only that item appears.
+                hidden: true,
+              },
+              bytesByFile,
+              {
+                slug: itemId,
+                pkgHash,
+                name: reopened.document.name,
+                fabricId: reopened.document.fabric.id,
+                metalness: reopened.metalness,
+                knobs: reopened.knobs,
+              },
+              nextOrder,
+            );
+            vaultPresetsRef.current = [
+              ...vaultPresetsRef.current.filter(
+                (candidate) => candidate.slug !== itemId,
+              ),
+              preset,
+            ];
+            setPresets((current) => [
+              ...current.filter((candidate) => candidate.slug !== itemId),
+              preset,
+            ]);
+            await refreshVault();
+            await refreshCache();
+            applyLibraryOrder(nextOrder);
+            const entry = vaultEntriesRef.current.find(
+              (candidate) => candidate.hash === pkgHash,
+            );
+            if (!entry) {
+              throw new Error("Imported maps could not be reopened locally");
+            }
+            materialSwapRef.current(
+              () => {
+                loadCachedEntry(entry);
+                activePkgHashRef.current = pkgHash;
+                setActiveId(itemId);
+                applyParams(preset);
+              },
+              {
+                expectedAlbedoURL: entry.maps.find(
+                  (map) => map.name === "albedo",
+                )?.url,
+                ownerAfter: itemId,
+              },
+            );
+            setStatus({ kind: "done", cacheHit: true, hash: pkgHash });
+          } finally {
+            // Every retry opens fresh object URLs; release that attempt's URLs
+            // once the vault-hydrated copies have taken over.
+            reopened.revoke();
+          }
+        } catch (error) {
+          failure = error;
+          throw error;
+        }
+      });
+      if (!saved) {
+        setStatus({
+          kind: "error",
+          message:
+            failure instanceof Error
+              ? failure.message
+              : "Material import did not complete",
+        });
+      }
+      setCollectionBusy(null);
+    },
+    [
+      applyLibraryOrder,
+      applyParams,
+      collectionBusy,
+      loadCachedEntry,
+      markSaveDirty,
+      refreshCache,
+      refreshVault,
+      runDurableSave,
+    ],
   );
 
   const materialTransfer = useMaterialTransfer({
@@ -1341,7 +2073,16 @@ export default function Home() {
         </div>
       ) : null}
       <MaterialTransferLayer command={materialTransfer.command} />
-      <NavBar mode={mode} onMode={setMode} status={status} />
+      <NavBar
+        mode={mode}
+        onMode={setMode}
+        status={status}
+        saveStatus={saveStatus}
+        saveMessage={saveMessage}
+        onRetrySave={() => {
+          void retryFailedSaves();
+        }}
+      />
 
       {/* Mobile-only bottom tab bar: workshop · swatches · tuning in one
           dock. Re-tapping the active tab collapses the sheet to the bottom
@@ -1466,9 +2207,11 @@ export default function Home() {
             <div
               className="side-panel-scroll panel-tab-pane"
               aria-hidden={workshopTab !== "workshop"}
+              inert={workshopTab !== "workshop"}
             >
               <MapsStrip
                 entries={mapEntries}
+                onCreateVariation={createMapVariation}
                 exportState={exportState}
                 canExport={Boolean(pkg)}
                 onExport={handleExport}
@@ -1486,6 +2229,7 @@ export default function Home() {
             <div
               className="side-panel-scroll panel-tab-pane swatch-stamped"
               aria-hidden={workshopTab !== "swatches"}
+              inert={workshopTab !== "swatches"}
               style={
                 {
                   "--stamp-mask": `url("${STAMP_MASK_URI}")`,
@@ -1543,6 +2287,22 @@ export default function Home() {
                         const f = e.currentTarget.files?.[0];
                         e.currentTarget.value = "";
                         if (f) void importCollectionZip(f);
+                      }}
+                    />
+                  </label>
+                  <label className="btn btn-ghost collection-load material-load">
+                    {collectionBusy === "material-import"
+                      ? "opening material…"
+                      : "load one material"}
+                    <input
+                      type="file"
+                      accept=".zip,application/zip"
+                      hidden
+                      disabled={collectionBusy !== null}
+                      onChange={(e) => {
+                        const f = e.currentTarget.files?.[0];
+                        e.currentTarget.value = "";
+                        if (f) void importMaterialZip(f);
                       }}
                     />
                   </label>
@@ -1888,7 +2648,7 @@ export default function Home() {
               />
               <IntSlider
                 label="pom min"
-                hint="quality floor for the relief effect (steps per pixel)"
+                hint="guaranteed relief samples even when the offset is small on screen"
                 value={knobs.pomMinSteps}
                 min={2}
                 max={32}
@@ -1896,7 +2656,7 @@ export default function Home() {
               />
               <IntSlider
                 label="pom max"
-                hint="quality ceiling for the relief at grazing angles"
+                hint="ceiling for grazing angles and close-up relief"
                 value={knobs.pomMaxSteps}
                 min={8}
                 max={64}
@@ -2029,12 +2789,18 @@ export default function Home() {
                 </span>
                 <span className="perf-meter-unit">fps</span>
               </span>
-              <span className="perf-meter">
-                <span className="perf-meter-val">
-                  {perfStats ? perfStats.simMs.toFixed(1) : "—"}
+                <span className="perf-meter">
+                  <span className="perf-meter-val">
+                    {perfStats ? perfStats.simMs.toFixed(1) : "—"}
+                  </span>
+                  <span className="perf-meter-unit">sim ms</span>
                 </span>
-                <span className="perf-meter-unit">sim ms</span>
-              </span>
+                <span className="perf-meter">
+                  <span className="perf-meter-val">
+                    {perfStats?.gpuMs ? perfStats.gpuMs.toFixed(1) : "—"}
+                  </span>
+                  <span className="perf-meter-unit">gpu ms</span>
+                </span>
               <span className="perf-meter">
                 <span className="perf-meter-val">
                   {perfStats ? `${Math.round(perfStats.tris / 1000)}k` : "—"}
@@ -2098,7 +2864,7 @@ export default function Home() {
               ))}
             </div>
 
-            <SectionLabel hint="texture sharpness at glancing angles — higher keeps the weave crisp edge-on">anisotropy</SectionLabel>
+            <SectionLabel hint="final map sharpness at glancing angles; the repeated height march stays capped at 2×">anisotropy</SectionLabel>
             <div className="tx-mode-picker tx-mode-picker-wide" role="tablist">
               <PixelPlay />
               {([2, 4, 8] as const).map((v) => (

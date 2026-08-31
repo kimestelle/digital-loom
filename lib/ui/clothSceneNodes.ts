@@ -213,7 +213,9 @@ export function createClothMaterial() {
 
   material.fragmentNode = Fn(() => {
     const N = vNormalRaw.normalize().toVar();
-    const L = u.u_lightDir.normalize().toVar(); // direction the sun light travels
+    // updateSun supplies a unit vector; normalizing it again in every fragment
+    // spent reciprocal-square-root work without changing the direction.
+    const L = vec3(u.u_lightDir).toVar(); // direction the sun light travels
     const V = cameraPosition.sub(positionWorld).normalize().toVar();
 
     // ── Stretch response ──────────────────────────────────────────────────
@@ -259,6 +261,11 @@ export function createClothMaterial() {
     // debug/full-shading branch chain so all derivative work stays in uniform
     // control flow (a WGSL uniformity requirement).
     const tiledUv = vUv.mul(u.u_tileScale).toVar();
+    // Explicit base gradients remain legal inside the divergent POM loops and
+    // let the sampler choose/cache an appropriate mip. The former forced LOD
+    // 0 path fetched full-resolution height texels at every march step.
+    const tiledDx = dFdx(tiledUv).toVar();
+    const tiledDy = dFdy(tiledUv).toVar();
     const TBN = pomCotangentFrame(N, positionWorld, tiledUv).toVar();
     const TBNt = transpose(TBN).toVar(); // world→tangent, reused below
     const viewTS = TBNt.mul(V).normalize().toVar();
@@ -271,6 +278,8 @@ export function createClothMaterial() {
         tex.density,
         tiledUv,
         viewTS,
+        tiledDx,
+        tiledDy,
         pomScaleEff,
         u.u_pomMinSteps,
         u.u_pomMaxSteps,
@@ -320,7 +329,7 @@ export function createClothMaterial() {
           hemFactor.assign(smoothstep(carve, carve.add(hemWidth), d).oneMinus());
         });
 
-        const albedoSample = tex.albedo.sample(pomUv).rgb.toVar();
+        const albedoSample = tex.albedo.sample(pomUv).grad(tiledDx, tiledDy).rgb.toVar();
         const fabricColor = mix(
           u.u_baseColor.rgb,
           albedoSample,
@@ -336,7 +345,12 @@ export function createClothMaterial() {
         If(
           u.u_hasNormalTex.greaterThan(0.5).and(u.u_normalAmount.greaterThan(0.0)),
           () => {
-            const nTS = tex.normal.sample(pomUv).xyz.mul(2.0).sub(1.0).toVar();
+            const nTS = tex.normal
+              .sample(pomUv)
+              .grad(tiledDx, tiledDy)
+              .xyz.mul(2.0)
+              .sub(1.0)
+              .toVar();
             nTS.assign(vec3(nTS.xy.mul(u.u_normalAmount), nTS.z));
             Ns.assign(TBN.mul(nTS.normalize()).normalize());
           },
@@ -346,6 +360,11 @@ export function createClothMaterial() {
         // March from the contact point toward the sun through the height
         // field; threads shadow each other. Only direct sun terms are
         // attenuated — ambient and back-transmission take different paths.
+        // This same contact texel also drives density below, so fetch it once.
+        const texel = tex.density
+          .sample(pomUv)
+          .grad(tiledDx, tiledDy)
+          .r.toVar();
         const sunShade = float(1.0).toVar();
         If(
           u.u_pomScale.greaterThan(0.0).and(u.u_pomShadow.greaterThan(0.0)),
@@ -355,6 +374,9 @@ export function createClothMaterial() {
               tex.density,
               pomUv,
               lightTS,
+              tiledDx,
+              tiledDy,
+              texel.oneMinus(),
               u.u_pomScale,
               u.u_pomMinSteps,
               u.u_pomMaxSteps,
@@ -363,7 +385,6 @@ export function createClothMaterial() {
           },
         );
 
-        const texel = tex.density.sample(pomUv).r;
         const albedoLum = dot(albedoSample, vec3(0.2126, 0.7152, 0.0722)).toVar();
         // Density is a weighted blend of up to three source maps (height,
         // albedo, roughness), each with its own independent weight. Zero-weight
@@ -373,7 +394,7 @@ export function createClothMaterial() {
         // density to an extreme.
         const roughLum = select(
           u.u_hasRoughnessTex.greaterThan(0.5),
-          tex.roughness.sample(pomUv).r,
+          tex.roughness.sample(pomUv).grad(tiledDx, tiledDy).r,
           float(0.5),
         );
         const txSum = u.u_txHeight.add(u.u_txAlbedo).add(u.u_txRoughness);
@@ -414,13 +435,23 @@ export function createClothMaterial() {
           .ElseIf(
             u.u_alphaBoostSource.equal(2.0).and(u.u_hasRoughnessTex.greaterThan(0.5)),
             () => {
-              boostWeight.assign(tex.roughness.sample(pomUv).r.oneMinus());
+              boostWeight.assign(
+                tex.roughness
+                  .sample(pomUv)
+                  .grad(tiledDx, tiledDy)
+                  .r.oneMinus(),
+              );
             },
           )
           .ElseIf(
             u.u_alphaBoostSource.equal(3.0).and(u.u_hasMetalnessTex.greaterThan(0.5)),
             () => {
-              boostWeight.assign(tex.metalness.sample(pomUv).r.oneMinus());
+              boostWeight.assign(
+                tex.metalness
+                  .sample(pomUv)
+                  .grad(tiledDx, tiledDy)
+                  .r.oneMinus(),
+              );
             },
           );
 
@@ -490,8 +521,13 @@ export function createClothMaterial() {
         // normal, so individual threads sparkle instead of the whole sheet.
         // Taut threads lie flat and parallel — they catch a sharper specular.
         const graze = dot(Ns, V).abs().oneMinus();
-        const sheen = pow(graze, 3.0)
+        // The map's roughness now affects the actual surface response instead
+        // of serving only as an optional transparency mask. Rough fibres carry
+        // a broader, quieter sheen; smooth fibres keep it tight and bright.
+        const sheenPower = mix(4.0, 2.0, roughLum);
+        const sheen = pow(graze, sheenPower)
           .mul(u.u_sheen)
+          .mul(mix(1.35, 0.65, roughLum))
           .mul(mix(1.0, 1.5, hemFactor))
           .mul(strainMag.mul(1.5).add(1.0));
 
@@ -533,7 +569,7 @@ export function createClothMaterial() {
         If(u.u_metalness.greaterThan(0.0), () => {
           const metalMap = select(
             u.u_hasMetalnessTex.greaterThan(0.5),
-            tex.metalness.sample(pomUv).r,
+            tex.metalness.sample(pomUv).grad(tiledDx, tiledDy).r,
             float(1.0),
           );
           metal.assign(clamp(metalMap.mul(u.u_metalness), 0.0, 1.0));
@@ -542,7 +578,8 @@ export function createClothMaterial() {
           const Ldir = L.negate(); // toward the sun
           const H = Ldir.add(V).normalize();
           const ndl = max(dot(Ns, Ldir), 0.0);
-          const spec = pow(max(dot(Ns, H), 0.0), 42.0);
+          const specPower = mix(72.0, 18.0, roughLum);
+          const spec = pow(max(dot(Ns, H), 0.0), specPower);
           const metallic = u.u_lightColor.rgb
             .mul(fabricColor)
             .mul(spec.mul(3.5).add(ndl.mul(0.25)))
@@ -554,9 +591,10 @@ export function createClothMaterial() {
         // Exponential fog blend — same formula FogExp2 uses, fed by uniforms
         // so the cloth dissolves into the atmosphere with the rest of the
         // scene (scene fog itself is off for this material).
-        const dist = length(cameraPosition.sub(positionWorld));
+        const fogDelta = cameraPosition.sub(positionWorld);
+        const distSq = dot(fogDelta, fogDelta);
         const fogAmt = exp(
-          u.u_fogDensity.mul(u.u_fogDensity).mul(dist).mul(dist).negate(),
+          u.u_fogDensity.mul(u.u_fogDensity).mul(distSq).negate(),
         ).oneMinus();
         color.assign(mix(color, u.u_fogColor.rgb, clamp(fogAmt, 0.0, 1.0)));
 
@@ -570,19 +608,18 @@ export function createClothMaterial() {
         // between its swatch and this mesh. The canvas transfer layer uses the
         // same hash and 64×64 grid, so cells disappear there on the frame they
         // appear here.
-        const revealCell = floor(vUv.mul(64.0));
-        const revealNoise = fract(
-          sin(dot(revealCell, vec2(127.1, 311.7))).mul(43758.5453123),
-        );
-        const pixelReveal = select(
-          u.u_materialReveal.lessThanEqual(0.0),
-          float(0.0),
-          select(
-            u.u_materialReveal.greaterThanEqual(1.0),
-            float(1.0),
-            step(revealNoise, u.u_materialReveal),
-          ),
-        );
+        const pixelReveal = float(1.0).toVar();
+        // A real uniform branch keeps the hash's sin() out of the steady-state
+        // shader path. select() evaluates both values, even at reveal = 1.
+        If(u.u_materialReveal.lessThanEqual(0.0), () => {
+          pixelReveal.assign(0.0);
+        }).ElseIf(u.u_materialReveal.lessThan(1.0), () => {
+          const revealCell = floor(vUv.mul(64.0));
+          const revealNoise = fract(
+            sin(dot(revealCell, vec2(127.1, 311.7))).mul(43758.5453123),
+          );
+          pixelReveal.assign(step(revealNoise, u.u_materialReveal));
+        });
 
         outColor.assign(
           vec4(color, alpha.mul(u.u_fade).mul(pixelReveal)),

@@ -21,7 +21,7 @@ const nectoMono = localFont({
 export const metadata: Metadata = {
   title: "digital loom",
   description:
-    "capture-to-shader pipeline: two-photo captures become a full extended PBR material",
+    "fabric material authoring: one photograph becomes tunable maps, cloth behavior, and portable assets",
 };
 
 export default function RootLayout({
