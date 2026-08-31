@@ -2207,7 +2207,6 @@ export default function Home() {
             <div
               className="side-panel-scroll panel-tab-pane"
               aria-hidden={workshopTab !== "workshop"}
-              inert={workshopTab !== "workshop"}
             >
               <MapsStrip
                 entries={mapEntries}
@@ -2229,7 +2228,6 @@ export default function Home() {
             <div
               className="side-panel-scroll panel-tab-pane swatch-stamped"
               aria-hidden={workshopTab !== "swatches"}
-              inert={workshopTab !== "swatches"}
               style={
                 {
                   "--stamp-mask": `url("${STAMP_MASK_URI}")`,
