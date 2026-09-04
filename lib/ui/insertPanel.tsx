@@ -49,8 +49,10 @@ export const InsertPanel = memo(function InsertPanel({
   return (
     <section className="panel-section" data-dye="madder">
       <SectionLabel>insert</SectionLabel>
-      <div
+      <button
+        type="button"
         className="mini-drop"
+        aria-label={stagedName ? `replace staged photo ${stagedName}` : "choose a fabric photo"}
         data-over={dragOver}
         onDragOver={(e) => {
           e.preventDefault();
@@ -64,16 +66,19 @@ export const InsertPanel = memo(function InsertPanel({
         }}
         onClick={() => fileInputRef.current?.click()}
       >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          hidden
-          onChange={(e) => onFiles(e.currentTarget.files)}
-        />
         <span className="mini-drop-title">{stagedName ?? "drop photo"}</span>
         <span className="mini-drop-hint">{stagedName ? "ready" : "or click"}</span>
-      </div>
+      </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          onFiles(e.currentTarget.files);
+          e.currentTarget.value = "";
+        }}
+      />
       <label className="prompt-field prompt-field-compact">
         <span className="prompt-label">prompt</span>
         <input

@@ -86,6 +86,13 @@ import {
   pomSelfShadow,
   pomTrace,
 } from "@/lib/cloth/pom.tsl";
+import {
+  CLOTH_LAUNCH_MAP_SIZE,
+  CLOTH_LAUNCH_NOISE_WINDOW_MS,
+  CLOTH_LAUNCH_SHIMMER_DURATION_MS,
+  CLOTH_LAUNCH_TOTAL_MS,
+  createClothLaunchShimmerData,
+} from "@/lib/ui/clothLaunchShimmer";
 
 // 1×1 opaque black. Bound to a sampler slot that has no map so the shader
 // samples black exactly like WebGL did with a null sampler uniform. One
@@ -97,6 +104,22 @@ export function makeBlackTexture(): DataTexture {
   const t = new DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
   t.wrapS = t.wrapT = RepeatWrapping;
   t.generateMipmaps = false;
+  t.minFilter = LinearFilter;
+  t.magFilter = LinearFilter;
+  t.needsUpdate = true;
+  return t;
+}
+
+function makeLaunchShimmerTexture(): DataTexture {
+  const t = new DataTexture(
+    createClothLaunchShimmerData(),
+    CLOTH_LAUNCH_MAP_SIZE,
+    CLOTH_LAUNCH_MAP_SIZE,
+  );
+  t.wrapS = t.wrapT = RepeatWrapping;
+  t.generateMipmaps = false;
+  // The CPU map already contains smoothly interpolated multi-scale noise;
+  // linear filtering prevents its 64×64 storage grid from reading as pixels.
   t.minFilter = LinearFilter;
   t.magFilter = LinearFilter;
   t.needsUpdate = true;
@@ -128,12 +151,14 @@ export function createClothMaterial() {
     normal: makeBlackTexture(),
     roughness: makeBlackTexture(),
   };
+  const launchShimmer = makeLaunchShimmerTexture();
   const tex = {
     albedo: texture(blanks.albedo),
     density: texture(blanks.density),
     metalness: texture(blanks.metalness),
     normal: texture(blanks.normal),
     roughness: texture(blanks.roughness),
+    launchShimmer: texture(launchShimmer),
   };
 
   // Initial values mirror the old constructor defaults. The knob uniforms are
@@ -175,6 +200,9 @@ export function createClothMaterial() {
     u_txRoughness: uniform(0.0),
     u_transmissionContrast: uniform(0.3),
     u_materialReveal: uniform(1.0),
+    // 0→1 over one launch only. A uniform branch removes the map sample and
+    // tint math permanently once the reveal finishes.
+    u_launchProgress: uniform(0.0),
     u_iridescence: uniform(0.0),
     u_fade: uniform(1.0),
     u_fogColor: uniform(new Color(0xbecfe0)),
@@ -588,6 +616,47 @@ export function createClothMaterial() {
           color.assign(mix(color, metallic, metal));
         });
 
+        // The portfolio's ShimmerText rule translated onto UV space: broad-
+        // weighted deterministic noise staggers local arrivals across a 160ms
+        // window; every arrived patch keeps a sampled purple→orange→teal dye
+        // briefly, then settles completely to the real PBR result. The noise
+        // lives in one tiny CPU-generated texture rather than several sin()
+        // calls per fragment. At progress=1 this entire branch is skipped.
+        const launchOpacity = float(1.0).toVar();
+        If(u.u_launchProgress.lessThan(1.0), () => {
+          const launchSample = tex.launchShimmer.sample(vUv);
+          const delayWindow =
+            CLOTH_LAUNCH_NOISE_WINDOW_MS / CLOTH_LAUNCH_TOTAL_MS;
+          const localDuration =
+            CLOTH_LAUNCH_SHIMMER_DURATION_MS / CLOTH_LAUNCH_TOTAL_MS;
+          const localProgress = clamp(
+            u.u_launchProgress
+              .sub(launchSample.r.mul(delayWindow))
+              .div(localDuration),
+            0.0,
+            1.0,
+          ).toVar();
+          // A continuous surface needs a short invisible lead-in to retain the
+          // clustered arrival that discrete glyphs get naturally. Without it,
+          // tiny alpha values across the whole sheet read as a uniform fade.
+          launchOpacity.assign(smoothstep(0.12, 0.82, localProgress));
+
+          const hue = launchSample.g;
+          const purple = vec3(122 / 255, 87 / 255, 153 / 255);
+          const orange = vec3(240 / 255, 133 / 255, 71 / 255);
+          const teal = vec3(92 / 255, 179 / 255, 163 / 255);
+          const sampledDye = select(
+            hue.lessThan(0.5),
+            mix(purple, orange, hue.mul(2.0)),
+            mix(orange, teal, hue.sub(0.5).mul(2.0)),
+          );
+          const tint = smoothstep(0.25, 1.0, localProgress)
+            .oneMinus()
+            .mul(launchOpacity)
+            .mul(0.42);
+          color.assign(mix(color, sampledDye, tint));
+        });
+
         // Exponential fog blend — same formula FogExp2 uses, fed by uniforms
         // so the cloth dissolves into the atmosphere with the rest of the
         // scene (scene fog itself is off for this material).
@@ -622,13 +691,16 @@ export function createClothMaterial() {
         });
 
         outColor.assign(
-          vec4(color, alpha.mul(u.u_fade).mul(pixelReveal)),
+          vec4(
+            color,
+            alpha.mul(u.u_fade).mul(pixelReveal).mul(launchOpacity),
+          ),
         );
       });
     return outColor;
   })();
 
-  return { material, u, tex, blanks };
+  return { material, u, tex, blanks, launchShimmer };
 }
 
 // ── Sky ───────────────────────────────────────────────────────────────────────

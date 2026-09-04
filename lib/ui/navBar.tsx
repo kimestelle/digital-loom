@@ -76,7 +76,6 @@ export const NavBar = memo(function NavBar({
       <div className="nav-bar-inner">
         <div className="nav-brand">
           <span className="nav-brand-name">digital loom</span>
-          <span className="nav-brand-sub">fabric material instrument</span>
         </div>
         <ModeButton mode={mode} onMode={onMode} />
         <div className="nav-status-group">

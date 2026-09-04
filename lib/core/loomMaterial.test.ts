@@ -6,10 +6,10 @@ import {
   migrateLoomMaterial,
   parseLoomMaterial,
   serializeLoomMaterial,
-  type LoomMaterialV2,
+  type LoomMaterialV3,
 } from "./loomMaterial";
 
-function document(): LoomMaterialV2 {
+function document(): LoomMaterialV3 {
   return {
     schema: LOOM_MATERIAL_SCHEMA,
     id: "variant-a",
@@ -39,6 +39,12 @@ function document(): LoomMaterialV2 {
         colorSpace: "srgb",
         provenance: "patina",
         sourceHash: "source-hash",
+        asset: {
+          sha256: "a".repeat(64),
+          byteLength: 1234,
+          width: 1024,
+          height: 1024,
+        },
       },
       normal: {
         name: "normal",
@@ -55,7 +61,7 @@ function document(): LoomMaterialV2 {
   };
 }
 
-describe("loom.material/2 contract", () => {
+describe("loom.material/3 contract", () => {
   it("round-trips the full authored material state", () => {
     const original = document();
     const parsed = parseLoomMaterial(serializeLoomMaterial(original));
@@ -86,6 +92,39 @@ describe("loom.material/2 contract", () => {
     const wrongNormal = structuredClone(document());
     delete wrongNormal.maps.normal!.normalConvention;
     expect(() => parseLoomMaterial(wrongNormal)).toThrow(/opengl-y\+/);
+
+    const wrongAsset = structuredClone(document());
+    wrongAsset.maps.albedo!.asset!.sha256 = "not-a-digest";
+    expect(() => parseLoomMaterial(wrongAsset)).toThrow(/sha256/);
+  });
+});
+
+describe("loom.material/2 migration", () => {
+  it("opens the former strict document without inventing byte metadata", () => {
+    const legacy = structuredClone(document()) as unknown as Record<
+      string,
+      unknown
+    >;
+    legacy.schema = "loom.material/2";
+    const maps = legacy.maps as Record<string, Record<string, unknown>>;
+    delete maps.albedo.asset;
+
+    const migrated = migrateLoomMaterial(legacy);
+
+    expect(migrated.schema).toBe(LOOM_MATERIAL_SCHEMA);
+    expect(migrated.maps.albedo?.asset).toBeUndefined();
+    expect(migrated.authored).toEqual(document().authored);
+  });
+
+  it("does not disguise v3 asset metadata as a v2 document", () => {
+    const mislabeled = structuredClone(document()) as unknown as Record<
+      string,
+      unknown
+    >;
+    mislabeled.schema = "loom.material/2";
+    expect(() => migrateLoomMaterial(mislabeled)).toThrow(
+      /asset metadata requires loom\.material\/3/,
+    );
   });
 });
 

@@ -25,12 +25,22 @@ import { FABRICS } from "../cloth/fabrics";
 import type { MapName, Provenance } from "../core/materialPackage";
 import {
   LOOM_MATERIAL_SCHEMA,
-  type LoomMaterialV2,
+  type LoomMaterialV3,
 } from "../core/loomMaterial";
+import {
+  inspectMapAsset,
+  verifyMapAsset,
+  type MapAssetMetadata,
+} from "../core/mapAsset";
 import { getCachedMap, putCachedMap } from "./mapCache";
 import { detectMapFormat } from "./materialExport";
 import {
+  assertArchiveInputSize,
+  assertSafeArchiveContents,
+} from "./archiveSafety";
+import {
   collectionOrderIds,
+  CURRENT_COLLECTION_VERSION,
   validateCollectionManifest,
   type CollectionManifest,
   type ManifestMaterial,
@@ -57,6 +67,7 @@ export interface CollectionMaterial {
       url: string;
       provenance?: Provenance;
       sourceHash?: string;
+      asset?: MapAssetMetadata;
     }[];
   };
   preset?: MaterialPreset;
@@ -86,8 +97,8 @@ function slugAllocator() {
 
 function canonicalMaterialFor(
   item: CollectionMaterial,
-  maps: LoomMaterialV2["maps"],
-): LoomMaterialV2 | undefined {
+  maps: LoomMaterialV3["maps"],
+): LoomMaterialV3 | undefined {
   const preset = item.preset;
   if (!preset) return undefined;
   const fabric = FABRICS[preset.fabricId];
@@ -133,7 +144,7 @@ export async function exportCollection(
   // ownership. Packaging owners first must not reorder the archive on restore.
   const slugById = new Map(items.map((item) => [item.id, nextSlug(item.label)]));
   const slugByHash = new Map<string, string>();
-  const descriptorsByHash = new Map<string, LoomMaterialV2["maps"]>();
+  const descriptorsByHash = new Map<string, LoomMaterialV3["maps"]>();
   const materialById = new Map<string, ManifestMaterial>();
 
   // Choose exactly one map owner per package. Prefer its canonical material,
@@ -165,7 +176,8 @@ export async function exportCollection(
     const slug = slugById.get(item.id)!;
     slugByHash.set(item.pkgHash, slug);
     const maps: Record<string, string> = {};
-    const descriptors: LoomMaterialV2["maps"] = {};
+    const mapAssets: NonNullable<ManifestMaterial["mapAssets"]> = {};
+    const descriptors: LoomMaterialV3["maps"] = {};
     for (const m of item.entry!.maps) {
       // The server-side extraction cache is a plain directory on disk —
       // ephemeral on serverless hosts (see lib/fal/cache.ts) — so a map the
@@ -191,8 +203,12 @@ export async function exportCollection(
         );
       }
       const path = `${slug}/${m.file}`;
+      const asset = m.asset
+        ? await verifyMapAsset(bytes, m.asset, `${item.label} ${m.name}`)
+        : await inspectMapAsset(bytes);
       zip.file(path, bytes);
       maps[m.name] = path;
+      mapAssets[m.name] = asset;
       const name = m.name as MapName;
       descriptors[name] = {
         name,
@@ -203,6 +219,7 @@ export async function exportCollection(
         normalConvention: name === "normal" ? "opengl-y+" : undefined,
         provenance: m.provenance ?? "patina",
         sourceHash: m.sourceHash ?? item.pkgHash,
+        asset,
       };
       onProgress?.(++done, total);
     }
@@ -219,6 +236,7 @@ export async function exportCollection(
       prompt: item.entry!.prompt ?? undefined,
       sourceFilename: item.entry!.sourceFilename ?? undefined,
       maps,
+      mapAssets,
       material,
       params: item.preset
         ? {
@@ -262,7 +280,7 @@ export async function exportCollection(
   const manifest: CollectionManifest = {
     app: "digital-loom",
     kind: "collection",
-    version: 1,
+    version: CURRENT_COLLECTION_VERSION,
     exportedAt: new Date().toISOString(),
     order: items.map((item) => slugById.get(item.id)!),
     materials,
@@ -293,7 +311,9 @@ export interface ImportResult {
 
 export async function importCollection(file: File): Promise<ImportResult> {
   const { default: JSZip } = await import("jszip");
+  assertArchiveInputSize(file.size);
   const zip = await JSZip.loadAsync(file);
+  assertSafeArchiveContents(zip.files);
   const manifestFile = zip.file("manifest.json");
   if (!manifestFile) throw new Error("not a loom collection (no manifest.json)");
   const manifest = validateCollectionManifest(
@@ -335,11 +355,27 @@ export async function importCollection(file: File): Promise<ImportResult> {
         bytesByFile.set(fileName, bytes);
         const mapName = name as MapName;
         const descriptor = mat.material?.maps[mapName];
+        const expectedAsset = mat.mapAssets?.[mapName] ?? descriptor?.asset;
+        const asset = expectedAsset
+          ? await verifyMapAsset(bytes, expectedAsset, path)
+          : await inspectMapAsset(bytes);
+        const detected = detectMapFormat(bytes, { extension: fileName });
+        if (!detected || !fileName.toLowerCase().endsWith(`.${detected.extension}`)) {
+          throw new Error(`Collection map ${path} does not match its image bytes`);
+        }
+        if (
+          descriptor &&
+          (descriptor.mimeType !== detected.mimeType ||
+            descriptor.extension !== detected.extension)
+        ) {
+          throw new Error(`Collection map ${path} disagrees with its format descriptor`);
+        }
         maps.push({
           name: mapName,
           file: fileName,
           provenance: descriptor?.provenance ?? "patina",
           sourceHash: descriptor?.sourceHash ?? mat.pkgHash,
+          asset,
         });
         form.append(name, new File([bytes], fileName));
       }

@@ -259,6 +259,17 @@ export class ClothSolver {
         this.pinned[i] = 0;
       }
     }
+
+    // `reset` is the deterministic replay boundary, not only a position
+    // convenience. Drop queued forces, collision cadence, XPBD multipliers,
+    // and any plastic bend migration so the same subsequent force sequence
+    // produces the same result even after a long, creased interaction.
+    this.accel.fill(0);
+    this.stepCount = 0;
+    for (const con of this.constraints) {
+      con.restLength = con.origRestLength;
+      con.lambda = 0;
+    }
   }
 
   /** Pin the entire top row — the clothesline. Pinned points have invMass 0,
@@ -450,6 +461,52 @@ export class ClothSolver {
         dx * falloff * s,
         dy * falloff * s,
         -falloff * s * 0.15,
+      );
+    }
+  }
+
+  /** Continuous direct-contact field for touch and pen. This merges the
+   *  sustained radial/depth pressure and filtered pointer travel into one
+   *  particle scan. The outward term is normalized like the soft-body jelly
+   *  interaction, so the center of a finger-sized contact does not feel weak;
+   *  the smooth boundary avoids drawing a visible ring in the mesh.
+   *
+   *  `motionX/Y` are bounded, filtered world-units-per-tick supplied by the
+   *  fixed-step host. They remain acceleration inputs rather than directly
+   *  overwriting Verlet velocity: this cloth has no rest-position springs to
+   *  contain a perpetual imposed velocity. */
+  applyContactField(
+    cx: number,
+    cy: number,
+    radius: number,
+    motionX: number,
+    motionY: number,
+    pressureStrength: number,
+    dragStrength: number,
+  ): void {
+    const r2 = radius * radius;
+    const response = this.fabric.windResponse;
+    const pressureBase = pressureStrength * response;
+    const dragBase = dragStrength * response;
+    const motionDepth = Math.min(radius, Math.hypot(motionX, motionY)) * 0.02;
+    for (let i = 0; i < this.count; i++) {
+      const w = this.invMass[i];
+      if (w === 0) continue;
+      const ix = i * 3;
+      const rx = this.pos[ix] - cx;
+      const ry = this.pos[ix + 1] - cy;
+      const d2 = rx * rx + ry * ry;
+      if (d2 > r2) continue;
+      const distance = Math.sqrt(d2);
+      const t = distance / radius;
+      const falloff = 1 - t * t * (3 - 2 * t);
+      const invDistance = distance > 1e-6 ? 1 / distance : 0;
+      const pressure = pressureBase * w;
+      this.addAcceleration(
+        i,
+        falloff * (rx * invDistance * pressure * 0.7 + motionX * dragBase),
+        falloff * (ry * invDistance * pressure * 0.7 + motionY * dragBase),
+        -falloff * (pressure + motionDepth * dragBase),
       );
     }
   }

@@ -15,6 +15,8 @@
 // Kept together as `type Knobs = FabricKnobs & SceneKnobs` so every existing
 // consumer that reads/writes `Knobs` continues to compile unchanged.
 
+import { DEFAULT_MOUSE_FORCE } from "../cloth/pointerInteraction";
+
 // ── Fabric ────────────────────────────────────────────────────────────────────
 
 export interface FabricKnobs {
@@ -115,6 +117,10 @@ export interface FabricKnobs {
 export interface SceneKnobs {
   wireframe: boolean;
   pinMode: "line" | "pegs";
+
+  /** Multiplier on the safe mouse hover + travel profile. This is a local
+   *  interaction preference, never part of a material preset. */
+  mouseForce: number;
 
   // POM step counts are a quality axis, coupled to `quality` preset. Depth
   // (pomScale) is a fabric property and lives on FabricKnobs.
@@ -230,6 +236,7 @@ export const DEFAULT_FABRIC_KNOBS: FabricKnobs = {
 export const DEFAULT_SCENE_KNOBS: SceneKnobs = {
   wireframe: false,
   pinMode: "pegs",
+  mouseForce: DEFAULT_MOUSE_FORCE,
   // Defaults match the "hi" quality preset — the fabric close-up IS the
   // product, so the frag path defaults to full resolution. Older devices
   // drop to mid/lo via the frag-res picker.

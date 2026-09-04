@@ -168,9 +168,9 @@
   pointer-events: none;
 }
 
-.swatch-del {
+.swatch-del,
+.swatch-copy {
   position: absolute;
-  top: 3px;
   right: 3px;
   appearance: none;
   border: 0;
@@ -187,14 +187,77 @@
   transition: opacity var(--d-fast) var(--ease-motion), background var(--d-fast) var(--ease-motion);
 }
 
+.swatch-del {
+  top: 3px;
+}
+
+.swatch-copy {
+  bottom: 18px;
+}
+
 .swatch:hover .swatch-del,
 .swatch-del:focus-visible,
 .swatch-del[data-armed="true"] {
   opacity: 1;
 }
 
+.swatch:hover .swatch-copy,
+.swatch-copy:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .swatch-copy {
+    opacity: 0.72;
+  }
+}
+
 .swatch-del[data-armed="true"] {
   background: var(--error);
+}
+
+.swatch-touch-order {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .swatch-del,
+  .swatch-copy {
+    width: 44px;
+    height: 44px;
+  }
+
+  .swatch-del {
+    opacity: 0.72;
+  }
+
+  .swatch-touch-order {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px;
+  }
+
+  .swatch-touch-order button {
+    appearance: none;
+    min-width: 0;
+    min-height: 44px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: color-mix(in oklab, var(--bg-elev-2) 72%, transparent);
+    color: var(--fg-mute);
+    font: 13px/1 var(--font-mono);
+    touch-action: manipulation;
+  }
+
+  .swatch-touch-order button:disabled {
+    opacity: 0.3;
+  }
+}
+
+@media (max-width: 360px) and (pointer: coarse) {
+  .swatch-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 /* dissolve preview (portal to body — escapes panel clip). PreviewBox paints
@@ -239,12 +302,15 @@
 
 /* grip handle — drag to reorder within the library */
 .swatch-grip {
+  appearance: none;
   position: absolute;
   top: 3px;
   left: 3px;
   z-index: 2;
   width: 18px;
   height: 18px;
+  padding: 0;
+  border: 0;
   display: grid;
   place-items: center;
   border-radius: var(--radius-sm);
@@ -261,7 +327,8 @@
   cursor: grabbing;
 }
 
-.swatch:hover .swatch-grip {
+.swatch:hover .swatch-grip,
+.swatch-grip:focus-visible {
   opacity: 1;
 }
 

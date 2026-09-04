@@ -15,13 +15,29 @@ import {
   editNormalImageData,
   isColorMap,
   isNormalMap,
+  mapBakeSafetyError,
+  normalEditTileRows,
   type MapImageSettings,
 } from "@/lib/ui/mapImageEdits";
 
 interface MapEditorModalProps {
   entry: { name: MapName; url: string };
+  source: MapVariationSource;
   onClose: () => void;
-  onCreateVariation: (name: MapName, file: File) => Promise<void>;
+  onCreateVariation: (
+    source: MapVariationSource,
+    name: MapName,
+    file: File,
+    variationId: string,
+  ) => Promise<void>;
+}
+
+/** Immutable identity of the pixels the modal opened. A save must never apply
+ *  this image to a material that became active later. */
+export interface MapVariationSource {
+  itemId: string;
+  pkgHash: string;
+  mapUrl: string;
 }
 
 interface VariationRecipe {
@@ -56,8 +72,87 @@ function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
+function editNormalCanvas(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  settings: MapImageSettings,
+): void {
+  const tileRows = normalEditTileRows(width);
+  for (let top = 0; top < height; top += tileRows) {
+    const rows = Math.min(tileRows, height - top);
+    const pixels = context.getImageData(0, top, width, rows);
+    editNormalImageData(pixels, settings.normalStrength, settings.flipNormalY);
+    context.putImageData(pixels, 0, top);
+  }
+}
+
+async function editNormalCanvasWithoutBlocking(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  settings: MapImageSettings,
+): Promise<void> {
+  const tileRows = normalEditTileRows(width);
+  for (let top = 0; top < height; top += tileRows) {
+    const rows = Math.min(tileRows, height - top);
+    const pixels = context.getImageData(0, top, width, rows);
+    editNormalImageData(pixels, settings.normalStrength, settings.flipNormalY);
+    context.putImageData(pixels, 0, top);
+    if (top + rows < height) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    }
+  }
+}
+
+function drawMapBase(
+  canvas: HTMLCanvasElement,
+  image: HTMLImageElement,
+  settings: MapImageSettings,
+  normal: boolean,
+): CanvasRenderingContext2D {
+  const context = canvas.getContext("2d", { willReadFrequently: normal });
+  if (!context) throw new Error("This browser could not open the map canvas");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  const pixelScale = canvas.width / Math.max(1, image.naturalWidth);
+  context.filter = normal ? "none" : buildMapFilter(settings, pixelScale);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  context.filter = "none";
+  return context;
+}
+
+function drawMapImage(
+  canvas: HTMLCanvasElement,
+  image: HTMLImageElement,
+  settings: MapImageSettings,
+  normal: boolean,
+): void {
+  const context = drawMapBase(canvas, image, settings, normal);
+  if (normal) {
+    editNormalCanvas(context, canvas.width, canvas.height, settings);
+  }
+}
+
+async function drawMapImageForBake(
+  canvas: HTMLCanvasElement,
+  image: HTMLImageElement,
+  settings: MapImageSettings,
+  normal: boolean,
+): Promise<void> {
+  const context = drawMapBase(canvas, image, settings, normal);
+  if (normal) {
+    await editNormalCanvasWithoutBlocking(
+      context,
+      canvas.width,
+      canvas.height,
+      settings,
+    );
+  }
+}
+
 export function MapEditorModal({
   entry,
+  source,
   onClose,
   onCreateVariation,
 }: MapEditorModalProps) {
@@ -66,7 +161,9 @@ export function MapEditorModal({
   const modalRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const sourceImageRef = useRef<HTMLImageElement | null>(null);
+  const sourceInputRef = useRef<HTMLInputElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  const variationIdRef = useRef(crypto.randomUUID());
   const [settings, setSettings] = useState<MapImageSettings>(
     DEFAULT_MAP_IMAGE_SETTINGS,
   );
@@ -90,21 +187,7 @@ export function MapEditorModal({
     const image = sourceImageRef.current;
     const canvas = afterCanvasRef.current;
     if (!image || !canvas || !ready) return;
-    const context = canvas.getContext("2d", { willReadFrequently: normal });
-    if (!context) return;
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.filter = normal ? "none" : buildMapFilter(settings);
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    context.filter = "none";
-    if (normal) {
-      const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
-      editNormalImageData(
-        pixels,
-        settings.normalStrength,
-        settings.flipNormalY,
-      );
-      context.putImageData(pixels, 0, 0);
-    }
+    drawMapImage(canvas, image, settings, normal);
   }, [normal, ready, settings]);
 
   useEffect(() => {
@@ -147,6 +230,16 @@ export function MapEditorModal({
     const image = new Image();
     image.crossOrigin = "anonymous";
     image.onload = () => {
+      const safetyError = mapBakeSafetyError(
+        image.naturalWidth,
+        image.naturalHeight,
+      );
+      if (safetyError) {
+        setReady(false);
+        setDimensions(`${image.naturalWidth} × ${image.naturalHeight}`);
+        setError(safetyError);
+        return;
+      }
       const maxDimension = 2048;
       const scale = Math.min(
         1,
@@ -164,7 +257,7 @@ export function MapEditorModal({
       sourceImageRef.current = image;
       setDimensions(
         scale < 1
-          ? `${image.naturalWidth} × ${image.naturalHeight} · working at ${width} × ${height}`
+          ? `${image.naturalWidth} × ${image.naturalHeight} · preview ${width} × ${height} · saves full size`
           : `${width} × ${height}`,
       );
       setReady(true);
@@ -216,24 +309,46 @@ export function MapEditorModal({
   };
 
   const saveVariation = async () => {
-    const canvas = afterCanvasRef.current;
-    if (!canvas || !ready) return;
+    const image = sourceImageRef.current;
+    if (!image || !ready) return;
     setSaving(true);
     setError(null);
+    let output: HTMLCanvasElement | null = null;
     try {
-      const blob = await canvasBlob(canvas);
+      const safetyError = mapBakeSafetyError(
+        image.naturalWidth,
+        image.naturalHeight,
+      );
+      if (safetyError) throw new Error(safetyError);
+      // Keep the interactive preview bounded, but bake from the untouched source
+      // pixels. The former path silently exported the 2048px preview instead.
+      output = document.createElement("canvas");
+      output.width = image.naturalWidth;
+      output.height = image.naturalHeight;
+      await drawMapImageForBake(output, image, settings, normal);
+      const blob = await canvasBlob(output);
       const file = new File(
         [blob],
         `${entry.name}-variation-${Date.now()}.png`,
         { type: "image/png" },
       );
-      await onCreateVariation(entry.name, file);
+      await onCreateVariation(
+        source,
+        entry.name,
+        file,
+        variationIdRef.current,
+      );
       onClose();
     } catch (saveError) {
       setError(
         saveError instanceof Error ? saveError.message : String(saveError),
       );
     } finally {
+      // Release the large backing store as soon as encoding is complete.
+      if (output) {
+        output.width = 1;
+        output.height = 1;
+      }
       setSaving(false);
     }
   };
@@ -389,19 +504,24 @@ export function MapEditorModal({
             </div>
 
             <div className="map-studio-control-section map-studio-source-action">
-              <label className="btn btn-ghost">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => sourceInputRef.current?.click()}
+              >
                 use another image
-                <input
-                  type="file"
-                  accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
-                  hidden
-                  onChange={(event) => {
-                    const file = event.currentTarget.files?.[0];
-                    event.currentTarget.value = "";
-                    if (file) replaceSource(file);
-                  }}
-                />
-              </label>
+              </button>
+              <input
+                ref={sourceInputRef}
+                type="file"
+                accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                hidden
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  event.currentTarget.value = "";
+                  if (file) replaceSource(file);
+                }}
+              />
               <button
                 type="button"
                 className="btn btn-ghost"

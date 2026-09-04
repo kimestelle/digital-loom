@@ -1,17 +1,26 @@
 "use client";
 
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import PreviewBox from "@/lib/ui/previewBox";
 import { SectionLabel } from "@/lib/ui/panelPrimitives";
-import { MapEditorModal } from "@/lib/ui/mapEditorModal";
+import {
+  MapEditorModal,
+  type MapVariationSource,
+} from "@/lib/ui/mapEditorModal";
 import type { MapName } from "@/lib/core/materialPackage";
 
 export type ExportState = "idle" | "working" | "partial" | "error";
 
 export interface MapsStripProps {
   entries: { name: MapName; url: string }[];
+  source: Omit<MapVariationSource, "mapUrl"> | null;
   /** Creates a new authored swatch; shared source bytes stay put. */
-  onCreateVariation: (name: MapName, file: File) => Promise<void>;
+  onCreateVariation: (
+    source: MapVariationSource,
+    name: MapName,
+    file: File,
+    variationId: string,
+  ) => Promise<void>;
   exportState: ExportState;
   canExport: boolean;
   onExport: () => void;
@@ -19,22 +28,32 @@ export interface MapsStripProps {
 
 export const MapsStrip = memo(function MapsStrip({
   entries,
+  source,
   onCreateVariation,
   exportState,
   canExport,
   onExport,
 }: MapsStripProps) {
-  const [editing, setEditing] = useState<MapName | null>(null);
-  const editingEntry = useMemo(
-    () => entries.find((entry) => entry.name === editing) ?? null,
-    [editing, entries],
-  );
+  const [editing, setEditing] = useState<{
+    entry: { name: MapName; url: string };
+    source: MapVariationSource;
+  } | null>(null);
 
   useEffect(() => {
-    if (editing && !entries.some((entry) => entry.name === editing)) {
+    if (
+      editing &&
+      (!source ||
+        source.itemId !== editing.source.itemId ||
+        source.pkgHash !== editing.source.pkgHash ||
+        !entries.some(
+          (entry) =>
+            entry.name === editing.entry.name &&
+            entry.url === editing.source.mapUrl,
+        ))
+    ) {
       setEditing(null);
     }
-  }, [editing, entries]);
+  }, [editing, entries, source]);
 
   return (
     <section className="panel-section" data-dye="indigo">
@@ -51,9 +70,16 @@ export const MapsStrip = memo(function MapsStrip({
                 <button
                   type="button"
                   className="preview-chip-button"
-                  data-active={editing === map.name}
+                  data-active={editing?.entry.name === map.name}
                   aria-label={`edit ${map.name} map pixels`}
-                  onClick={() => setEditing(map.name)}
+                  disabled={!source}
+                  onClick={() => {
+                    if (!source) return;
+                    setEditing({
+                      entry: map,
+                      source: { ...source, mapUrl: map.url },
+                    });
+                  }}
                 >
                   <span className="preview-chip-thumb">
                     <PreviewBox src={map.url} alt={map.name} size="small" />
@@ -84,9 +110,10 @@ export const MapsStrip = memo(function MapsStrip({
           </p>
         </>
       )}
-      {editingEntry ? (
+      {editing ? (
         <MapEditorModal
-          entry={editingEntry}
+          entry={editing.entry}
+          source={editing.source}
           onClose={() => setEditing(null)}
           onCreateVariation={onCreateVariation}
         />

@@ -128,6 +128,23 @@ describe("collection manifest validation", () => {
     expect(() => validateCollectionManifest(input)).toThrow(/invalid map path/);
   });
 
+  it("requires new map asset metadata to cover the complete owned map set", () => {
+    const input = validManifest() as {
+      materials: Array<Record<string, unknown>>;
+    };
+    input.materials[0].mapAssets = {
+      albedo: {
+        sha256: "a".repeat(64),
+        byteLength: 10,
+        width: 2,
+        height: 2,
+      },
+    };
+    expect(() => validateCollectionManifest(input)).toThrow(
+      /must describe every owned map/,
+    );
+  });
+
   it("rejects non-addressable package identities", () => {
     const input = validManifest() as {
       materials: Array<Record<string, unknown>>;

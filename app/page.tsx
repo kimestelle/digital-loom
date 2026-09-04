@@ -8,7 +8,11 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import ClothScene, { type ClothStats } from "@/lib/ui/clothScene";
+import ClothScene, {
+  type ClothProbe,
+  type ClothSceneHandle,
+  type ClothStats,
+} from "@/lib/ui/clothScene";
 import { STAMP_MASK_URI } from "@/lib/ui/stampMask";
 import { fabricFromPkg } from "@/lib/ui/fabricViewer";
 import {
@@ -23,9 +27,11 @@ import {
   type MapName,
   type MaterialPackage,
 } from "@/lib/core/materialPackage";
+import { resolveMetalnessAmount } from "@/lib/core/metalness";
 import {
   type FabricKnobs,
   type Knobs,
+  DEFAULT_FABRIC_KNOBS,
   DEFAULT_KNOBS,
   MESH_PRESETS,
   QUALITY_PRESETS,
@@ -41,6 +47,28 @@ import {
   Slider,
   shortHash,
 } from "@/lib/ui/panelPrimitives";
+import { InstrumentPad } from "@/lib/ui/instrumentPad";
+import {
+  CONSTRUCTION_OPTIONS,
+  applyMaterialInstrument,
+  createMaterialInstrumentBaseline,
+  effectiveOpennessPercent,
+  inferConstruction,
+  readMaterialInstrument,
+  tileScaleFromSlider,
+  tileScaleToSlider,
+  type Construction,
+  type MaterialInstrumentState,
+} from "@/lib/ui/materialInstrument";
+import {
+  canRedoMaterialDraft,
+  canUndoMaterialDraft,
+  createMaterialDraft,
+  isMaterialDraftDirty,
+  materialDraftReducer,
+  type MaterialDraftAction,
+  type MaterialDraftHistory,
+} from "@/lib/ui/materialDraftHistory";
 import {
   NavBar,
   type PipelineStatus,
@@ -50,6 +78,7 @@ import {
   MapsStrip,
   type ExportState,
 } from "@/lib/ui/mapsStrip";
+import type { MapVariationSource } from "@/lib/ui/mapEditorModal";
 import { PixelPlay } from "@/lib/ui/pixelPlay";
 import { InsertPanel } from "@/lib/ui/insertPanel";
 import { getCachedMap, warmMapCache } from "@/lib/export/mapCache";
@@ -68,6 +97,7 @@ import {
   adoptServerPreset,
   deleteAuthoringItem,
   importAuthoringMaterialBytes,
+  loadAuthoringEntry,
   loadAuthoringOrder,
   normalizeAuthoringHash,
   saveAuthoringMaterial,
@@ -75,6 +105,10 @@ import {
   saveAuthoringPreset,
   type AuthoringMaterial,
 } from "@/lib/library/repository";
+import {
+  SaveRevisionRegistry,
+  type SaveRevision,
+} from "@/lib/library/saveRevisions";
 
 const OBJECT_MODEL_URL = "/model/whale.glb";
 
@@ -103,15 +137,6 @@ function mapFileFromUrl(url: string, name: string): string {
     // Fall through to a deterministic filename for non-URL map sources.
   }
   return `${name}.png`;
-}
-
-function resolveMetalnessAmount(input: string | number, hasMap: boolean): number {
-  const parsed = typeof input === "number" ? input : parseFloat(input);
-  const clamped = Math.min(1, Math.max(0, Number.isFinite(parsed) ? parsed : 0));
-  // A generated metalness map already contains the physical per-pixel amount.
-  // With no exposed gain control, 1 is the honest neutral multiplier; zero was
-  // an artifact of the retired text field and silently disabled the map.
-  return hasMap && clamped === 0 ? 1 : clamped;
 }
 
 function authoringMaterialFromEntry(entry: CacheEntry): AuthoringMaterial {
@@ -159,6 +184,43 @@ function cacheEntryFromPackage(
 // Order the mobile bottom sheet pages through (‹ prev / › next / swipe).
 const MOBILE_PANELS = ["workshop", "swatches", "tuning"] as const;
 type MobilePanel = (typeof MOBILE_PANELS)[number];
+type TuningView = "fabric" | "scene";
+
+function TuningViewPicker({
+  view,
+  onSelect,
+  placement,
+}: {
+  view: TuningView;
+  onSelect: (view: TuningView) => void;
+  placement: "header" | "sheet";
+}) {
+  return (
+    <div
+      className={`tx-mode-picker tuning-view-picker tuning-view-picker-${placement}`}
+      role="group"
+      aria-label="tuning view"
+    >
+      {(
+        [
+          { v: "fabric" as const, label: "fabric" },
+          { v: "scene" as const, label: "scene" },
+        ]
+      ).map((option) => (
+        <button
+          key={option.v}
+          type="button"
+          className="tx-mode-tab"
+          aria-pressed={view === option.v}
+          data-active={view === option.v}
+          onClick={() => onSelect(option.v)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const PREGEN_MANIFEST = "/pregen/silk-sample/manifest.json";
 const PREGEN_BASE = "/pregen/silk-sample";
@@ -166,43 +228,11 @@ const PREGEN_BASE = "/pregen/silk-sample";
 // maps behind the curated "red silk" preset.
 const PREGEN_HASH = "71871d958aa681541baf9159cbf98bc4";
 
-// Per-fabric drawing parameters for the weave-picker diagrams. The four
-// plain weaves share a renderer but differ in thread count / yarn width so
-// fine silk, open ramie, everyday cotton, and coarse hemp read distinctly.
-// (twill/knit ignore these — their geometry carries the identity.)
-// The picker presents three structural FAMILIES (plain / twill / knit),
-// each carried by one representative profile. The other profiles stay in
-// FABRICS so previously-saved presets resolve.
-const WEAVE_CATEGORIES: Array<{
-  id: FabricId;
-  label: string;
-  title: string;
-}> = [
-  {
-    id: "mumyeong",
-    label: "plain",
-    title: "plain weave — over-under, crisp and stable (cotton, linen)",
-  },
-  {
-    id: "denim",
-    label: "twill",
-    title: "twill — diagonal rib, heavier drape (denim, gabardine)",
-  },
-  {
-    id: "jersey",
-    label: "knit",
-    title: "knit — looped yarn, stretchy and clingy (jersey, tees)",
-  },
-];
-
-const WEAVE_DIAGRAM_PARAMS: Record<FabricId, { threads: number; yarn: number }> = {
-  myeongju: { threads: 7, yarn: 0.62 }, // fine, dense
-  mosi: { threads: 4, yarn: 0.38 },     // thin thread, open gaps
-  mumyeong: { threads: 5, yarn: 0.55 }, // the everyday middle
-  sambe: { threads: 4, yarn: 0.68 },    // fat coarse yarn
-  jersey: { threads: 5, yarn: 0.55 },
-  denim: { threads: 5, yarn: 0.55 },
-};
+function axisWord(value: number, low: string, middle: string, high: string): string {
+  if (value < 0.34) return low;
+  if (value > 0.66) return high;
+  return middle;
+}
 
 /** A selectable swatch — a built-in sample, a cached extraction, a curated
  *  material (red silk), or a user clone. `id` is the autosave key (a material's
@@ -246,22 +276,27 @@ export default function Home() {
   const [rightCollapsed, setRightCollapsed] = useState(false);
   // Mobile only: which editor the bottom sheet shows (the other is hidden).
   // Navigated by the ‹ › buttons or a sideways swipe. Ignored on desktop.
-  const [mobileTab, setMobileTab] = useState<MobilePanel>("workshop");
+  const [mobileTab, setMobileTab] = useState<MobilePanel>("swatches");
   // Bottom sheet visibility on mobile: tabs stay docked at the bottom while
   // the sheet itself can collapse away to leave the stage full-screen.
   const [mobileSheetOpen, setMobileSheetOpen] = useState(true);
   // Left-panel tab: the working tools vs. the swatch collection.
   const [workshopTab, setWorkshopTab] = useState<"workshop" | "swatches">(
-    "workshop",
+    "swatches",
   );
-  // Step the sheet by ±1, clamped to the ends (a 2-page pager).
+  // Step the sheet by ±1, clamped across workshop, swatches, and tuning.
   const stepMobile = useCallback((dir: 1 | -1) => {
-    setMobileTab((cur) => {
-      const next = MOBILE_PANELS.indexOf(cur) + dir;
-      return MOBILE_PANELS[Math.min(MOBILE_PANELS.length - 1, Math.max(0, next))];
-    });
+    const next = MOBILE_PANELS.indexOf(mobileTab) + dir;
+    const nextTab =
+      MOBILE_PANELS[
+        Math.min(MOBILE_PANELS.length - 1, Math.max(0, next))
+      ];
+    setMobileTab(nextTab);
+    if (nextTab === "workshop" || nextTab === "swatches") {
+      setWorkshopTab(nextTab);
+    }
     setMobileSheetOpen(true);
-  }, []);
+  }, [mobileTab]);
   // A mobile tab tap: re-tapping the active tab toggles the sheet closed
   // (leaving the stage full-screen); any other tab opens its editor. The
   // workshop/swatches tabs drive the left panel's own tab state so desktop
@@ -269,6 +304,14 @@ export default function Home() {
   const selectMobileTab = useCallback(
     (tab: MobilePanel) => {
       if (tab === mobileTab) {
+        if (
+          (tab === "workshop" || tab === "swatches") &&
+          workshopTab !== tab
+        ) {
+          setWorkshopTab(tab);
+          setMobileSheetOpen(true);
+          return;
+        }
         setMobileSheetOpen((v) => !v);
         return;
       }
@@ -278,12 +321,22 @@ export default function Home() {
         setWorkshopTab(tab);
       }
     },
-    [mobileTab],
+    [mobileTab, workshopTab],
   );
   // Horizontal swipe on the sheet → step. Ignores mostly-vertical drags so it
   // doesn't fight the panel's own scrolling.
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const onSheetTouchStart = useCallback((e: React.TouchEvent) => {
+    const target = e.target;
+    if (
+      target instanceof Element &&
+      target.closest(
+        "button, input, select, textarea, a, summary, .instrument-pad-surface, [data-no-sheet-swipe]",
+      )
+    ) {
+      swipeStart.current = null;
+      return;
+    }
     const t = e.touches[0];
     swipeStart.current = { x: t.clientX, y: t.clientY };
   }, []);
@@ -301,6 +354,20 @@ export default function Home() {
     [stepMobile],
   );
   const [knobs, setKnobs] = useState<Knobs>(DEFAULT_KNOBS);
+  const [materialDraft, setMaterialDraft] = useState<MaterialDraftHistory>(() =>
+    createMaterialDraft(fabricKnobsOf(DEFAULT_KNOBS)),
+  );
+  const [construction, setConstruction] = useState<Construction>(() =>
+    inferConstruction(fabricKnobsOf(DEFAULT_KNOBS)),
+  );
+  const [keepingDraft, setKeepingDraft] = useState(false);
+  const [pendingMaterialId, setPendingMaterialId] = useState<string | null>(null);
+  const [tuningView, setTuningView] = useState<TuningView>("fabric");
+  const tuningScrollRef = useRef<HTMLDivElement | null>(null);
+  const selectTuningView = useCallback((view: TuningView) => {
+    setTuningView(view);
+    tuningScrollRef.current?.scrollTo({ top: 0 });
+  }, []);
   const [fabricId, setFabricId] = useState<FabricId>("myeongju");
   const [cacheEntries, setCacheEntries] = useState<CacheEntry[]>([]);
   const [presets, setPresets] = useState<MaterialPreset[]>([]);
@@ -310,8 +377,16 @@ export default function Home() {
   const saveJobIdRef = useRef(0);
   const savePendingRef = useRef(0);
   const failedSaveJobsRef = useRef(
-    new Map<number, { job: () => Promise<void>; message: string }>(),
+    new Map<
+      number,
+      {
+        job: () => Promise<void>;
+        message: string;
+        revision?: SaveRevision;
+      }
+    >(),
   );
+  const saveRevisionsRef = useRef(new SaveRevisionRegistry());
   // Id of the material currently on the loom — the key its params autosave
   // under. A canonical material's id is its hash; a clone's id is its own slug.
   // null = nothing selected yet.
@@ -326,6 +401,14 @@ export default function Home() {
   }>({ id: null, sig: "" });
   // The maps hash for the active material (a clone's differs from its id).
   const activePkgHashRef = useRef<string | null>(null);
+  // Invalidates delayed estimators when the user chooses another material.
+  // Map extraction may still finish and save safely, but an obsolete result
+  // must never put its controls onto the current loom.
+  const materialIntentRef = useRef(0);
+  const pendingMaterialSelectionRef = useRef<{
+    id: string;
+    intent: number;
+  } | null>(null);
   // Mesh-dissolve entry point for callbacks defined before the transfer hook
   // is instantiated (Patina completion, deletion). Until the hook mounts it
   // degrades to an instant commit — same behavior as before this feature.
@@ -341,6 +424,7 @@ export default function Home() {
   // Built-in sample materials (baked patina bundles under samples/).
   const [samples, setSamples] = useState<CacheEntry[]>([]);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const clothSceneRef = useRef<ClothSceneHandle | null>(null);
   const [stageSize, setStageSize] = useState({ w: 900, h: 700 });
   const [perfStats, setPerfStats] = useState<ClothStats | null>(null);
   // Hysteresis bookkeeping for auto-quality (timestamps, ms).
@@ -351,15 +435,26 @@ export default function Home() {
   // the callbacks referentially stable and the memoized panels skipping
   // re-renders during slider drags.
   const knobsRef = useRef(knobs);
+  const materialDraftRef = useRef(materialDraft);
+  const constructionRef = useRef(construction);
+  const fabricGestureActiveRef = useRef(false);
+  const instrumentBaselineRef = useRef(
+    createMaterialInstrumentBaseline(
+      fabricKnobsOf(DEFAULT_KNOBS),
+      inferConstruction(fabricKnobsOf(DEFAULT_KNOBS)),
+    ),
+  );
   const fabricIdRef = useRef(fabricId);
   const metalnessInputRef = useRef(metalnessInput);
 
   useEffect(() => {
     knobsRef.current = knobs;
+    materialDraftRef.current = materialDraft;
+    constructionRef.current = construction;
     fabricIdRef.current = fabricId;
     metalnessInputRef.current = metalnessInput;
     activeIdRef.current = activeId;
-  }, [knobs, fabricId, metalnessInput, activeId]);
+  }, [knobs, materialDraft, construction, fabricId, metalnessInput, activeId]);
 
   const updateSaveIndicator = useCallback(() => {
     const failures = failedSaveJobsRef.current;
@@ -376,11 +471,33 @@ export default function Home() {
     }
   }, []);
 
-  /** Run a complete, idempotent local mutation. Failed jobs stay queued until
-   *  retry succeeds; server compatibility failures are swallowed inside the
-   *  repository and therefore never masquerade as local-save failures. */
+  /** Reserve a latest-wins revision before a debounce begins. Any failed
+   * closure for the same resource is obsolete as soon as the user edits again. */
+  const reserveDurableSave = useCallback(
+    (key: string): SaveRevision => {
+      const revision = saveRevisionsRef.current.reserve(key);
+      for (const [id, failed] of failedSaveJobsRef.current) {
+        if (failed.revision?.key === key) failedSaveJobsRef.current.delete(id);
+      }
+      updateSaveIndicator();
+      return revision;
+    },
+    [updateSaveIndicator],
+  );
+
+  /** Run a complete, idempotent local mutation. Failed jobs normally stay
+   *  queued until retry succeeds; callers with their own retry UI can keep the
+   *  failure local instead. Server compatibility failures are swallowed inside
+   *  the repository and never masquerade as local-save failures. */
   const runDurableSave = useCallback(
-    async (job: () => Promise<void>): Promise<boolean> => {
+    async (
+      job: () => Promise<void>,
+      revision?: SaveRevision,
+      options: { retainFailure?: boolean } = {},
+    ): Promise<boolean> => {
+      if (revision && !saveRevisionsRef.current.isCurrent(revision)) {
+        return true;
+      }
       const id = ++saveJobIdRef.current;
       savePendingRef.current++;
       setSaveMessage(null);
@@ -390,11 +507,16 @@ export default function Home() {
         failedSaveJobsRef.current.delete(id);
         return true;
       } catch (error) {
-        failedSaveJobsRef.current.set(id, {
-          job,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        return false;
+        const current =
+          !revision || saveRevisionsRef.current.isCurrent(revision);
+        if (current && options.retainFailure !== false) {
+          failedSaveJobsRef.current.set(id, {
+            job,
+            message: error instanceof Error ? error.message : String(error),
+            revision,
+          });
+        }
+        return !current;
       } finally {
         savePendingRef.current--;
         updateSaveIndicator();
@@ -410,14 +532,30 @@ export default function Home() {
     setSaveMessage(null);
     setSaveStatus("saving");
     for (const [id, failed] of jobs) {
+      if (
+        failed.revision &&
+        !saveRevisionsRef.current.isCurrent(failed.revision)
+      ) {
+        failedSaveJobsRef.current.delete(id);
+        savePendingRef.current--;
+        continue;
+      }
       try {
         await failed.job();
         failedSaveJobsRef.current.delete(id);
       } catch (error) {
-        failedSaveJobsRef.current.set(id, {
-          job: failed.job,
-          message: error instanceof Error ? error.message : String(error),
-        });
+        if (
+          !failed.revision ||
+          saveRevisionsRef.current.isCurrent(failed.revision)
+        ) {
+          failedSaveJobsRef.current.set(id, {
+            job: failed.job,
+            message: error instanceof Error ? error.message : String(error),
+            revision: failed.revision,
+          });
+        } else {
+          failedSaveJobsRef.current.delete(id);
+        }
       } finally {
         savePendingRef.current--;
       }
@@ -428,6 +566,161 @@ export default function Home() {
   const markSaveDirty = useCallback(() => {
     setSaveStatus((current) => (current === "error" ? current : "dirty"));
   }, []);
+
+  const setMaterialDraftNow = useCallback((next: MaterialDraftHistory) => {
+    materialDraftRef.current = next;
+    setMaterialDraft(next);
+  }, []);
+
+  const confirmDiscardWorkingDraft = useCallback((action: string): boolean => {
+    if (!isMaterialDraftDirty(materialDraftRef.current)) return true;
+    return window.confirm(
+      `Discard this unkept material draft and ${action}?`,
+    );
+  }, []);
+
+  const replaceLiveFabric = useCallback((nextFabric: FabricKnobs) => {
+    const next: Knobs = { ...knobsRef.current, ...nextFabric };
+    knobsRef.current = next;
+    setKnobs(next);
+  }, []);
+
+  /** Establish a new protected source state when a material is selected,
+   * imported, estimated, or explicitly kept. */
+  const loadMaterialDraft = useCallback(
+    (nextFabric: FabricKnobs) => {
+      const nextConstruction = inferConstruction(nextFabric);
+      const nextDraft = materialDraftReducer(materialDraftRef.current, {
+        type: "keep",
+        knobs: nextFabric,
+      });
+      fabricGestureActiveRef.current = false;
+      constructionRef.current = nextConstruction;
+      setConstruction(nextConstruction);
+      instrumentBaselineRef.current = createMaterialInstrumentBaseline(
+        nextFabric,
+        nextConstruction,
+      );
+      setMaterialDraftNow(nextDraft);
+      replaceLiveFabric(nextFabric);
+    },
+    [replaceLiveFabric, setMaterialDraftNow],
+  );
+
+  /** A drag may preview dozens of values, but the history records it once. */
+  const protectFabricPreview = useCallback(() => {
+    // The pad remains visually local until release, but touching it still
+    // makes any delayed estimate/import older than the user's interaction.
+    ++materialIntentRef.current;
+  }, []);
+
+  const beginFabricGesture = useCallback(() => {
+    if (fabricGestureActiveRef.current) return;
+    // A fresh material gesture is a newer intent than any delayed estimate,
+    // import, or extraction still in flight. Material controls are inert while
+    // an accepted swatch transfer is pending, so that commit remains atomic.
+    ++materialIntentRef.current;
+    if (materialDraftRef.current.comparison === "baseline") {
+      setMaterialDraftNow(
+        materialDraftReducer(materialDraftRef.current, {
+          type: "compare",
+          selection: "current",
+        }),
+      );
+    }
+    fabricGestureActiveRef.current = true;
+    instrumentBaselineRef.current = createMaterialInstrumentBaseline(
+      fabricKnobsOf(knobsRef.current),
+      constructionRef.current,
+    );
+  }, [setMaterialDraftNow]);
+
+  const previewFabricPatch = useCallback(
+    (patch: Partial<FabricKnobs>) => {
+      replaceLiveFabric({ ...fabricKnobsOf(knobsRef.current), ...patch });
+    },
+    [replaceLiveFabric],
+  );
+
+  const previewInstrument = useCallback(
+    (patch: Partial<MaterialInstrumentState>) => {
+      const result = applyMaterialInstrument(instrumentBaselineRef.current, patch);
+      constructionRef.current = result.construction;
+      setConstruction(result.construction);
+      replaceLiveFabric(result.knobs);
+    },
+    [replaceLiveFabric],
+  );
+
+  const commitFabricGesture = useCallback(() => {
+    const currentFabric = fabricKnobsOf(knobsRef.current);
+    const nextConstruction = inferConstruction(currentFabric);
+    const previous = materialDraftRef.current;
+    const next = materialDraftReducer(previous, {
+      type: "commit",
+      knobs: currentFabric,
+    });
+    fabricGestureActiveRef.current = false;
+    constructionRef.current = nextConstruction;
+    setConstruction(nextConstruction);
+    instrumentBaselineRef.current = createMaterialInstrumentBaseline(
+      currentFabric,
+      nextConstruction,
+    );
+    if (next === previous) return;
+    setMaterialDraftNow(next);
+    markSaveDirty();
+  }, [markSaveDirty, setMaterialDraftNow]);
+
+  const commitFabricPatch = useCallback(
+    (patch: Partial<FabricKnobs>) => {
+      beginFabricGesture();
+      previewFabricPatch(patch);
+      commitFabricGesture();
+    },
+    [beginFabricGesture, commitFabricGesture, previewFabricPatch],
+  );
+
+  const commitInstrumentPatch = useCallback(
+    (patch: Partial<MaterialInstrumentState>) => {
+      beginFabricGesture();
+      previewInstrument(patch);
+      commitFabricGesture();
+    },
+    [beginFabricGesture, commitFabricGesture, previewInstrument],
+  );
+
+  const navigateMaterialDraft = useCallback(
+    (action: Extract<MaterialDraftAction, { type: "undo" | "redo" | "discard" }>) => {
+      const previous = materialDraftRef.current;
+      const next = materialDraftReducer(previous, action);
+      if (next === previous) return;
+      const nextConstruction = inferConstruction(next.current);
+      constructionRef.current = nextConstruction;
+      setConstruction(nextConstruction);
+      instrumentBaselineRef.current = createMaterialInstrumentBaseline(
+        next.current,
+        nextConstruction,
+      );
+      setMaterialDraftNow(next);
+      replaceLiveFabric(next.current);
+      if (isMaterialDraftDirty(next)) markSaveDirty();
+      else updateSaveIndicator();
+    },
+    [markSaveDirty, replaceLiveFabric, setMaterialDraftNow, updateSaveIndicator],
+  );
+
+  const setDraftComparison = useCallback(
+    (selection: "baseline" | "current") => {
+      const previous = materialDraftRef.current;
+      const next = materialDraftReducer(previous, {
+        type: "compare",
+        selection,
+      });
+      if (next !== previous) setMaterialDraftNow(next);
+    },
+    [setMaterialDraftNow],
+  );
 
   // State + compatibility mirror only. Callers choose the right durable job so
   // clone/delete/import can commit their preset and order as one user action.
@@ -444,16 +737,24 @@ export default function Home() {
 
   // Apply a material's saved params (fabric + knobs + metalness) and arm the
   // autosave baseline at that signature so restoring doesn't rewrite the file.
-  const applyParams = useCallback((preset: MaterialPreset) => {
-    setFabricId(preset.fabricId);
-    // Scene knobs (quality/mesh/sky/pins) are viewing prefs — never restored.
-    setKnobs((current) => ({ ...current, ...preset.knobs }));
-    setMetalnessInput(preset.metalness > 0 ? String(preset.metalness) : "");
-    setAutosaveBaseline({
-      id: preset.slug,
-      sig: paramSig(preset.fabricId, preset.metalness, preset.knobs),
-    });
-  }, []);
+  const applyParams = useCallback(
+    (preset: MaterialPreset) => {
+      fabricIdRef.current = preset.fabricId;
+      setFabricId(preset.fabricId);
+      // Scene knobs (quality/mesh/sky/pins) are viewing prefs — never restored.
+      loadMaterialDraft(preset.knobs);
+      // Keep an authored zero distinct from the empty/default state: imports and
+      // saved materials must not silently re-enable a metalness map.
+      const nextMetalness = String(preset.metalness);
+      metalnessInputRef.current = nextMetalness;
+      setMetalnessInput(nextMetalness);
+      setAutosaveBaseline({
+        id: preset.slug,
+        sig: paramSig(preset.fabricId, preset.metalness, preset.knobs),
+      });
+    },
+    [loadMaterialDraft],
+  );
 
   // ── load pregen silk-sample on first mount ─────────────────────────────
   useEffect(() => {
@@ -466,11 +767,13 @@ export default function Home() {
           prompt?: string;
           sourceFilename?: string;
           hash?: string;
+          createdAt?: string;
         };
         const initial = pkgFromMaps("silk-sample", PREGEN_BASE, manifest.maps, {
           prompt: manifest.prompt,
           sourceFilename: manifest.sourceFilename,
           hash: manifest.hash,
+          createdAt: manifest.createdAt,
         });
         setPkg(initial);
         setStatus({
@@ -482,6 +785,7 @@ export default function Home() {
         // its saved params (red silk) once /api/presets has loaded.
         if (manifest.hash) {
           activePkgHashRef.current = manifest.hash;
+          activeIdRef.current = manifest.hash;
           setActiveId(manifest.hash);
         }
       } catch {
@@ -589,6 +893,9 @@ export default function Home() {
   // ── run a fresh extraction ─────────────────────────────────────────────
   const runBaseline = useCallback(
     async (front: File | Blob, name: string) => {
+      const intent = ++materialIntentRef.current;
+      pendingMaterialSelectionRef.current = null;
+      setPendingMaterialId("extracting");
       setStatus({ kind: "loading", message: "extracting patina maps…" });
       try {
         const result = await runPatinaBaseline(front, {
@@ -620,6 +927,17 @@ export default function Home() {
             ? durableError
             : new Error("The material was generated but could not be saved locally");
         }
+        // The extraction remains safely cached, but a later swatch choice owns
+        // the loom and must not be replaced when this async job finally lands.
+        if (materialIntentRef.current !== intent) return;
+        activeIdRef.current = result.hash;
+        activePkgHashRef.current = result.hash;
+        if (!(result.cacheHit && saved)) {
+          loadMaterialDraft({ ...DEFAULT_FABRIC_KNOBS });
+          metalnessInputRef.current = "";
+          setMetalnessInput("");
+          setAutosaveBaseline({ id: result.hash, sig: "" });
+        }
         setStatus({
           kind: "done",
           cacheHit: result.cacheHit,
@@ -630,14 +948,17 @@ export default function Home() {
         // hidden, and the reveal gates on the new albedo actually loading.
         materialSwapRef.current(
           () => {
+            if (materialIntentRef.current !== intent) return;
             setPkg(result.pkg);
             activePkgHashRef.current = result.hash;
+            activeIdRef.current = result.hash;
             setActiveId(result.hash);
             if (result.cacheHit && saved) {
               // Re-extracting a material we've already tuned — restore its
               // params rather than overwriting them with defaults.
               applyParams(saved);
             }
+            setPendingMaterialId(null);
           },
           {
             expectedAlbedoURL: result.pkg.maps.albedo?.url,
@@ -647,26 +968,40 @@ export default function Home() {
         if (!(result.cacheHit && saved)) {
           // Fresh maps (or a cache hit we've never tuned): auto-tune off the
           // maps and let autosave persist that as the material's first preset.
-          // Arm the baseline empty so the estimate writes once it settles.
-          setAutosaveBaseline({ id: result.hash, sig: "" });
           try {
             const { estimateParams } = await import(
               "@/lib/pipeline/estimateParams"
             );
             const est = await estimateParams(result.pkg);
-            setKnobs((k) => ({ ...k, ...est.knobs }));
-            setMetalnessInput(est.metalness > 0 ? String(est.metalness) : "");
+            if (
+              materialIntentRef.current !== intent ||
+              activeIdRef.current !== result.hash ||
+              activePkgHashRef.current !== result.hash ||
+              fabricGestureActiveRef.current ||
+              isMaterialDraftDirty(materialDraftRef.current)
+            ) {
+              return;
+            }
+            loadMaterialDraft({
+              ...DEFAULT_FABRIC_KNOBS,
+              ...est.knobs,
+            });
+            const nextMetalness = est.metalness > 0 ? String(est.metalness) : "";
+            metalnessInputRef.current = nextMetalness;
+            setMetalnessInput(nextMetalness);
           } catch {
             // estimation is a nicety — never let it break the extraction
           }
         }
       } catch (err) {
+        if (materialIntentRef.current === intent) setPendingMaterialId(null);
         const msg = err instanceof Error ? err.message : String(err);
         setStatus({ kind: "error", message: msg });
       }
     },
     [
       applyParams,
+      loadMaterialDraft,
       markSaveDirty,
       presets,
       prompt,
@@ -686,9 +1021,16 @@ export default function Home() {
   }, []);
 
   const submit = useCallback(() => {
-    if (!stagedFile || status.kind === "loading") return;
-    runBaseline(stagedFile.file, stagedFile.name);
-  }, [stagedFile, status.kind, runBaseline]);
+    if (!stagedFile || status.kind === "loading" || pendingMaterialId !== null) return;
+    if (!confirmDiscardWorkingDraft("extract a new material")) return;
+    void runBaseline(stagedFile.file, stagedFile.name);
+  }, [
+    confirmDiscardWorkingDraft,
+    pendingMaterialId,
+    stagedFile,
+    status.kind,
+    runBaseline,
+  ]);
 
   const loadCachedEntry = useCallback((entry: CacheEntry) => {
     const name = entry.sourceFilename?.replace(/\.[^.]+$/, "") ?? "cached";
@@ -696,17 +1038,8 @@ export default function Home() {
       prompt: entry.prompt,
       sourceFilename: entry.sourceFilename,
       hash: entry.hash,
+      createdAt: entry.createdAt || undefined,
     });
-    // For cached entries the map.url is already the full path.
-    for (const m of entry.maps) {
-      const key = m.name as MapName;
-      const projected = p.maps[key];
-      if (!projected) continue;
-      projected.url = m.url;
-      projected.provenance = m.provenance ?? projected.provenance;
-      projected.sourceHash = m.sourceHash;
-    }
-    if (entry.createdAt) p.meta.createdAt = entry.createdAt;
     setPkg(p);
     setStatus({ kind: "done", cacheHit: true, hash: entry.hash });
     // Best-effort: prime the browser-local map cache the moment this
@@ -841,7 +1174,7 @@ export default function Home() {
     };
   }, [applyLibraryOrder, runDurableSave]);
 
-  // ── performance prefs persist to localStorage (device, not material) ────
+  // ── scene/device prefs persist locally and never travel with a material ──
   const perfLoadedRef = useRef(false);
   useEffect(() => {
     let cancelled = false;
@@ -871,6 +1204,14 @@ export default function Home() {
             : {}),
           ...(savedPrefs.quality ? { quality: savedPrefs.quality } : {}),
           ...(savedPrefs.meshRes ? { meshRes: savedPrefs.meshRes } : {}),
+          ...(typeof savedPrefs.mouseForce === "number"
+            ? {
+                mouseForce: Math.min(
+                  5,
+                  Math.max(0, savedPrefs.mouseForce),
+                ),
+              }
+            : {}),
         }));
       }
       perfLoadedRef.current = true;
@@ -892,6 +1233,7 @@ export default function Home() {
           autoQuality: knobs.autoQuality,
           quality: knobs.quality,
           meshRes: knobs.meshRes,
+          mouseForce: knobs.mouseForce,
         }),
       );
     } catch {
@@ -904,6 +1246,7 @@ export default function Home() {
     knobs.autoQuality,
     knobs.quality,
     knobs.meshRes,
+    knobs.mouseForce,
   ]);
 
   // ── auto quality: step frag-res to hold frame rate (rendering only) ─────
@@ -972,12 +1315,14 @@ export default function Home() {
             prompt?: string;
             sourceFilename?: string;
             hash?: string;
+            createdAt?: string;
           };
           if (current() && m.hash === hash) {
             const pk = pkgFromMaps("silk-sample", PREGEN_BASE, m.maps, {
               prompt: m.prompt,
               sourceFilename: m.sourceFilename,
               hash: m.hash,
+              createdAt: m.createdAt,
             });
             setPkg(pk);
             setStatus({ kind: "done", cacheHit: true, hash: m.hash ?? "pregen" });
@@ -998,30 +1343,47 @@ export default function Home() {
   // Seed params for a material that has no saved preset yet — auto-tune off its
   // maps so it doesn't start from flat defaults. The empty-signature baseline
   // (armed by selectMaterial) then lets autosave persist this as its first file.
-  const seedParamsFromEntry = useCallback(async (entry: CacheEntry) => {
-    try {
-      const p = pkgFromMaps(
-        entry.sourceFilename ?? "material",
-        "",
-        entry.maps,
-        {
-          prompt: entry.prompt,
-          sourceFilename: entry.sourceFilename,
-          hash: entry.hash,
-        },
-      );
-      for (const m of entry.maps) {
-        const key = m.name as MapName;
-        if (p.maps[key]) p.maps[key]!.url = m.url;
+  const seedParamsFromEntry = useCallback(
+    async (
+      entry: CacheEntry,
+      expected: { itemId: string; pkgHash: string; intent: number },
+    ) => {
+      try {
+        const p = pkgFromMaps(
+          entry.sourceFilename ?? "material",
+          "",
+          entry.maps,
+          {
+            prompt: entry.prompt,
+            sourceFilename: entry.sourceFilename,
+            hash: entry.hash,
+            createdAt: entry.createdAt || undefined,
+          },
+        );
+        const { estimateParams } = await import("@/lib/pipeline/estimateParams");
+        const est = await estimateParams(p);
+        if (
+          materialIntentRef.current !== expected.intent ||
+          activeIdRef.current !== expected.itemId ||
+          activePkgHashRef.current !== expected.pkgHash ||
+          fabricGestureActiveRef.current ||
+          isMaterialDraftDirty(materialDraftRef.current)
+        ) {
+          return;
+        }
+        loadMaterialDraft({
+          ...DEFAULT_FABRIC_KNOBS,
+          ...est.knobs,
+        });
+        const nextMetalness = est.metalness > 0 ? String(est.metalness) : "";
+        metalnessInputRef.current = nextMetalness;
+        setMetalnessInput(nextMetalness);
+      } catch {
+        // estimation is a nicety — leave defaults if it fails
       }
-      const { estimateParams } = await import("@/lib/pipeline/estimateParams");
-      const est = await estimateParams(p);
-      setKnobs((k) => ({ ...k, ...est.knobs }));
-      setMetalnessInput(est.metalness > 0 ? String(est.metalness) : "");
-    } catch {
-      // estimation is a nicety — leave defaults if it fails
-    }
-  }, []);
+    },
+    [loadMaterialDraft],
+  );
 
   // Human label to store on a material's preset file, keyed by its id.
   const labelForId = useCallback(
@@ -1048,14 +1410,23 @@ export default function Home() {
       metalness: number,
       knobs: FabricKnobs,
     ): Promise<MaterialPreset> => {
-      const preset = await saveAuthoringPreset({
-        slug: id,
-        name,
-        fabricId,
-        pkgHash,
-        metalness,
-        knobs,
-      });
+      const preset = await saveAuthoringPreset(
+        {
+          slug: id,
+          name,
+          fabricId,
+          pkgHash,
+          metalness,
+          knobs,
+        },
+        {
+          // A hidden vault package belongs only to this browser. Mirroring its
+          // preset without the map bytes creates an unusable server orphan.
+          mirrorToServer: !vaultEntriesRef.current.some(
+            (entry) => entry.hash === pkgHash && entry.hidden,
+          ),
+        },
+      );
       vaultPresetsRef.current = [
         ...vaultPresetsRef.current.filter((candidate) => candidate.slug !== id),
         preset,
@@ -1074,7 +1445,17 @@ export default function Home() {
   // Select a material into the loom: load its maps, then either restore its
   // saved params or seed+persist fresh ones. Sets it as the autosave target.
   const selectMaterial = useCallback(
-    (item: LibraryItem) => {
+    (item: LibraryItem, intent: number) => {
+      if (
+        materialIntentRef.current !== intent ||
+        pendingMaterialSelectionRef.current?.id !== item.id ||
+        pendingMaterialSelectionRef.current.intent !== intent
+      ) {
+        return;
+      }
+      pendingMaterialSelectionRef.current = null;
+      setPendingMaterialId(null);
+      activeIdRef.current = item.id;
       activePkgHashRef.current = item.pkgHash;
       setActiveId(item.id);
       if (item.entry) {
@@ -1096,16 +1477,29 @@ export default function Home() {
       else void resolveMapsForHash(item.pkgHash);
       if (item.preset) {
         applyParams(item.preset);
-      } else if (item.entry) {
-        // Arm the baseline empty so the seeded params write once they settle.
+      } else {
+        // Never inherit the previous swatch's unrepresented controls while its
+        // estimate is pending. The estimator may fill only part of this clean
+        // source; a user gesture makes the delayed result ineligible to land.
+        loadMaterialDraft({ ...DEFAULT_FABRIC_KNOBS });
+        metalnessInputRef.current = "";
+        setMetalnessInput("");
+        // Arm the baseline empty so defaults/seeded params write once settled.
         setAutosaveBaseline({ id: item.id, sig: "" });
-        void seedParamsFromEntry(item.entry);
+        if (item.entry) {
+          void seedParamsFromEntry(item.entry, {
+            itemId: item.id,
+            pkgHash: item.pkgHash,
+            intent,
+          });
+        }
       }
     },
     [
       loadCachedEntry,
       resolveMapsForHash,
       applyParams,
+      loadMaterialDraft,
       seedParamsFromEntry,
       samples,
       runDurableSave,
@@ -1114,48 +1508,58 @@ export default function Home() {
     ],
   );
 
-  // ── autosave: persist the active material's params as knobs change ───────
-  // Debounced ~1s after the last edit. The baseline gate (id + signature) means
-  // this fires only for real material-param drift on the armed material —
-  // scene-knob drags and the initial restore of saved params write nothing.
+  // ── bootstrap save: persist an untouched material's initial estimate ─────
+  // Once editing begins, the canonical source is protected: a working draft
+  // stays local to the session until the user explicitly keeps a variation.
+  // The debounce remains for a newly extracted material's first auto-estimate.
   useEffect(() => {
     if (!activeId) return;
     if (autosaveBaseline.id !== activeId) return; // not armed/hydrated yet
+    if (
+      fabricGestureActiveRef.current ||
+      isMaterialDraftDirty(materialDraft)
+    ) {
+      return;
+    }
     const hasMetalnessMap = Boolean(pkg?.maps.metalness);
     const metal = resolveMetalnessAmount(metalnessInput, hasMetalnessMap);
     const fk = fabricKnobsOf(knobs);
     const sig = paramSig(fabricId, metal, fk);
     if (sig === autosaveBaseline.sig) return; // nothing material changed
     const pkgHash = activePkgHashRef.current ?? activeId;
+    const saveRevision = reserveDurableSave(`preset:${activeId}`);
     let cancelled = false;
     queueMicrotask(() => {
       if (!cancelled) markSaveDirty();
     });
     const t = setTimeout(() => {
-      void runDurableSave(async () => {
-        await postParams(
-          activeId,
-          pkgHash,
-          labelForId(activeId),
-          fabricId,
-          metal,
-          fk,
-        );
-        const currentMetal = resolveMetalnessAmount(
-          metalnessInputRef.current,
-          hasMetalnessMap,
-        );
-        const currentSig = paramSig(
-          fabricIdRef.current,
-          currentMetal,
-          fabricKnobsOf(knobsRef.current),
-        );
-        // A retry may finish after the user selected another material or made
-        // another edit. Only certify the exact state this write committed.
-        if (activeIdRef.current === activeId && currentSig === sig) {
-          setAutosaveBaseline({ id: activeId, sig });
-        }
-      });
+      void runDurableSave(
+        async () => {
+          await postParams(
+            activeId,
+            pkgHash,
+            labelForId(activeId),
+            fabricId,
+            metal,
+            fk,
+          );
+          const currentMetal = resolveMetalnessAmount(
+            metalnessInputRef.current,
+            hasMetalnessMap,
+          );
+          const currentSig = paramSig(
+            fabricIdRef.current,
+            currentMetal,
+            fabricKnobsOf(knobsRef.current),
+          );
+          // A retry may finish after the user selected another material or made
+          // another edit. Only certify the exact state this write committed.
+          if (activeIdRef.current === activeId && currentSig === sig) {
+            setAutosaveBaseline({ id: activeId, sig });
+          }
+        },
+        saveRevision,
+      );
     }, 1000);
     return () => {
       cancelled = true;
@@ -1163,6 +1567,7 @@ export default function Home() {
     };
   }, [
     knobs,
+    materialDraft,
     metalnessInput,
     fabricId,
     activeId,
@@ -1171,6 +1576,7 @@ export default function Home() {
     markSaveDirty,
     postParams,
     pkg,
+    reserveDurableSave,
     runDurableSave,
   ]);
 
@@ -1195,7 +1601,10 @@ export default function Home() {
       if (cancelled || bootedRef.current) return;
       bootedRef.current = true;
       if (preset) applyParams(preset);
-      else setAutosaveBaseline(baseline);
+      else {
+        loadMaterialDraft(fabricKnobsOf(knobs));
+        setAutosaveBaseline(baseline);
+      }
     });
     return () => {
       cancelled = true;
@@ -1205,6 +1614,7 @@ export default function Home() {
     presets,
     presetsLoaded,
     applyParams,
+    loadMaterialDraft,
     fabricId,
     metalnessInput,
     knobs,
@@ -1218,6 +1628,10 @@ export default function Home() {
     async (item: LibraryItem) => {
       const nextOrder = libraryOrderRef.current.filter((id) => id !== item.id);
       const wasActive = activeIdRef.current === item.id;
+      if (wasActive) ++materialIntentRef.current;
+      // Deletion supersedes any failed knob/name write for this material.
+      reserveDurableSave(`preset:${item.id}`);
+      const orderRevision = reserveDurableSave("library-order");
       markSaveDirty();
       await runDurableSave(async () => {
         await deleteAuthoringItem({
@@ -1225,12 +1639,16 @@ export default function Home() {
           pkgHash: item.pkgHash,
           clone: item.clone,
         });
-        await saveAuthoringOrder(nextOrder);
+        if (saveRevisionsRef.current.isCurrent(orderRevision)) {
+          await saveAuthoringOrder(nextOrder);
+        }
         vaultPresetsRef.current = vaultPresetsRef.current.filter(
           (preset) => preset.slug !== item.id,
         );
         setPresets((cur) => cur.filter((preset) => preset.slug !== item.id));
-        applyLibraryOrder(nextOrder);
+        if (saveRevisionsRef.current.isCurrent(orderRevision)) {
+          applyLibraryOrder(nextOrder);
+        }
         await refreshVault();
         // Fold the durable result into the current list without immediately
         // re-reading a lagging server mirror that may still contain the delete.
@@ -1258,6 +1676,7 @@ export default function Home() {
       applyLibraryOrder,
       markSaveDirty,
       refreshVault,
+      reserveDurableSave,
       runDurableSave,
     ],
   );
@@ -1286,30 +1705,39 @@ export default function Home() {
       const at = nextOrder.indexOf(item.id);
       if (at === -1) nextOrder.push(slug);
       else nextOrder.splice(at + 1, 0, slug);
+      const presetRevision = reserveDurableSave(`preset:${slug}`);
+      const orderRevision = reserveDurableSave("library-order");
       markSaveDirty();
-      await runDurableSave(async () => {
-        // A clone never depends solely on a server cache URL. If the source's
-        // maps are available here, make the package durable before its preset.
-        if (item.entry) {
-          await saveAuthoringMaterial(authoringMaterialFromEntry(item.entry));
-          await refreshVault();
-        }
-        await postParams(slug, item.pkgHash, name, fId, metal, knobsToClone);
-        await saveAuthoringOrder(nextOrder);
-        applyLibraryOrder(nextOrder);
-      });
+      await runDurableSave(
+        async () => {
+          // A clone never depends solely on a server cache URL. If the source's
+          // maps are available here, make the package durable before its preset.
+          if (item.entry) {
+            await saveAuthoringMaterial(authoringMaterialFromEntry(item.entry));
+            await refreshVault();
+          }
+          await postParams(slug, item.pkgHash, name, fId, metal, knobsToClone);
+          if (saveRevisionsRef.current.isCurrent(orderRevision)) {
+            await saveAuthoringOrder(nextOrder);
+            applyLibraryOrder(nextOrder);
+          }
+        },
+        presetRevision,
+      );
     },
     [
       applyLibraryOrder,
       markSaveDirty,
       postParams,
       refreshVault,
+      reserveDurableSave,
       runDurableSave,
     ],
   );
 
   // ── reorder: drag a grip → move an item before another in the library.
   const reorderLibrary = useCallback((dragId: string, beforeId: string) => {
+    if (pendingMaterialId !== null) return;
     if (dragId === beforeId) return;
     const next = libraryOrderRef.current.filter((id) => id !== dragId);
     const at = next.indexOf(beforeId);
@@ -1317,12 +1745,39 @@ export default function Home() {
     else next.splice(at, 0, dragId);
     applyLibraryOrder(next);
     markSaveDirty();
-    void runDurableSave(() => saveAuthoringOrder(next));
-  }, [applyLibraryOrder, markSaveDirty, runDurableSave]);
+    const revision = reserveDurableSave("library-order");
+    void runDurableSave(() => saveAuthoringOrder(next), revision);
+  }, [
+    applyLibraryOrder,
+    markSaveDirty,
+    pendingMaterialId,
+    reserveDurableSave,
+    runDurableSave,
+  ]);
+
+  const presentedKnobs = useMemo<Knobs>(
+    () => {
+      if (materialDraft.comparison !== "baseline") return knobs;
+      // Appearance A/B is reversible: retain the live solver's mass and
+      // constraints while swapping the source's shader/map/edge surface.
+      // Motion differences are judged from a clean state with the probes.
+      const currentFabric = fabricKnobsOf(knobs);
+      return {
+        ...knobs,
+        ...materialDraft.baseline,
+        weight: currentFabric.weight,
+        warpStiffness: currentFabric.warpStiffness,
+        weftStiffness: currentFabric.weftStiffness,
+        shearStiffness: currentFabric.shearStiffness,
+        bendStiffness: currentFabric.bendStiffness,
+      };
+    },
+    [knobs, materialDraft],
+  );
 
   const fabric = useMemo(
-    () => fabricFromPkg(pkg, knobs, fabricId),
-    [pkg, knobs, fabricId],
+    () => fabricFromPkg(pkg, presentedKnobs, fabricId),
+    [pkg, presentedKnobs, fabricId],
   );
 
   // The openness slider is intentionally exponential: linear drag on the
@@ -1331,7 +1786,19 @@ export default function Home() {
   // takes you the rest of the way to organza-sheer. Applied at the boundary
   // so `knobs.openness` remains the raw slider position; ClothScene and
   // ObjectViewer only ever see the curved value.
-  const opennessCurved = Math.pow(knobs.openness, 3);
+  const opennessCurved = Math.pow(presentedKnobs.openness, 3);
+
+  const instrumentState = useMemo(
+    () => readMaterialInstrument(fabricKnobsOf(knobs), construction),
+    [knobs, construction],
+  );
+  const draftDirty = isMaterialDraftDirty(materialDraft);
+  const canUndoDraft = canUndoMaterialDraft(materialDraft);
+  const canRedoDraft = canRedoMaterialDraft(materialDraft);
+
+  const runClothProbe = useCallback((probe: ClothProbe) => {
+    clothSceneRef.current?.runProbe(probe);
+  }, []);
 
   const metalness = resolveMetalnessAmount(
     metalnessInput,
@@ -1342,6 +1809,16 @@ export default function Home() {
     if (!pkg) return [];
     return MAP_ORDER.map((n) => pkg.maps[n]).filter((e): e is MapEntry => Boolean(e));
   }, [pkg]);
+  const mapVariationSource = useMemo(
+    () =>
+      pkg
+        ? {
+            itemId: activeId ?? pkg.id,
+            pkgHash: pkg.id,
+          }
+        : null,
+    [activeId, pkg],
+  );
   // Fast hash → maps-source lookups, so a clone (or curated preset) can find
   // the maps + thumbnail behind its pkgHash.
   const sampleByHash = useMemo(
@@ -1457,7 +1934,8 @@ export default function Home() {
       if (cancelled) return;
       applyLibraryOrder(next);
       markSaveDirty();
-      void runDurableSave(() => saveAuthoringOrder(next));
+      const revision = reserveDurableSave("library-order");
+      void runDurableSave(() => saveAuthoringOrder(next), revision);
     });
     return () => {
       cancelled = true;
@@ -1466,6 +1944,7 @@ export default function Home() {
     applyLibraryOrder,
     libraryItems,
     markSaveDirty,
+    reserveDurableSave,
     runDurableSave,
   ]);
 
@@ -1476,21 +1955,52 @@ export default function Home() {
   // and commit it as a new authored swatch with the current controls. The
   // original package (and any clones wearing it) stays intact.
   const createMapVariation = useCallback(
-    async (name: MapName, file: File): Promise<void> => {
-      if (!pkg || !activeId) {
+    async (
+      source: MapVariationSource,
+      name: MapName,
+      file: File,
+      itemId: string,
+    ): Promise<void> => {
+      if (pendingMaterialId !== null) {
+        throw new Error("Wait for the current material change to finish");
+      }
+      if (!pkg) {
         throw new Error("Select a material before creating a map variation");
+      }
+      const currentItemId = activeId ?? pkg.id;
+      const currentPkgHash = activePkgHashRef.current ?? pkg.id;
+      if (
+        source.itemId !== currentItemId ||
+        source.pkgHash !== currentPkgHash ||
+        pkg.maps[name]?.url !== source.mapUrl
+      ) {
+        throw new Error(
+          "The material changed while this map was open. Reopen the map and try again.",
+        );
       }
       if (file.size === 0) throw new Error("The selected map is empty");
       if (file.size > 32 * 1024 * 1024) {
         throw new Error("Map files must be 32 MB or smaller");
       }
+      const variationIntent = ++materialIntentRef.current;
+      pendingMaterialSelectionRef.current = null;
+      setPendingMaterialId(itemId);
+      const sourcePackage = pkg;
       const sourceItem =
-        sampleItems.find((item) => item.id === activeId) ??
-        libraryItems.find((item) => item.id === activeId);
-      const sourceHash = sourceItem?.pkgHash ?? activePkgHashRef.current ?? pkg.id;
+        sampleItems.find((item) => item.id === source.itemId) ??
+        libraryItems.find((item) => item.id === source.itemId);
+      const sourceHash = source.pkgHash;
       const sourceLabel =
-        sourceItem?.label ?? pkg.meta.fabricName ?? "material";
-      const itemId = crypto.randomUUID();
+        sourceItem?.label ?? sourcePackage.meta.fabricName ?? "material";
+      // Snapshot the authored controls with the source pixels. If another
+      // material becomes active during encoding, this variation still wears
+      // the controls it was created from.
+      const sourceFabricId = fabricIdRef.current;
+      const sourceKnobs = fabricKnobsOf(knobsRef.current);
+      const sourceMetalness = resolveMetalnessAmount(
+        metalnessInputRef.current,
+        Boolean(sourcePackage.maps.metalness),
+      );
       let failure: unknown = null;
       markSaveDirty();
       const saved = await runDurableSave(async () => {
@@ -1523,7 +2033,7 @@ export default function Home() {
           }[] = [];
           const bytesByFile = new Map<string, ArrayBuffer>();
           for (const mapName of MAP_ORDER) {
-            const entry = pkg.maps[mapName];
+            const entry = sourcePackage.maps[mapName];
             if (!entry) continue;
             let bytes: ArrayBuffer;
             let format = replacementFormat;
@@ -1556,7 +2066,7 @@ export default function Home() {
               file: mapFile,
               bytes,
               provenance:
-                mapName === name ? "captured" : entry.provenance,
+                mapName === name ? "derived" : entry.provenance,
               sourceHash: entry.sourceHash,
             });
           }
@@ -1571,15 +2081,9 @@ export default function Home() {
           const currentOrder = libraryOrderRef.current.filter(
             (id) => id !== itemId,
           );
-          const sourceIndex = currentOrder.indexOf(activeId);
+          const sourceIndex = currentOrder.indexOf(source.itemId);
           if (sourceIndex === -1) currentOrder.push(itemId);
           else currentOrder.splice(sourceIndex + 1, 0, itemId);
-          const currentMetalness = resolveMetalnessAmount(
-            parseFloat(metalnessInputRef.current) ||
-              sourceItem?.preset?.metalness ||
-              0,
-            Boolean(pkg.maps.metalness),
-          );
           const label = `${sourceLabel} · ${name} edit`;
           const preset = await importAuthoringMaterialBytes(
             {
@@ -1592,10 +2096,9 @@ export default function Home() {
                 name: map.name,
                 file: map.file,
                 provenance: map.provenance,
-                sourceHash:
-                  map.name === name
-                    ? pkgHash
-                    : map.sourceHash ?? sourceHash,
+                // Lineage points at the parent pixels. The output package's
+                // own content identity already lives in `pkgHash`.
+                sourceHash: map.sourceHash ?? sourceHash,
               })),
             },
             bytesByFile,
@@ -1603,9 +2106,9 @@ export default function Home() {
               slug: itemId,
               pkgHash,
               name: label,
-              fabricId: fabricIdRef.current,
-              metalness: currentMetalness,
-              knobs: fabricKnobsOf(knobsRef.current),
+              fabricId: sourceFabricId,
+              metalness: sourceMetalness,
+              knobs: sourceKnobs,
             },
             currentOrder,
           );
@@ -1619,36 +2122,59 @@ export default function Home() {
             ...current.filter((candidate) => candidate.slug !== itemId),
             preset,
           ]);
-          await refreshVault();
-          await refreshCache();
-          applyLibraryOrder(currentOrder);
-          const entry = vaultEntriesRef.current.find(
-            (candidate) => candidate.hash === pkgHash,
-          );
+          const entry = await loadAuthoringEntry(pkgHash);
           if (!entry) {
             throw new Error("The map variation could not be reopened locally");
           }
-          materialSwapRef.current(
-            () => {
-              loadCachedEntry(entry);
-              activePkgHashRef.current = pkgHash;
-              setActiveId(itemId);
-              applyParams(preset);
-              setExportState("idle");
-            },
-            {
-              expectedAlbedoURL: entry.maps.find(
-                (map) => map.name === "albedo",
-              )?.url,
-              ownerAfter: itemId,
-            },
-          );
+          vaultEntriesRef.current = [
+            ...vaultEntriesRef.current.filter(
+              (candidate) => candidate.hash !== pkgHash,
+            ),
+            entry,
+          ];
+          deletedHashesRef.current.delete(pkgHash);
+          setCacheEntries((current) => [
+            ...current.filter((candidate) => candidate.hash !== pkgHash),
+            entry,
+          ]);
+          applyLibraryOrder(currentOrder);
+
+          // Saving is still valid if the user moved on, but it must not yank a
+          // newer material off the loom when the async encode finishes.
+          const sourceStillActive =
+            materialIntentRef.current === variationIntent &&
+            (activeIdRef.current ?? sourcePackage.id) === source.itemId &&
+            (activePkgHashRef.current ?? sourcePackage.id) === source.pkgHash;
+          if (sourceStillActive) {
+            materialSwapRef.current(
+              () => {
+                if (materialIntentRef.current !== variationIntent) return;
+                ++materialIntentRef.current;
+                loadCachedEntry(entry);
+                activeIdRef.current = itemId;
+                activePkgHashRef.current = pkgHash;
+                setActiveId(itemId);
+                applyParams(preset);
+                setPendingMaterialId(null);
+                setExportState("idle");
+              },
+              {
+                expectedAlbedoURL: entry.maps.find(
+                  (map) => map.name === "albedo",
+                )?.url,
+                ownerAfter: itemId,
+              },
+            );
+          }
         } catch (error) {
           failure = error;
           throw error;
         }
-      });
+      }, undefined, { retainFailure: false });
       if (!saved) {
+        if (materialIntentRef.current === variationIntent) {
+          setPendingMaterialId(null);
+        }
         throw failure instanceof Error
           ? failure
           : new Error("The map variation was not saved");
@@ -1661,9 +2187,8 @@ export default function Home() {
       libraryItems,
       loadCachedEntry,
       markSaveDirty,
+      pendingMaterialId,
       pkg,
-      refreshCache,
-      refreshVault,
       runDurableSave,
       sampleItems,
     ],
@@ -1679,12 +2204,20 @@ export default function Home() {
       const { exportMaterial } = await import("@/lib/export/materialExport");
       const k = knobsRef.current;
       const fId = fabricIdRef.current;
+      const authoredId = activeIdRef.current ?? pkg.id;
+      const activeItem = [...sampleItems, ...libraryItems].find(
+        (item) => item.id === authoredId,
+      );
       const metal = resolveMetalnessAmount(
         metalnessInputRef.current,
         Boolean(pkg.maps.metalness),
       );
       const result = await exportMaterial({
-        name: pkg.meta.fabricName || FABRICS[fId].nameRoman,
+        name:
+          activeItem?.label ||
+          pkg.meta.fabricName ||
+          FABRICS[fId].nameRoman,
+        materialId: authoredId,
         pkg,
         knobs: fabricKnobsOf(k),
         metalness: metal,
@@ -1704,34 +2237,163 @@ export default function Home() {
       console.error("material export failed", e);
       setExportState("error");
     }
-  }, [pkg, exportState]);
+  }, [pkg, exportState, libraryItems, sampleItems]);
 
   // ── id → item adapters for the swatch grids (their callbacks report ids;
   //    the page resolves them back to rich LibraryItems). ───────────────────
   const commitById = useCallback(
     (id: string) => {
+      const pending = pendingMaterialSelectionRef.current;
+      if (
+        !pending ||
+        pending.id !== id ||
+        materialIntentRef.current !== pending.intent
+      ) {
+        return;
+      }
       const item =
         sampleItems.find((i) => i.id === id) ??
         libraryItems.find((i) => i.id === id);
-      if (item) selectMaterial(item);
+      if (item) selectMaterial(item, pending.intent);
+      else {
+        pendingMaterialSelectionRef.current = null;
+        setPendingMaterialId(null);
+      }
     },
     [sampleItems, libraryItems, selectMaterial],
   );
   const cloneById = useCallback(
     (id: string) => {
+      if (pendingMaterialId !== null) return;
       const item =
         sampleItems.find((i) => i.id === id) ??
         libraryItems.find((i) => i.id === id);
       if (item) void cloneItem(item);
     },
-    [sampleItems, libraryItems, cloneItem],
+    [sampleItems, libraryItems, cloneItem, pendingMaterialId],
   );
+
+  /** Commit the working material as a new lightweight branch. Map bytes stay
+   * shared; only the authored parameters and library row are new. */
+  const keepDraftAsVariation = useCallback(async () => {
+    if (keepingDraft || !activeId || !pkg || !isMaterialDraftDirty(materialDraftRef.current)) {
+      return;
+    }
+    const source =
+      sampleItems.find((item) => item.id === activeId) ??
+      libraryItems.find((item) => item.id === activeId);
+    const pkgHash = activePkgHashRef.current ?? pkg.id;
+    const slug =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `variation-${Date.now().toString(36)}`;
+    const currentFabric = fabricKnobsOf(knobsRef.current);
+    const currentFabricId = fabricIdRef.current;
+    const currentMetalness = resolveMetalnessAmount(
+      metalnessInputRef.current,
+      Boolean(pkg.maps.metalness),
+    );
+    const sourceId = activeId;
+    const sourceSignature = paramSig(
+      currentFabricId,
+      currentMetalness,
+      currentFabric,
+    );
+    const name = `${source?.label ?? labelForId(activeId)} variation`;
+    const nextOrder = libraryOrderRef.current.filter((id) => id !== slug);
+    const sourceIndex = nextOrder.indexOf(activeId);
+    if (sourceIndex === -1) nextOrder.push(slug);
+    else nextOrder.splice(sourceIndex + 1, 0, slug);
+    const presetRevision = reserveDurableSave(`preset:${slug}`);
+    const orderRevision = reserveDurableSave("library-order");
+
+    setKeepingDraft(true);
+    markSaveDirty();
+    try {
+      const durableSaved = await runDurableSave(
+        async () => {
+          if (source?.entry) {
+            await saveAuthoringMaterial(authoringMaterialFromEntry(source.entry));
+            await refreshVault();
+          }
+          await postParams(
+            slug,
+            pkgHash,
+            name,
+            currentFabricId,
+            currentMetalness,
+            currentFabric,
+          );
+          if (saveRevisionsRef.current.isCurrent(orderRevision)) {
+            await saveAuthoringOrder(nextOrder);
+            applyLibraryOrder(nextOrder);
+          }
+        },
+        presetRevision,
+      );
+
+      // A retryable save job is persistence-only. It must never switch the
+      // loom later, and a slow successful save must not erase edits made while
+      // it was pending. The branch still appears in the library in either case.
+      const liveMetalness = resolveMetalnessAmount(
+        metalnessInputRef.current,
+        Boolean(pkg.maps.metalness),
+      );
+      const liveSignature = paramSig(
+        fabricIdRef.current,
+        liveMetalness,
+        fabricKnobsOf(knobsRef.current),
+      );
+      if (
+        durableSaved &&
+        activeIdRef.current === sourceId &&
+        activePkgHashRef.current === pkgHash &&
+        liveSignature === sourceSignature
+      ) {
+        ++materialIntentRef.current;
+        activeIdRef.current = slug;
+        activePkgHashRef.current = pkgHash;
+        setActiveId(slug);
+        setAutosaveBaseline({ id: slug, sig: sourceSignature });
+        loadMaterialDraft(currentFabric);
+      }
+    } finally {
+      setKeepingDraft(false);
+    }
+  }, [
+    activeId,
+    applyLibraryOrder,
+    keepingDraft,
+    labelForId,
+    libraryItems,
+    loadMaterialDraft,
+    markSaveDirty,
+    pkg,
+    postParams,
+    refreshVault,
+    reserveDurableSave,
+    runDurableSave,
+    sampleItems,
+  ]);
+
   const deleteById = useCallback(
     (id: string) => {
+      if (pendingMaterialId !== null) return;
+      if (
+        id === activeIdRef.current &&
+        !confirmDiscardWorkingDraft("delete this material")
+      ) {
+        return;
+      }
       const item = libraryItems.find((i) => i.id === id);
       if (item) void deleteLibraryItem(item);
     },
-    [libraryItems, deleteLibraryItem],
+    [
+      confirmDiscardWorkingDraft,
+      deleteLibraryItem,
+      libraryItems,
+      pendingMaterialId,
+    ],
   );
 
   // Double-click rename. The display name lives on the material's preset, so
@@ -1741,6 +2403,7 @@ export default function Home() {
   // estimate otherwise.
   const renameById = useCallback(
     async (id: string, name: string) => {
+      if (pendingMaterialId !== null) return;
       const item =
         sampleItems.find((i) => i.id === id) ??
         libraryItems.find((i) => i.id === id);
@@ -1753,21 +2416,25 @@ export default function Home() {
         nextMetalness: number,
         nextKnobs: FabricKnobs,
       ) => {
+        const revision = reserveDurableSave(`preset:${targetId}`);
         markSaveDirty();
-        await runDurableSave(async () => {
-          if (item.entry) {
-            await saveAuthoringMaterial(authoringMaterialFromEntry(item.entry));
-            await refreshVault();
-          }
-          await postParams(
-            targetId,
-            pkgHash,
-            name,
-            nextFabricId,
-            nextMetalness,
-            nextKnobs,
-          );
-        });
+        await runDurableSave(
+          async () => {
+            if (item.entry) {
+              await saveAuthoringMaterial(authoringMaterialFromEntry(item.entry));
+              await refreshVault();
+            }
+            await postParams(
+              targetId,
+              pkgHash,
+              name,
+              nextFabricId,
+              nextMetalness,
+              nextKnobs,
+            );
+          },
+          revision,
+        );
       };
       if (preset) {
         await persist(
@@ -1785,7 +2452,7 @@ export default function Home() {
       }
       if (!item.entry) return;
       let estimatedMetalness = 0;
-      let estimatedKnobs = fabricKnobsOf(knobs);
+      let estimatedKnobs = { ...DEFAULT_FABRIC_KNOBS };
       try {
         const p = pkgFromMaps(
           item.entry.sourceFilename ?? "material",
@@ -1795,21 +2462,18 @@ export default function Home() {
             prompt: item.entry.prompt,
             sourceFilename: item.entry.sourceFilename,
             hash: item.entry.hash,
+            createdAt: item.entry.createdAt || undefined,
           },
         );
-        for (const m of item.entry.maps) {
-          const key = m.name as MapName;
-          if (p.maps[key]) p.maps[key]!.url = m.url;
-        }
         const { estimateParams } = await import("@/lib/pipeline/estimateParams");
         const est = await estimateParams(p);
         estimatedMetalness = est.metalness;
         estimatedKnobs = {
-          ...knobs,
+          ...DEFAULT_FABRIC_KNOBS,
           ...est.knobs,
         };
       } catch {
-        // Estimation is optional; persist the current material controls.
+        // Estimation is optional; persist a clean material baseline.
       }
       await persist(
         id,
@@ -1826,8 +2490,10 @@ export default function Home() {
       markSaveDirty,
       metalness,
       knobs,
+      pendingMaterialId,
       postParams,
       refreshVault,
+      reserveDurableSave,
       runDurableSave,
       sampleItems,
     ],
@@ -1837,6 +2503,8 @@ export default function Home() {
   const [collectionBusy, setCollectionBusy] = useState<
     "export" | "import" | "material-import" | null
   >(null);
+  const collectionInputRef = useRef<HTMLInputElement | null>(null);
+  const materialInputRef = useRef<HTMLInputElement | null>(null);
   const exportCollectionZip = useCallback(async () => {
     if (collectionBusy) return;
     setCollectionBusy("export");
@@ -1905,7 +2573,11 @@ export default function Home() {
   // one local transaction, then wear the IndexedDB-hydrated copy.
   const importMaterialZip = useCallback(
     async (file: File) => {
-      if (collectionBusy) return;
+      if (collectionBusy || pendingMaterialId !== null) return;
+      if (!confirmDiscardWorkingDraft("open another material")) return;
+      const intent = ++materialIntentRef.current;
+      pendingMaterialSelectionRef.current = null;
+      setPendingMaterialId("importing");
       setCollectionBusy("material-import");
       markSaveDirty();
       // Keep the identity stable if this durable job has to be retried.
@@ -1986,21 +2658,26 @@ export default function Home() {
             if (!entry) {
               throw new Error("Imported maps could not be reopened locally");
             }
-            materialSwapRef.current(
-              () => {
-                loadCachedEntry(entry);
-                activePkgHashRef.current = pkgHash;
-                setActiveId(itemId);
-                applyParams(preset);
-              },
-              {
-                expectedAlbedoURL: entry.maps.find(
-                  (map) => map.name === "albedo",
-                )?.url,
-                ownerAfter: itemId,
-              },
-            );
-            setStatus({ kind: "done", cacheHit: true, hash: pkgHash });
+            if (materialIntentRef.current === intent) {
+              materialSwapRef.current(
+                () => {
+                  if (materialIntentRef.current !== intent) return;
+                  loadCachedEntry(entry);
+                  activePkgHashRef.current = pkgHash;
+                  activeIdRef.current = itemId;
+                  setActiveId(itemId);
+                  applyParams(preset);
+                  setPendingMaterialId(null);
+                },
+                {
+                  expectedAlbedoURL: entry.maps.find(
+                    (map) => map.name === "albedo",
+                  )?.url,
+                  ownerAfter: itemId,
+                },
+              );
+              setStatus({ kind: "done", cacheHit: true, hash: pkgHash });
+            }
           } finally {
             // Every retry opens fresh object URLs; release that attempt's URLs
             // once the vault-hydrated copies have taken over.
@@ -2010,8 +2687,9 @@ export default function Home() {
           failure = error;
           throw error;
         }
-      });
+      }, undefined, { retainFailure: false });
       if (!saved) {
+        if (materialIntentRef.current === intent) setPendingMaterialId(null);
         setStatus({
           kind: "error",
           message:
@@ -2026,8 +2704,10 @@ export default function Home() {
       applyLibraryOrder,
       applyParams,
       collectionBusy,
+      confirmDiscardWorkingDraft,
       loadCachedEntry,
       markSaveDirty,
+      pendingMaterialId,
       refreshCache,
       refreshVault,
       runDurableSave,
@@ -2039,39 +2719,24 @@ export default function Home() {
     stageRef,
     commit: commitById,
   });
+  const selectTransferredMaterial = materialTransfer.click;
+  const selectMaterialWithDraftGuard = useCallback(
+    (id: string) => {
+      if (id === activeId) return;
+      if (!confirmDiscardWorkingDraft("switch swatches")) return;
+      const intent = ++materialIntentRef.current;
+      pendingMaterialSelectionRef.current = { id, intent };
+      setPendingMaterialId(id);
+      selectTransferredMaterial(id);
+    },
+    [activeId, confirmDiscardWorkingDraft, selectTransferredMaterial],
+  );
   useEffect(() => {
     materialSwapRef.current = materialTransfer.swap;
   }, [materialTransfer.swap]);
 
-  // Landing splash: covers the first load (shader compile + settle + first
-  // maps) so the user never sees the scene pop in piecemeal. perfStats' first
-  // emission means the render loop is actually producing frames.
-  const [landingPhase, setLandingPhase] = useState<"hold" | "leaving" | "gone">(
-    "hold",
-  );
-  // Async on purpose (lint: no sync setState in effects). Two separate
-  // effects: the leaving→gone timer must NOT depend on perfStats — stats
-  // re-emit ~2 Hz, and each emission would clear-and-reschedule a shared
-  // timer forever.
-  useEffect(() => {
-    if (landingPhase !== "hold" || !perfStats) return;
-    const t = window.setTimeout(() => setLandingPhase("leaving"), 120);
-    return () => window.clearTimeout(t);
-  }, [landingPhase, perfStats]);
-  useEffect(() => {
-    if (landingPhase !== "leaving") return;
-    const t = window.setTimeout(() => setLandingPhase("gone"), 700);
-    return () => window.clearTimeout(t);
-  }, [landingPhase]);
-
   return (
     <div className="app">
-      {landingPhase !== "gone" ? (
-        <div className="landing" data-leaving={landingPhase === "leaving"}>
-          <span className="nav-brand-name">digital loom</span>
-          <span className="nav-brand-sub">fabric material instrument</span>
-        </div>
-      ) : null}
       <MaterialTransferLayer command={materialTransfer.command} />
       <NavBar
         mode={mode}
@@ -2106,47 +2771,49 @@ export default function Home() {
         {/* One persistent scene. `mode` cross-fades the cloth and the object
             in place — no teardown, no remount. */}
         <ClothScene
+          ref={clothSceneRef}
           fabric={fabric}
           width={stageSize.w}
           height={stageSize.h}
           mode={mode}
           pkg={pkg}
           objectModelUrl={OBJECT_MODEL_URL}
-          objectTileScale={knobs.tileScale * 5}
+          objectTileScale={presentedKnobs.tileScale * 5}
           wireframe={knobs.wireframe}
           pinMode={knobs.pinMode}
           openness={opennessCurved}
-          alphaBoost={knobs.alphaBoost}
-          alphaBoostSource={knobs.alphaBoostSource}
+          alphaBoost={presentedKnobs.alphaBoost}
+          alphaBoostSource={presentedKnobs.alphaBoostSource}
           roughnessMapURL={pkg?.maps.roughness?.url}
           porosityMapURL={pkg?.maps.transmission?.url}
           metalness={metalness}
-          iridescence={knobs.iridescence}
+          iridescence={presentedKnobs.iridescence}
           metalnessMapURL={pkg?.maps.metalness?.url}
           normalMapURL={pkg?.maps.normal?.url}
-          normalAmount={knobs.normalAmount}
-          pomShadow={knobs.pomShadow}
-          stretch={knobs.stretch}
+          normalAmount={presentedKnobs.normalAmount}
+          pomShadow={presentedKnobs.pomShadow}
+          stretch={presentedKnobs.stretch}
           stretchDebug={knobs.stretchDebug}
-          albedoAmount={knobs.albedoAmount}
-          pomScale={knobs.pomScale}
+          albedoAmount={presentedKnobs.albedoAmount}
+          pomScale={presentedKnobs.pomScale}
           pomMinSteps={knobs.pomMinSteps}
           pomMaxSteps={knobs.pomMaxSteps}
           pomDebug={knobs.pomDebug}
-          edgeInset={knobs.edgeInset}
-          edgeFray={knobs.edgeFray}
-          edgeSharpness={knobs.edgeSharpness}
-          edgeDetail={knobs.edgeDetail}
-          tileScale={knobs.tileScale}
-          txHeight={knobs.txHeight}
-          txAlbedo={knobs.txAlbedo}
-          txRoughness={knobs.txRoughness}
-          transmissionContrast={knobs.transmissionContrast}
+          edgeInset={presentedKnobs.edgeInset}
+          edgeFray={presentedKnobs.edgeFray}
+          edgeSharpness={presentedKnobs.edgeSharpness}
+          edgeDetail={presentedKnobs.edgeDetail}
+          tileScale={presentedKnobs.tileScale}
+          txHeight={presentedKnobs.txHeight}
+          txAlbedo={presentedKnobs.txAlbedo}
+          txRoughness={presentedKnobs.txRoughness}
+          transmissionContrast={presentedKnobs.transmissionContrast}
           pixelScale={QUALITY_PRESETS[knobs.quality].pixelScale}
           meshCols={MESH_PRESETS[knobs.meshRes].cols}
           meshRows={MESH_PRESETS[knobs.meshRes].rows}
           breeze={knobs.breeze}
           skyMode={knobs.skyMode === "sky" ? 0 : 1}
+          mouseForce={knobs.mouseForce}
           iterations={knobs.iterations}
           selfCollide={knobs.selfCollide}
           anisotropy={knobs.anisotropy}
@@ -2207,9 +2874,11 @@ export default function Home() {
             <div
               className="side-panel-scroll panel-tab-pane"
               aria-hidden={workshopTab !== "workshop"}
+              inert={workshopTab !== "workshop"}
             >
               <MapsStrip
                 entries={mapEntries}
+                source={mapVariationSource}
                 onCreateVariation={createMapVariation}
                 exportState={exportState}
                 canExport={Boolean(pkg)}
@@ -2228,6 +2897,7 @@ export default function Home() {
             <div
               className="side-panel-scroll panel-tab-pane swatch-stamped"
               aria-hidden={workshopTab !== "swatches"}
+              inert={workshopTab !== "swatches"}
               style={
                 {
                   "--stamp-mask": `url("${STAMP_MASK_URI}")`,
@@ -2240,10 +2910,11 @@ export default function Home() {
                 awayId={materialTransfer.awayId}
                 meshOwnerId={materialTransfer.meshOwnerId}
                 drag={drag}
-                onSelect={materialTransfer.click}
+                onSelect={selectMaterialWithDraftGuard}
                 onRegister={materialTransfer.register}
                 onHoverIn={materialTransfer.hoverIn}
                 onHoverOut={materialTransfer.hoverOut}
+                onClone={cloneById}
                 onRename={renameById}
               />
               <LibraryGrid
@@ -2252,7 +2923,7 @@ export default function Home() {
                 awayId={materialTransfer.awayId}
                 meshOwnerId={materialTransfer.meshOwnerId}
                 drag={drag}
-                onSelect={materialTransfer.click}
+                onSelect={selectMaterialWithDraftGuard}
                 onRegister={materialTransfer.register}
                 onHoverIn={materialTransfer.hoverIn}
                 onHoverOut={materialTransfer.hoverOut}
@@ -2274,36 +2945,48 @@ export default function Home() {
                   >
                     {collectionBusy === "export" ? "zipping…" : "download zip ↓"}
                   </button>
-                  <label className="btn btn-ghost collection-load">
+                  <button
+                    type="button"
+                    className="btn btn-ghost collection-load"
+                    disabled={collectionBusy !== null}
+                    onClick={() => collectionInputRef.current?.click()}
+                  >
                     {collectionBusy === "import" ? "loading…" : "load zip"}
-                    <input
-                      type="file"
-                      accept=".zip,application/zip"
-                      hidden
-                      disabled={collectionBusy !== null}
-                      onChange={(e) => {
-                        const f = e.currentTarget.files?.[0];
-                        e.currentTarget.value = "";
-                        if (f) void importCollectionZip(f);
-                      }}
-                    />
-                  </label>
-                  <label className="btn btn-ghost collection-load material-load">
+                  </button>
+                  <input
+                    ref={collectionInputRef}
+                    type="file"
+                    accept=".zip,application/zip"
+                    hidden
+                    disabled={collectionBusy !== null}
+                    onChange={(e) => {
+                      const f = e.currentTarget.files?.[0];
+                      e.currentTarget.value = "";
+                      if (f) void importCollectionZip(f);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-ghost collection-load material-load"
+                    disabled={collectionBusy !== null}
+                    onClick={() => materialInputRef.current?.click()}
+                  >
                     {collectionBusy === "material-import"
                       ? "opening material…"
                       : "load one material"}
-                    <input
-                      type="file"
-                      accept=".zip,application/zip"
-                      hidden
-                      disabled={collectionBusy !== null}
-                      onChange={(e) => {
-                        const f = e.currentTarget.files?.[0];
-                        e.currentTarget.value = "";
-                        if (f) void importMaterialZip(f);
-                      }}
-                    />
-                  </label>
+                  </button>
+                  <input
+                    ref={materialInputRef}
+                    type="file"
+                    accept=".zip,application/zip"
+                    hidden
+                    disabled={collectionBusy !== null}
+                    onChange={(e) => {
+                      const f = e.currentTarget.files?.[0];
+                      e.currentTarget.value = "";
+                      if (f) void importMaterialZip(f);
+                    }}
+                  />
                 </div>
               </section>
             </div>
@@ -2327,9 +3010,85 @@ export default function Home() {
           side="right"
           collapsed={rightCollapsed}
           onToggle={() => setRightCollapsed((v) => !v)}
+          afterTitle={
+            <TuningViewPicker
+              view={tuningView}
+              onSelect={selectTuningView}
+              placement="header"
+            />
+          }
         />
-        <div className="side-panel-scroll">
-          <section className="panel-section" data-dye="gardenia">
+        <div className="side-panel-scroll" ref={tuningScrollRef}>
+          <div className="tuning-sheet-heading">
+            <span className="side-panel-title">tuning</span>
+            <TuningViewPicker
+              view={tuningView}
+              onSelect={selectTuningView}
+              placement="sheet"
+            />
+          </div>
+
+          <section
+            className="panel-section"
+            data-dye="indigo"
+            hidden={tuningView !== "scene"}
+          >
+            <SectionLabel hint="forces that keep the cloth moving while you inspect it">
+              motion
+            </SectionLabel>
+            <div className="knob-stack">
+              <Slider
+                label="mouse force"
+                hint="multiplies hover movement and the local gust released by a click"
+                value={knobs.mouseForce}
+                min={0}
+                max={5}
+                step={0.1}
+                onChange={(v) => setKnobs((k) => ({ ...k, mouseForce: v }))}
+              />
+              <Slider
+                label="breeze"
+                hint="wind strength; zero is dead calm"
+                value={knobs.breeze}
+                min={0}
+                max={0.25}
+                step={0.005}
+                onChange={(v) => setKnobs((k) => ({ ...k, breeze: v }))}
+              />
+            </div>
+            <div
+              className="instrument-action-row probe-strip"
+              role="group"
+              aria-label="repeatable cloth tests"
+            >
+              <span className="instrument-row-label">tests</span>
+              {(["still", "gust", "pull"] as const).map((probe) => (
+                <button
+                  key={probe}
+                  type="button"
+                  className="instrument-button"
+                  disabled={mode !== "cloth"}
+                  onClick={() => runClothProbe(probe)}
+                >
+                  {probe === "still" ? "drape" : probe}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="instrument-button instrument-reset"
+                disabled={mode !== "cloth"}
+                onClick={() => runClothProbe("reset")}
+              >
+                reset
+              </button>
+            </div>
+          </section>
+
+          <section
+            className="panel-section"
+            data-dye="gardenia"
+            hidden={tuningView !== "scene"}
+          >
             <SectionLabel hint="how sharply the scene is drawn; higher is crisper but works the GPU harder">frag res</SectionLabel>
             <div className="tx-mode-picker tx-mode-picker-wide" role="tablist">
               <PixelPlay />
@@ -2363,7 +3122,11 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="panel-section" data-dye="persimmon">
+          <section
+            className="panel-section"
+            data-dye="persimmon"
+            hidden={tuningView !== "scene"}
+          >
             <SectionLabel hint="how many points simulate the cloth; higher drapes finer folds, costs speed">mesh res</SectionLabel>
             <div className="tx-mode-picker tx-mode-picker-wide" role="tablist">
               <PixelPlay />
@@ -2391,7 +3154,11 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="panel-section" data-dye="mugwort">
+          <section
+            className="panel-section"
+            data-dye="mugwort"
+            hidden={tuningView !== "scene"}
+          >
             <SectionLabel hint="backdrop only — the lighting stays the same in both">sky</SectionLabel>
             <div className="tx-mode-picker tx-mode-picker-wide" role="tablist">
               <PixelPlay />
@@ -2418,7 +3185,247 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="panel-section" data-dye="indigo">
+          <section
+            className="panel-section"
+            data-dye="persimmon"
+            hidden={tuningView !== "scene"}
+          >
+            <SectionLabel hint="height-field sample limits used by the renderer">
+              relief quality
+            </SectionLabel>
+            <div className="knob-stack">
+              <IntSlider
+                label="pom min"
+                hint="guaranteed relief samples even when the offset is small on screen"
+                value={knobs.pomMinSteps}
+                min={2}
+                max={32}
+                onChange={(v) => setKnobs((k) => ({ ...k, pomMinSteps: v }))}
+              />
+              <IntSlider
+                label="pom max"
+                hint="ceiling for grazing angles and close-up relief"
+                value={knobs.pomMaxSteps}
+                min={8}
+                max={64}
+                onChange={(v) => setKnobs((k) => ({ ...k, pomMaxSteps: v }))}
+              />
+            </div>
+          </section>
+
+          <section
+            className="panel-section instrument-surface"
+            data-dye="mugwort"
+            hidden={tuningView !== "fabric"}
+            inert={pendingMaterialId !== null}
+            aria-busy={pendingMaterialId !== null}
+          >
+            <SectionLabel hint="a compact performance surface; every gesture remains editable in fine tune">
+              material instrument
+            </SectionLabel>
+
+            {pkg && (draftDirty || canRedoDraft) ? (
+              <div
+                className="material-draft-tools"
+                data-dirty={draftDirty}
+                data-comparing={materialDraft.comparison === "baseline"}
+                inert={pendingMaterialId !== null}
+                aria-busy={pendingMaterialId !== null}
+                aria-label="material draft"
+              >
+                <span className="instrument-row-label" aria-live="polite">
+                  {draftDirty ? "draft" : "redo"}
+                </span>
+                <div
+                  className="instrument-action-row draft-strip"
+                  role="group"
+                  aria-label="working material draft"
+                >
+                  <button
+                    type="button"
+                    className="instrument-button compare-button"
+                    data-active={materialDraft.comparison === "baseline"}
+                    aria-pressed={materialDraft.comparison === "baseline"}
+                    disabled={!draftDirty}
+                    onClick={() =>
+                      setDraftComparison(
+                        materialDraft.comparison === "baseline"
+                          ? "current"
+                          : "baseline",
+                      )
+                    }
+                    title="compare source and draft appearance; use tests for motion response"
+                  >
+                    {materialDraft.comparison === "baseline"
+                      ? "show draft"
+                      : "show source"}
+                  </button>
+                  <button
+                    type="button"
+                    className="instrument-button"
+                    disabled={!canUndoDraft}
+                    onClick={() => navigateMaterialDraft({ type: "undo" })}
+                    aria-label="undo material edit"
+                  >
+                    undo
+                  </button>
+                  <button
+                    type="button"
+                    className="instrument-button instrument-redo"
+                    disabled={!canRedoDraft}
+                    onClick={() => navigateMaterialDraft({ type: "redo" })}
+                    aria-label="redo material edit"
+                  >
+                    redo
+                  </button>
+                  <button
+                    type="button"
+                    className="instrument-button"
+                    disabled={!draftDirty}
+                    onClick={() => navigateMaterialDraft({ type: "discard" })}
+                  >
+                    discard
+                  </button>
+                  <button
+                    type="button"
+                    className="instrument-button instrument-keep"
+                    disabled={!draftDirty || keepingDraft}
+                    onClick={() => void keepDraftAsVariation()}
+                  >
+                    {keepingDraft ? "keeping…" : "keep variation"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="construction-control">
+              <span className="instrument-control-label">construction</span>
+              <div
+                className="construction-options"
+                role="group"
+                aria-label="cloth construction"
+              >
+                {CONSTRUCTION_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={construction === option.value}
+                    className="construction-option"
+                    data-active={construction === option.value}
+                    onClick={() =>
+                      commitInstrumentPatch({ construction: option.value })
+                    }
+                  >
+                    <WeaveDiagram
+                      type={option.value}
+                      threads={5}
+                      yarn={0.55}
+                    />
+                    <span>{option.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="instrument-pad-grid">
+              <InstrumentPad
+                label="behavior"
+                x={instrumentState.hand}
+                y={instrumentState.response}
+                xLow="fluid"
+                xHigh="crisp"
+                yLow="floating"
+                yHigh="grounded"
+                valueText={`${axisWord(instrumentState.hand, "fluid", "balanced", "crisp")} · ${axisWord(instrumentState.response, "floating", "settled", "grounded")}`}
+                onPreviewStart={protectFabricPreview}
+                onGestureStart={beginFabricGesture}
+                onChange={(hand, response) =>
+                  previewInstrument({ hand, response })
+                }
+                onGestureEnd={commitFabricGesture}
+              />
+              <InstrumentPad
+                label="surface"
+                x={instrumentState.luster}
+                y={instrumentState.relief}
+                xLow="matte"
+                xHigh="lustrous"
+                yLow="subtle"
+                yHigh="deep"
+                valueText={`${axisWord(instrumentState.luster, "matte", "soft", "lustrous")} · ${axisWord(instrumentState.relief, "subtle", "raised", "deep")}`}
+                onPreviewStart={protectFabricPreview}
+                onGestureStart={beginFabricGesture}
+                onChange={(luster, relief) =>
+                  previewInstrument({ luster, relief })
+                }
+                onGestureEnd={commitFabricGesture}
+              />
+            </div>
+
+            <div className="instrument-sliders">
+              <Slider
+                label="open area"
+                hint="the actual transparent area reaching the renderer, rather than the old cube-root control value"
+                value={instrumentState.opennessPercent}
+                min={0}
+                max={100}
+                step={1}
+                formatValue={(value) => `${Math.round(value)}%`}
+                onChangeStart={beginFabricGesture}
+                onChange={(opennessPercent) =>
+                  previewInstrument({ opennessPercent })
+                }
+                onChangeEnd={commitFabricGesture}
+              />
+              <Slider
+                label="pattern scale"
+                hint="texture repeats on a logarithmic scale, so fine and coarse changes get equal room"
+                value={tileScaleToSlider(instrumentState.tileScale)}
+                min={0}
+                max={1}
+                step={0.01}
+                formatValue={(value) =>
+                  `${tileScaleFromSlider(value).toFixed(1)}×`
+                }
+                onChangeStart={beginFabricGesture}
+                onChange={(value) =>
+                  previewInstrument({ tileScale: tileScaleFromSlider(value) })
+                }
+                onChangeEnd={commitFabricGesture}
+              />
+              <Slider
+                label="edge finish"
+                hint="clean cut to loose edge; coordinates fray, inset, softness, and thread detail"
+                value={instrumentState.edgeFinish}
+                formatValue={(value) =>
+                  axisWord(value, "clean", "worn", "raw")
+                }
+                onChangeStart={beginFabricGesture}
+                onChange={(edgeFinish) =>
+                  previewInstrument({ edgeFinish })
+                }
+                onChangeEnd={commitFabricGesture}
+              />
+            </div>
+          </section>
+
+          <details
+            className="fine-tune"
+            hidden={tuningView !== "fabric"}
+            inert={pendingMaterialId !== null}
+            aria-busy={pendingMaterialId !== null}
+          >
+            <summary>
+              <span>fine tune</span>
+              <span>map · solver · shader</span>
+            </summary>
+            <div className="fine-tune-sections">
+
+          <section
+            className="panel-section"
+            data-dye="indigo"
+            hidden={tuningView !== "fabric"}
+          >
             <SectionLabel hint="what happens when the sun is behind the cloth and light passes through">transmission</SectionLabel>
             {/* Independent per-map weights: each map's pull on where the cloth
                 goes sheer. Any can be zeroed out; they blend by relative
@@ -2427,68 +3434,82 @@ export default function Home() {
               label="from height"
                 hint="how much the weave's hills and valleys decide where light shines through"
               value={knobs.txHeight}
-              onChange={(v) => setKnobs((k) => ({ ...k, txHeight: v }))}
+              onChangeStart={beginFabricGesture}
+              onChange={(txHeight) => previewFabricPatch({ txHeight })}
+              onChangeEnd={commitFabricGesture}
             />
             <Slider
               label="from albedo"
                 hint="bright spots in the color map let more light through"
               value={knobs.txAlbedo}
-              onChange={(v) => setKnobs((k) => ({ ...k, txAlbedo: v }))}
+              onChangeStart={beginFabricGesture}
+              onChange={(txAlbedo) => previewFabricPatch({ txAlbedo })}
+              onChangeEnd={commitFabricGesture}
             />
             <Slider
               label="from roughness"
                 hint="the roughness map decides where light sneaks through"
               value={knobs.txRoughness}
-              onChange={(v) => setKnobs((k) => ({ ...k, txRoughness: v }))}
+              onChangeStart={beginFabricGesture}
+              onChange={(txRoughness) => previewFabricPatch({ txRoughness })}
+              onChangeEnd={commitFabricGesture}
             />
             <Slider
               label="contrast"
                 hint="pushes see-through spots more open and solid spots more solid"
               value={knobs.transmissionContrast}
-              onChange={(v) =>
-                setKnobs((k) => ({ ...k, transmissionContrast: v }))
+              onChangeStart={beginFabricGesture}
+              onChange={(transmissionContrast) =>
+                previewFabricPatch({ transmissionContrast })
               }
+              onChangeEnd={commitFabricGesture}
             />
           </section>
 
-          <section className="panel-section" data-dye="madder">
+          <section
+            className="panel-section"
+            data-dye="madder"
+            hidden={tuningView !== "fabric"}
+          >
             <SectionLabel hint="the character of the fabric itself">material</SectionLabel>
             <div className="knob-stack">
               <Slider
-                label="weight"
-                hint="how heavy the cloth hangs — heavier swings less in the breeze"
+                label="force response"
+                hint="how strongly the cloth resists pointer and wind forces; gravity remains constant"
                 value={knobs.weight}
                 min={0.2}
                 max={3}
                 step={0.05}
-                onChange={(v) => setKnobs((k) => ({ ...k, weight: v }))}
-              />
-              <Slider
-                label="breeze"
-                hint="wind strength; zero is dead calm"
-                value={knobs.breeze}
-                min={0}
-                max={0.25}
-                step={0.005}
-                onChange={(v) => setKnobs((k) => ({ ...k, breeze: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(weight) => previewFabricPatch({ weight })}
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="sheen"
                 hint="the soft shine that catches folds and edges, like silk"
                 value={knobs.sheen}
-                onChange={(v) => setKnobs((k) => ({ ...k, sheen: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(sheen) => previewFabricPatch({ sheen })}
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="iridescence"
                 hint="rainbow light play: color fringes through the cloth, thread shimmer, and the sun's lens flare"
                 value={knobs.iridescence}
-                onChange={(v) => setKnobs((k) => ({ ...k, iridescence: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(iridescence) => previewFabricPatch({ iridescence })}
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
-                label="openness"
-                hint="how see-through the fabric is overall — denim to organza"
+                label="openness curve"
+                hint="the stored cube-root response behind the instrument's honest open-area percentage"
                 value={knobs.openness}
-                onChange={(v) => setKnobs((k) => ({ ...k, openness: v }))}
+                formatValue={(value) =>
+                  `${Math.round(effectiveOpennessPercent(value))}%`
+                }
+                onChangeStart={beginFabricGesture}
+                onChange={(openness) => previewFabricPatch({ openness })}
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="α boost"
@@ -2497,7 +3518,9 @@ export default function Home() {
                 min={0}
                 max={0.5}
                 step={0.005}
-                onChange={(v) => setKnobs((k) => ({ ...k, alphaBoost: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(alphaBoost) => previewFabricPatch({ alphaBoost })}
+                onChangeEnd={commitFabricGesture}
               />
               {/* Which map the boost wears thin along. Dark regions of the
                   chosen map go threadbare; height preserves the original
@@ -2522,9 +3545,7 @@ export default function Home() {
                     aria-selected={knobs.alphaBoostSource === opt.v}
                     className="tx-mode-tab"
                     data-active={knobs.alphaBoostSource === opt.v}
-                    onClick={() =>
-                      setKnobs((k) => ({ ...k, alphaBoostSource: opt.v }))
-                    }
+                    onClick={() => commitFabricPatch({ alphaBoostSource: opt.v })}
                   >
                     {opt.label}
                   </button>
@@ -2534,9 +3555,9 @@ export default function Home() {
                 label="albedo mix"
                 hint="blend between plain white cloth and the captured color"
                 value={knobs.albedoAmount}
-                onChange={(v) =>
-                  setKnobs((k) => ({ ...k, albedoAmount: v }))
-                }
+                onChangeStart={beginFabricGesture}
+                onChange={(albedoAmount) => previewFabricPatch({ albedoAmount })}
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="tile ×"
@@ -2545,94 +3566,70 @@ export default function Home() {
                 min={0.5}
                 max={16}
                 step={0.25}
-                onChange={(v) => setKnobs((k) => ({ ...k, tileScale: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(tileScale) => previewFabricPatch({ tileScale })}
+                onChangeEnd={commitFabricGesture}
               />
             </div>
           </section>
 
-          <section className="panel-section" data-dye="mugwort">
-            <SectionLabel hint="the weave structure — changes how stiff the cloth behaves in each direction">weave</SectionLabel>
-            {/* Weave-structure picker — an interlacing diagram per fabric,
-                name as caption. This chooses the cloth's motion DNA (damping,
-                wind response, crease memory, base mass); the sliders below
-                tune the structural stiffnesses on top of it. */}
-            <div className="weave-picker" role="radiogroup" aria-label="weave">
-              {/* one pixel roams the whole grid, orbiting the chosen weave */}
-              <PixelPlay layer="over" pixel={4} />
-              {/* Three distinct structural families, each backed by a
-                  representative profile. All legacy profiles still resolve
-                  (saved presets keep their fabricId); active state matches
-                  by weave family so an old preset lights its family tile. */}
-              {WEAVE_CATEGORIES.map((cat) => {
-                const f = FABRICS[cat.id];
-                const d = WEAVE_DIAGRAM_PARAMS[cat.id];
-                const active =
-                  FABRICS[fabricId].core.weaveType === f.core.weaveType;
-                return (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    className="weave-tile"
-                    data-active={active}
-                    title={cat.title}
-                    // Weave changes ride the same mesh pixel-dissolve as
-                    // material swaps: out, apply while hidden, back in. With
-                    // an extracted pkg no maps reload, so it's a tight
-                    // out-and-in that also hides the stiffness snap.
-                    onClick={() =>
-                      fabricId !== cat.id &&
-                      materialTransfer.swap(() => setFabricId(cat.id))
-                    }
-                  >
-                    <WeaveDiagram
-                      type={f.core.weaveType}
-                      threads={d.threads}
-                      yarn={d.yarn}
-                    />
-                    <span className="weave-tile-caption">{cat.label}</span>
-                  </button>
-                );
-              })}
-            </div>
+          <section
+            className="panel-section"
+            data-dye="mugwort"
+            hidden={tuningView !== "fabric"}
+          >
+            <SectionLabel hint="the four structural values driven together by behavior and construction above">
+              structure calibration
+            </SectionLabel>
             <div className="knob-stack">
               <Slider
                 label="warp"
                 hint="stiffness along the vertical threads"
                 value={knobs.warpStiffness}
-                onChange={(v) =>
-                  setKnobs((k) => ({ ...k, warpStiffness: v }))
+                onChangeStart={beginFabricGesture}
+                onChange={(warpStiffness) =>
+                  previewFabricPatch({ warpStiffness })
                 }
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="weft"
                 hint="stiffness along the horizontal threads"
                 value={knobs.weftStiffness}
-                onChange={(v) =>
-                  setKnobs((k) => ({ ...k, weftStiffness: v }))
+                onChangeStart={beginFabricGesture}
+                onChange={(weftStiffness) =>
+                  previewFabricPatch({ weftStiffness })
                 }
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="shear"
                 hint="resistance to diagonal skewing — low lets the cloth stretch on the bias"
                 value={knobs.shearStiffness}
-                onChange={(v) =>
-                  setKnobs((k) => ({ ...k, shearStiffness: v }))
+                onChangeStart={beginFabricGesture}
+                onChange={(shearStiffness) =>
+                  previewFabricPatch({ shearStiffness })
                 }
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="bend"
                 hint="resistance to folding — high reads stiff and papery"
                 value={knobs.bendStiffness}
-                onChange={(v) =>
-                  setKnobs((k) => ({ ...k, bendStiffness: v }))
+                onChangeStart={beginFabricGesture}
+                onChange={(bendStiffness) =>
+                  previewFabricPatch({ bendStiffness })
                 }
+                onChangeEnd={commitFabricGesture}
               />
             </div>
           </section>
 
-          <section className="panel-section" data-dye="persimmon">
+          <section
+            className="panel-section"
+            data-dye="persimmon"
+            hidden={tuningView !== "fabric"}
+          >
             <SectionLabel hint="the illusion of depth in the weave texture">parallax</SectionLabel>
             <div className="knob-stack">
               <Slider
@@ -2642,46 +3639,42 @@ export default function Home() {
                 min={0}
                 max={0.08}
                 step={0.001}
-                onChange={(v) => setKnobs((k) => ({ ...k, pomScale: v }))}
-              />
-              <IntSlider
-                label="pom min"
-                hint="guaranteed relief samples even when the offset is small on screen"
-                value={knobs.pomMinSteps}
-                min={2}
-                max={32}
-                onChange={(v) => setKnobs((k) => ({ ...k, pomMinSteps: v }))}
-              />
-              <IntSlider
-                label="pom max"
-                hint="ceiling for grazing angles and close-up relief"
-                value={knobs.pomMaxSteps}
-                min={8}
-                max={64}
-                onChange={(v) => setKnobs((k) => ({ ...k, pomMaxSteps: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(pomScale) => previewFabricPatch({ pomScale })}
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="micro nrm"
                 hint="how strongly the captured normal map bumps each thread"
                 value={knobs.normalAmount}
-                onChange={(v) => setKnobs((k) => ({ ...k, normalAmount: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(normalAmount) => previewFabricPatch({ normalAmount })}
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="self shadow"
                 hint="threads casting tiny shadows on each other inside the weave"
                 value={knobs.pomShadow}
-                onChange={(v) => setKnobs((k) => ({ ...k, pomShadow: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(pomShadow) => previewFabricPatch({ pomShadow })}
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="stretch"
                 hint="taut spots go sheer, flat, and shiny — like pulled fabric"
                 value={knobs.stretch}
-                onChange={(v) => setKnobs((k) => ({ ...k, stretch: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(stretch) => previewFabricPatch({ stretch })}
+                onChangeEnd={commitFabricGesture}
               />
             </div>
           </section>
 
-          <section className="panel-section" data-dye="gardenia">
+          <section
+            className="panel-section"
+            data-dye="gardenia"
+            hidden={tuningView !== "fabric"}
+          >
             <SectionLabel hint="the cut edges of the sheet and how they fray">edge</SectionLabel>
             <div className="knob-stack">
               <Slider
@@ -2691,21 +3684,27 @@ export default function Home() {
                 min={0}
                 max={0.15}
                 step={0.005}
-                onChange={(v) => setKnobs((k) => ({ ...k, edgeInset: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(edgeInset) => previewFabricPatch({ edgeInset })}
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="fray"
                 hint="how ragged the cut edges are"
                 value={knobs.edgeFray}
-                onChange={(v) => setKnobs((k) => ({ ...k, edgeFray: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(edgeFray) => previewFabricPatch({ edgeFray })}
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="crispness"
                 hint="sharp vs soft boundary on the frayed edge"
                 value={knobs.edgeSharpness}
-                onChange={(v) =>
-                  setKnobs((k) => ({ ...k, edgeSharpness: v }))
+                onChangeStart={beginFabricGesture}
+                onChange={(edgeSharpness) =>
+                  previewFabricPatch({ edgeSharpness })
                 }
+                onChangeEnd={commitFabricGesture}
               />
               <Slider
                 label="detail"
@@ -2714,12 +3713,21 @@ export default function Home() {
                 min={1}
                 max={8}
                 step={0.25}
-                onChange={(v) => setKnobs((k) => ({ ...k, edgeDetail: v }))}
+                onChangeStart={beginFabricGesture}
+                onChange={(edgeDetail) => previewFabricPatch({ edgeDetail })}
+                onChangeEnd={commitFabricGesture}
               />
             </div>
           </section>
 
-          <section className="panel-section" data-dye="indigo">
+            </div>
+          </details>
+
+          <section
+            className="panel-section"
+            data-dye="indigo"
+            hidden={tuningView !== "scene"}
+          >
             <SectionLabel hint="debug views and how the cloth is pinned to the line">modes</SectionLabel>
             <div className="knob-toggles">
               <button
@@ -2777,7 +3785,11 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="panel-section" data-dye="madder">
+          <section
+            className="panel-section"
+            data-dye="madder"
+            hidden={tuningView !== "scene"}
+          >
             <SectionLabel hint="live cost of this device drawing the scene">performance</SectionLabel>
             {/* Live meters (2 Hz) — this device, not the material. */}
             <div className="perf-meters" role="status" aria-live="off">

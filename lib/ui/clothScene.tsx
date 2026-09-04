@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useRef, type MutableRefObject } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  type MutableRefObject,
+} from "react";
 import * as THREE from "three/webgpu";
 import {
   ClothSolver,
@@ -8,6 +14,16 @@ import {
   FixedStepAccumulator,
   type ClothConfig,
 } from "@/lib/cloth/ClothSolver";
+import {
+  clampPointerTravel,
+  CLOTH_INTERACTION_RADIUS,
+  CLOTH_PLUCK_RADIUS,
+  CLOTH_POINTER_PROFILES,
+  normalizeClothPointerKind,
+  resolveMouseForce,
+  updateContactVelocity,
+  type ClothPointerKind,
+} from "@/lib/cloth/pointerInteraction";
 import type { ResolvedFabric } from "@/lib/cloth/fabrics";
 import type { MapName, MaterialPackage } from "@/lib/core/materialPackage";
 import {
@@ -16,6 +32,14 @@ import {
   createLensFlareMaterial,
   createWireMaterial,
 } from "@/lib/ui/clothSceneNodes";
+import {
+  CLOTH_LAUNCH_MAP_WAIT_MS,
+  CLOTH_LAUNCH_HIDDEN_SETTLE_TICKS,
+  CLOTH_LAUNCH_SETTLE_ITERATIONS,
+  CLOTH_LAUNCH_SETTLE_STEPS,
+  CLOTH_LAUNCH_TOTAL_MS,
+  seedClothLaunchDrape,
+} from "@/lib/ui/clothLaunchShimmer";
 import { easeMotion } from "@/lib/ui/motion";
 
 // Development escape hatch: flip to true to run the scene on the WebGL 2
@@ -109,6 +133,9 @@ interface Props {
   meshRows?: number;
   /** 0 = full sky, 1 = flat dark-gray backdrop. Lighting unchanged. */
   skyMode?: 0 | 1;
+  /** Multiplier on the safe mouse hover + travel profile. Touch and pen keep
+   *  their own direct-contact profiles. */
+  mouseForce?: number;
 
   /** Shared, imperatively animated reveal value for material transfers. The
    *  render loop reads it directly so a pixel dissolve never re-renders the
@@ -154,10 +181,21 @@ export interface ClothStats {
   calls: number;
 }
 
+/** Named, repeatable material tests exposed to the studio controls. */
+export type ClothProbe = "still" | "gust" | "pull" | "reset";
+
+export interface ClothSceneHandle {
+  /** Reset to the canonical drape, then optionally replay a fixed force. */
+  runProbe: (probe: ClothProbe) => void;
+}
+
 // The cloth and sky node materials live in clothSceneNodes.ts — this file
 // stays focused on scene setup, physics wiring, and rendering.
 
-export default function ClothScene(props: Props) {
+const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
+  props,
+  ref,
+) {
   const {
     fabric,
     // No size defaults: when omitted the mount div is 100% × 100% and the
@@ -172,6 +210,15 @@ export default function ClothScene(props: Props) {
   } = props;
 
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const probeRunnerRef = useRef<((probe: ClothProbe) => void) | null>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      runProbe: (probe) => probeRunnerRef.current?.(probe),
+    }),
+    [],
+  );
 
   // Every prop lives in a ref so the render-loop and uniforms can read the
   // latest value without needing to re-init the whole scene each change.
@@ -345,30 +392,57 @@ export default function ClothScene(props: Props) {
     scene.add(sunTarget);
     sun.target = sunTarget;
 
-    // ── Mouse interaction (3D) ──────────────────────────────────────────
+    // ── Pointer interaction (3D) ────────────────────────────────────────
     // Raycast the pointer against the plane the cloth hangs in (Z=0 in
     // world space), then feed the resulting world XY back into solver
     // coords (solver Y+ is down, world Y+ is up). Solver's applyCursor
     // operates in XY so we don't need per-triangle intersection — the
     // Z-plane projection is accurate enough for hover interaction.
-    // Pointer travel is consumed once, while hover pressure remains active on
-    // every simulation tick. The old version used strength 1.2 continuously;
-    // that was enough to drive the sheet into pathological self-intersections.
-    // A much smaller sustained pressure still compounds visibly, while the
-    // fabric's damping and constraints can reach an equilibrium.
-    const mouse = {
+    // Mouse travel is consumed once, while hover pressure remains active on
+    // every simulation tick. Touch and pen travel is filtered into a continuous
+    // contact field; their stronger profiles live in pointerInteraction.ts so
+    // feel can be tuned without touching rendering.
+    const pointer = {
       x: 0,
       y: 0,
       dx: 0,
       dy: 0,
+      velocityX: 0,
+      velocityY: 0,
       active: false,
       pending: false,
+      pendingPluck: false,
+      pressed: false,
+      pointerId: null as number | null,
+      kind: "mouse" as ClothPointerKind,
+    };
+    const directPointerIds = new Set<number>();
+    const mousePress = {
+      pointerId: null as number | null,
+      startX: 0,
+      startY: 0,
+      moved: false,
+    };
+    let suppressDirectGesture = false;
+    const clearDirectPointer = () => {
+      pointer.active = false;
+      pointer.pending = false;
+      pointer.pendingPluck = false;
+      pointer.pressed = false;
+      pointer.pointerId = null;
+      pointer.dx = 0;
+      pointer.dy = 0;
+      pointer.velocityX = 0;
+      pointer.velocityY = 0;
     };
     const raycaster = new THREE.Raycaster();
     const cursorPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
     const cursorPoint = new THREE.Vector3();
     const ndc = new THREE.Vector2();
-    const onPointerMove = (e: PointerEvent) => {
+    const updatePointerPosition = (
+      e: PointerEvent,
+      accumulateTravel: boolean,
+    ): boolean => {
       const rect = renderer.domElement.getBoundingClientRect();
       ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -377,26 +451,141 @@ export default function ClothScene(props: Props) {
       if (hit) {
         const nextX = cursorPoint.x;
         const nextY = -cursorPoint.y; // world Y+ up → solver Y+ down
-        if (mouse.active) {
+        if (pointer.active && accumulateTravel) {
           // Accumulate events between fixed ticks; the solver consumes the
           // total path once rather than multiplying work by pointer-event rate.
-          mouse.dx += nextX - mouse.x;
-          mouse.dy += nextY - mouse.y;
+          pointer.dx += nextX - pointer.x;
+          pointer.dy += nextY - pointer.y;
         }
-        mouse.x = nextX;
-        mouse.y = nextY;
-        mouse.active = true;
-        mouse.pending = true;
+        pointer.x = nextX;
+        pointer.y = nextY;
+        pointer.active = true;
+        pointer.pending ||= accumulateTravel;
+        pointer.kind = normalizeClothPointerKind(e.pointerType);
+        return true;
       }
+      return false;
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      const kind = normalizeClothPointerKind(e.pointerType);
+      if (kind === "mouse" && mousePress.pointerId === e.pointerId) {
+        mousePress.moved ||=
+          Math.hypot(e.clientX - mousePress.startX, e.clientY - mousePress.startY) > 6;
+      }
+      if (
+        kind !== "mouse" &&
+        (suppressDirectGesture ||
+          !pointer.pressed ||
+          pointer.pointerId !== e.pointerId)
+      ) {
+        return;
+      }
+      // While a finger/stylus owns the material interaction, ignore secondary
+      // pointers. OrbitControls can still consume a two-finger gesture.
+      if (pointer.pointerId !== null && e.pointerId !== pointer.pointerId) return;
+      updatePointerPosition(e, true);
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      const kind = normalizeClothPointerKind(e.pointerType);
+      // Mouse remains a hover instrument so its primary drag can orbit the
+      // camera. Touch and pen are direct material contacts.
+      if (kind === "mouse") {
+        mousePress.pointerId = e.pointerId;
+        mousePress.startX = e.clientX;
+        mousePress.startY = e.clientY;
+        mousePress.moved = false;
+        return;
+      }
+      directPointerIds.add(e.pointerId);
+      if (directPointerIds.size > 1) {
+        // Two fingers belong exclusively to OrbitControls. Without this gate,
+        // the primary finger also fed the newly amplified cloth force while the
+        // camera orbited, leaving an accidental crease after navigation.
+        suppressDirectGesture = true;
+        clearDirectPointer();
+        return;
+      }
+      if (suppressDirectGesture || !e.isPrimary) return;
+      pointer.active = false; // do not connect this contact to a stale hover
+      pointer.dx = 0;
+      pointer.dy = 0;
+      pointer.pending = false;
+      pointer.pendingPluck = false;
+      pointer.velocityX = 0;
+      pointer.velocityY = 0;
+      if (!updatePointerPosition(e, false)) return;
+      pointer.kind = kind;
+      pointer.pointerId = e.pointerId;
+      pointer.pressed = true;
+      pointer.pendingPluck = true;
+    };
+    const finishDirectPointer = (e: PointerEvent, cancelled: boolean) => {
+      directPointerIds.delete(e.pointerId);
+      if (suppressDirectGesture) {
+        clearDirectPointer();
+        if (directPointerIds.size === 0) suppressDirectGesture = false;
+        return;
+      }
+      if (e.pointerId !== pointer.pointerId) return;
+      pointer.active = false;
+      pointer.pending = false;
+      // Keep a completed tap's one-shot pluck queued for the next fixed tick.
+      // A cancelled OS gesture should not affect the material.
+      if (cancelled) pointer.pendingPluck = false;
+      pointer.pressed = false;
+      pointer.pointerId = null;
+      pointer.dx = 0;
+      pointer.dy = 0;
+      pointer.velocityX = 0;
+      pointer.velocityY = 0;
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (mousePress.pointerId === e.pointerId) {
+        if (!mousePress.moved && updatePointerPosition(e, false)) {
+          pointer.kind = "mouse";
+          pointer.pendingPluck = true;
+        }
+        mousePress.pointerId = null;
+        return;
+      }
+      finishDirectPointer(e, false);
+    };
+    const onPointerCancel = (e: PointerEvent) => {
+      if (mousePress.pointerId === e.pointerId) mousePress.pointerId = null;
+      finishDirectPointer(e, true);
+    };
+    const onLostPointerCapture = (e: PointerEvent) => {
+      if (e.pointerId === pointer.pointerId) finishDirectPointer(e, true);
+    };
+    const onWindowBlur = () => {
+      mousePress.pointerId = null;
+      directPointerIds.clear();
+      suppressDirectGesture = false;
+      clearDirectPointer();
     };
     const onPointerLeave = () => {
-      mouse.active = false;
-      mouse.pending = false;
-      mouse.dx = 0;
-      mouse.dy = 0;
+      // Direct pointers receive pointerup/pointercancel through implicit touch
+      // capture. A mouse leaving the canvas should stop compounding at once.
+      if (pointer.pressed) return;
+      mousePress.pointerId = null;
+      pointer.active = false;
+      pointer.pending = false;
+      pointer.pendingPluck = false;
+      pointer.dx = 0;
+      pointer.dy = 0;
+      pointer.velocityX = 0;
+      pointer.velocityY = 0;
     };
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
     renderer.domElement.addEventListener("pointermove", onPointerMove);
+    renderer.domElement.addEventListener("pointerup", onPointerUp);
+    renderer.domElement.addEventListener("pointercancel", onPointerCancel);
+    renderer.domElement.addEventListener(
+      "lostpointercapture",
+      onLostPointerCapture,
+    );
     renderer.domElement.addEventListener("pointerleave", onPointerLeave);
+    window.addEventListener("blur", onWindowBlur);
     renderer.domElement.style.touchAction = "none";
 
     // ── Cloth rig (shared bits) ──────────────────────────────────────────
@@ -441,8 +630,17 @@ export default function ClothScene(props: Props) {
       u: clothU,
       tex: clothTex,
       blanks: clothBlanks,
+      launchShimmer,
     } = createClothMaterial();
     clothU.u_fogColor.value.copy(fogColor);
+    const launchReducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    clothU.u_launchProgress.value = launchReducedMotion ? 1 : 0;
+    container.dataset.clothLaunch = launchReducedMotion ? "ready" : "waiting";
+    let launchWaitStartedAt = Infinity;
+    let launchStartedAt: number | null = null;
+    let launchComplete = launchReducedMotion;
     // ── Cloth unit factory ──────────────────────────────────────────────
     // A "unit" is a complete, independent cloth: its own solver, geometry,
     // wire-debug draws, and pins, all under one group. Normally one is live;
@@ -450,8 +648,11 @@ export default function ClothScene(props: Props) {
     // off and the new slides in. `ropeAt` / `clothGroup` are referenced lazily
     // (defined below) — the factory is only *called* after they exist.
     const WIRE_V_MAX = 8; // wire-view velocity→white clip (units/fixed tick)
-    const SETTLE_STEPS = 110; // off-screen pre-drape steps at a unit's birth
+    const FULL_SETTLE_STEPS = 110; // off-screen pre-drape for later unit swaps
     const WIND_RAMP = 90; // fixed ticks to fade breeze in on a fresh unit
+    const GUST_PROBE_TICKS = 72;
+    const PULL_PROBE_TICKS = 54;
+    const GUST_PROBE_STRENGTH = 0.24;
     const SNAP_VEC = new THREE.Vector3();
     // Self-collision cadence knob → step divisor (0 disables).
     const SC_EVERY: Record<"full" | "half" | "off", number> = {
@@ -474,9 +675,16 @@ export default function ClothScene(props: Props) {
       stepSim: (time: number, allowCursor: boolean) => void;
       syncView: () => void;
       setVisible: (wf: boolean) => void;
-      settle: () => void;
+      settle: (mode?: "full" | "launch" | "probe") => void;
+      resetToBaseline: () => void;
       dispose: () => void;
     }
+
+    interface ActiveProbe {
+      kind: "gust" | "pull";
+      tick: number;
+    }
+    let activeProbe: ActiveProbe | null = null;
 
     const makeClothUnit = (
       cols: number,
@@ -490,14 +698,17 @@ export default function ClothScene(props: Props) {
       cfg.originX = -SHEET_SIZE / 2;
       cfg.originY = -((rows - 1) * spacing) / 2;
       const solver = new ClothSolver(cfg, fabricRef.current);
-      if (pinModeVal === "pegs") {
-        // Pin fractions relative to width so the drape looks the same at
-        // every resolution.
-        solver.setPinned(Math.round(cols * 0.08), true);
-        solver.setPinned(Math.round(cols * 0.88), true);
-      } else {
-        solver.pinTopEdge();
-      }
+      const applyPinLayout = () => {
+        if (pinModeVal === "pegs") {
+          // Pin fractions relative to width so the drape looks the same at
+          // every resolution.
+          solver.setPinned(Math.round(cols * 0.08), true);
+          solver.setPinned(Math.round(cols * 0.88), true);
+        } else {
+          solver.pinTopEdge();
+        }
+      };
+      applyPinLayout();
 
       const indices = solver.buildIndices();
       const uvs = solver.buildUVs();
@@ -721,34 +932,127 @@ export default function ClothScene(props: Props) {
             solver.setFabric(fabricRef.current);
           }
           // Live perf dials: iteration count + self-collision cadence.
-          solver.setIterations(propsRef.current.iterations ?? 6);
-          solver.selfCollisionEvery =
-            SC_EVERY[propsRef.current.selfCollide ?? "full"];
+          const requestedIterations = propsRef.current.iterations ?? 6;
+          // A newly born, nearly flat sheet cannot meaningfully self-collide.
+          // Keep that expensive pass off until the shimmer lands, while full
+          // constraint iterations quietly finish the drape behind the reveal.
+          solver.setIterations(requestedIterations);
+          solver.selfCollisionEvery = launchComplete
+            ? SC_EVERY[propsRef.current.selfCollide ?? "full"]
+            : 0;
           // Wind fades in over WIND_RAMP fixed ticks so a just-born unit isn't
           // kicked before it has finished settling.
           const windScale = Math.min(1, (time - unit.birth) / WIND_RAMP);
           snapPins();
-          solver.applyWind(time, (propsRef.current.breeze ?? 0.06) * windScale);
-          if (allowCursor && mouse.active) {
-            const localX = mouse.x - group.position.x;
-            if (mouse.pending) {
+          if (activeProbe?.kind === "gust") {
+            // A fixed phase and a sine envelope make every audition identical;
+            // this replaces ambient wind for the duration rather than stacking
+            // another force/render loop on top of it.
+            const phase = (activeProbe.tick + 1) / GUST_PROBE_TICKS;
+            const envelope = Math.sin(Math.PI * phase);
+            solver.applyWind(
+              40 + activeProbe.tick,
+              GUST_PROBE_STRENGTH * envelope,
+            );
+          } else if (activeProbe?.kind === "pull") {
+            // Pull the same lower-center particle toward the same target with
+            // a smooth engage/release envelope. This is deliberately one
+            // point: the material's constraints decide how the rest follows.
+            const row = Math.round((rows - 1) * 0.68);
+            const col = Math.round((cols - 1) * 0.52);
+            const particle = row * cols + col;
+            const span = (cols - 1) * spacing;
+            const phase = (activeProbe.tick + 1) / PULL_PROBE_TICKS;
+            const envelope = Math.sin(Math.PI * phase);
+            const restX = cfg.originX + col * spacing;
+            const restY = cfg.originY + row * spacing;
+            const ix = particle * 3;
+            const response = fabricRef.current.windResponse;
+            const spring = 0.038 * envelope * response;
+            solver.addAcceleration(
+              particle,
+              (restX + span * 0.28 - solver.pos[ix]) * spring,
+              (restY - span * 0.08 - solver.pos[ix + 1]) * spring,
+              (-span * 0.25 - solver.pos[ix + 2]) * spring,
+            );
+          } else {
+            solver.applyWind(
+              time,
+              (propsRef.current.breeze ?? 0.06) * windScale,
+            );
+          }
+          if (allowCursor && (pointer.active || pointer.pendingPluck)) {
+            const localX = pointer.x - group.position.x;
+            const profile = CLOTH_POINTER_PROFILES[pointer.kind];
+            const mouseForce =
+              pointer.kind === "mouse"
+                ? resolveMouseForce(propsRef.current.mouseForce)
+                : 1;
+            if (pointer.pendingPluck && profile.pluckStrength > 0) {
+              solver.applyPluck(
+                localX,
+                pointer.y,
+                CLOTH_PLUCK_RADIUS,
+                profile.pluckStrength * mouseForce,
+              );
+              pointer.pendingPluck = false;
+            }
+            if (
+              pointer.active &&
+              pointer.kind === "mouse" &&
+              pointer.pending
+            ) {
               // Directional travel is an event impulse; event-rate deltas are
-              // accumulated and consumed once by the next fixed tick.
+              // accumulated, capped, and consumed once by the next fixed tick.
+              const travel = clampPointerTravel(pointer.dx, pointer.dy);
               solver.applyDrag(
                 localX,
-                mouse.y,
-                mouse.dx,
-                mouse.dy,
-                140,
-                0.018,
+                pointer.y,
+                travel.dx,
+                travel.dy,
+                CLOTH_INTERACTION_RADIUS,
+                profile.dragStrength * mouseForce,
               );
-              mouse.dx = 0;
-              mouse.dy = 0;
-              mouse.pending = false;
+              pointer.dx = 0;
+              pointer.dy = 0;
+              pointer.pending = false;
             }
-            // Continuous hover pressure: ~27× gentler than the previous 1.2
-            // force, but applied every fixed tick so dwelling keeps pushing.
-            solver.applyCursor(localX, mouse.y, 140, 0.045);
+            // Mouse remains the existing hover instrument. Its pressure keeps
+            // accumulating per fixed tick, while travel is a discrete sample.
+            if (pointer.active && pointer.kind === "mouse") {
+              solver.applyCursor(
+                localX,
+                pointer.y,
+                CLOTH_INTERACTION_RADIUS,
+                profile.pressureStrength * mouseForce,
+              );
+            }
+            if (pointer.active && pointer.kind !== "mouse") {
+              // Touch/pen transport spans sparse browser events: update the
+              // filter once per simulation tick, then merge transport and
+              // steady pressure into one particle traversal.
+              const velocity = updateContactVelocity(
+                pointer.velocityX,
+                pointer.velocityY,
+                pointer.dx,
+                pointer.dy,
+                pointer.pending,
+              );
+              pointer.velocityX = velocity.vx;
+              pointer.velocityY = velocity.vy;
+              pointer.dx = 0;
+              pointer.dy = 0;
+              pointer.pending = false;
+              solver.applyContactField(
+                localX,
+                pointer.y,
+                CLOTH_INTERACTION_RADIUS,
+                velocity.vx,
+                velocity.vy,
+                profile.pressureStrength,
+                profile.dragStrength,
+              );
+            }
           }
           syncPorosity();
           solver.step(1);
@@ -763,25 +1067,57 @@ export default function ClothScene(props: Props) {
           wireEdges.visible = wf;
           wirePoints.visible = wf;
         },
-        settle: () => {
+        settle: (mode = "full") => {
           // Pre-drape off-screen: gravity + constraints only, bleeding the
           // implicit Verlet velocity to zero every 8th step so the flat grid
           // reaches rest WITHOUT the frame-one recoil that reads as the cloth
-          // "slamming" against the line. No wind. Leaves the unit calm and
-          // already draped before it's ever seen.
+          // "slamming" against the line. Launch uses a much smaller pass with
+          // self-collision disabled; probes use the same analytic seed with a
+          // single warmup step so their input handler stays responsive. The
+          // live solver finishes the drape; later resolution swaps retain the
+          // full invisible settle.
           solver.setFabric(fabricRef.current);
-          solver.setIterations(propsRef.current.iterations ?? 6);
-          solver.selfCollisionEvery =
+          const requestedIterations = propsRef.current.iterations ?? 6;
+          const requestedCollision =
             SC_EVERY[propsRef.current.selfCollide ?? "full"];
+          const seeded = mode === "launch" || mode === "probe";
+          solver.setIterations(
+            seeded
+              ? Math.min(requestedIterations, CLOTH_LAUNCH_SETTLE_ITERATIONS)
+              : requestedIterations,
+          );
+          solver.selfCollisionEvery = seeded ? 0 : requestedCollision;
           syncPorosity();
-          for (let s = 0; s < SETTLE_STEPS; s++) {
+          if (seeded) {
+            snapPins();
+            seedClothLaunchDrape(solver, spacing);
+          }
+          const steps =
+            mode === "probe"
+              ? 1
+              : mode === "launch"
+                ? CLOTH_LAUNCH_SETTLE_STEPS
+                : FULL_SETTLE_STEPS;
+          for (let s = 0; s < steps; s++) {
             snapPins();
             solver.step(1);
             if ((s & 7) === 7) solver.prev.set(solver.pos);
           }
           solver.prev.set(solver.pos);
+          solver.setIterations(requestedIterations);
+          solver.selfCollisionEvery = requestedCollision;
           syncGeometry();
           syncPins();
+        },
+        resetToBaseline: () => {
+          solver.setFabric(fabricRef.current);
+          unit.lastFabric = fabricRef.current;
+          solver.reset();
+          applyPinLayout();
+          // Probe buttons run in an input handler. The analytic seed plus one
+          // collision-free warmup step is a deterministic baseline without
+          // blocking high mesh for the launch/full-settle durations.
+          unit.settle("probe");
         },
         dispose: () => {
           clothGroup.remove(group);
@@ -989,6 +1325,11 @@ export default function ClothScene(props: Props) {
     }
     ropePinned[0] = 1;
     ropePinned[ropeN - 1] = 1;
+    const ropeBaseline = new Float32Array(ropePos);
+    const resetRope = () => {
+      ropePos.set(ropeBaseline);
+      ropePrev.set(ropeBaseline);
+    };
 
     const stepRope = (t: number, breezeStrength: number) => {
       const g = 0.08;
@@ -1237,7 +1578,7 @@ export default function ClothScene(props: Props) {
         0,
         0,
       );
-      initial.settle();
+      initial.settle("launch");
       clothGroup.add(initial.group);
       units.push(initial);
     }
@@ -1422,6 +1763,35 @@ export default function ClothScene(props: Props) {
       maxFrameSeconds: 0.1,
     });
     let simulationTick = 0;
+
+    const resetProbeBaseline = () => {
+      // Resolution changes can temporarily leave two units in the scene.
+      // A test always addresses the visible incoming unit and retires the
+      // frozen outgoing one before establishing its baseline.
+      if (slideT < 1) finalizeSlide();
+      activeProbe = null;
+      simulationTick = 0;
+      simClock.reset();
+      resetRope();
+      clearDirectPointer();
+      directPointerIds.clear();
+      suppressDirectGesture = false;
+      const current = units[units.length - 1];
+      current.birth = 0;
+      current.resetToBaseline();
+      current.syncView();
+      rebuildWireTube();
+    };
+
+    probeRunnerRef.current = (probe) => {
+      resetProbeBaseline();
+      if (probe === "gust" || probe === "pull") {
+        activeProbe = { kind: probe, tick: 0 };
+      }
+      // "still" captures the canonical drape before ambient air resumes.
+      // "reset" is intentionally the same state operation, exposed
+      // separately so the UI can distinguish a test pose from recovery.
+    };
     // Rendering faster than 60 Hz only repeats this expensive fragment pass;
     // the simulation and interaction model are authored for 60 Hz. A small
     // budget accumulator produces 60 renders/sec on 90/120/144 Hz displays
@@ -1441,6 +1811,9 @@ export default function ClothScene(props: Props) {
     let statSimMs = 0;
     let gpuMs = 0;
     let gpuTimingPending = false;
+    // Boot animation is renderer-owned: no React state or second canvas is
+    // touched at 60fps. It waits briefly for declared maps, then writes one
+    // scalar uniform until the material's steady-state branch takes over.
     // (Fabric hot-swap is per unit now — each unit re-runs setFabric only
     // when the fabric object identity actually changes; see stepSim.)
 
@@ -1515,7 +1888,10 @@ export default function ClothScene(props: Props) {
           -SLIDE_DIST,
           simulationTick,
         );
-        incoming.settle();
+        // A saved mesh preference can arrive just after mount. Treat that as
+        // startup work rather than paying the full swap warm-up under the
+        // launch reveal; deliberate later mesh changes retain the full settle.
+        incoming.settle(launchComplete ? "full" : "launch");
         clothGroup.add(incoming.group);
         for (const un of units) {
           un.fromX = un.group.position.x;
@@ -1541,18 +1917,47 @@ export default function ClothScene(props: Props) {
       // Skip the whole solver when the cloth is gone — no point simulating an
       // invisible sheet (this is the "don't re-render everything" win).
       const simStart = performance.now();
+      // Do not carry an unconsumed touch impulse or filtered velocity through
+      // object mode and fire it later when the cloth returns.
+      if (!clothVisible) {
+        pointer.pendingPluck = false;
+        if (pointer.kind !== "mouse") {
+          pointer.velocityX = 0;
+          pointer.velocityY = 0;
+        }
+      }
       if (clothVisible) {
         const currentUnit = units[units.length - 1];
         const simSteps = simClock.advance(dtMs / 1000, () => {
           simulationTick++;
           // Rope physics runs first — its positions drive both cloth pinning
           // and the visible wire geometry in this fixed simulation tick.
-          stepRope(simulationTick, p.breeze ?? 0.06);
+          const ropeStrength = activeProbe
+            ? activeProbe.kind === "gust"
+              ? GUST_PROBE_STRENGTH *
+                Math.sin(
+                  Math.PI *
+                    ((activeProbe.tick + 1) / GUST_PROBE_TICKS),
+                )
+              : 0
+            : p.breeze ?? 0.06;
+          stepRope(
+            activeProbe ? 40 + activeProbe.tick : simulationTick,
+            ropeStrength,
+          );
           // Only the CURRENT unit simulates. During a slide the departing
           // sheet(s) ride off as frozen drapes — nobody inspects their physics
           // at slide speed, and this keeps a res-switch from double-billing the
           // solver (self-collision especially).
           currentUnit.stepSim(simulationTick, true);
+          if (activeProbe) {
+            activeProbe.tick++;
+            const duration =
+              activeProbe.kind === "gust"
+                ? GUST_PROBE_TICKS
+                : PULL_PROBE_TICKS;
+            if (activeProbe.tick >= duration) activeProbe = null;
+          }
         });
         if (simSteps > 0) currentUnit.syncView();
         // rebuildWireTube syncs curve points itself, and only when the rope
@@ -1582,6 +1987,29 @@ export default function ClothScene(props: Props) {
             ? toAbs((slot as TexSlot).currentUrl) === toAbs(url)
             : true,
         );
+        if (
+          !launchReducedMotion &&
+          !launchComplete &&
+          launchStartedAt === null &&
+          simulationTick >= CLOTH_LAUNCH_HIDDEN_SETTLE_TICKS &&
+          (allDeclaredMapsReady ||
+            now - launchWaitStartedAt >= CLOTH_LAUNCH_MAP_WAIT_MS)
+        ) {
+          launchStartedAt = now;
+          container.dataset.clothLaunch = "shimmering";
+        }
+        if (launchStartedAt !== null) {
+          const launchProgress = Math.min(
+            1,
+            (now - launchStartedAt) / CLOTH_LAUNCH_TOTAL_MS,
+          );
+          clothU.u_launchProgress.value = launchProgress;
+          if (launchProgress >= 1) {
+            launchStartedAt = null;
+            launchComplete = true;
+            container.dataset.clothLaunch = "ready";
+          }
+        }
         if (
           readyKey !== lastReadyKey &&
           expectedReady &&
@@ -1796,6 +2224,7 @@ export default function ClothScene(props: Props) {
         }
         resize();
         syncTextures();
+        launchWaitStartedAt = performance.now();
         // WebGPU initialization can take several rendered-frame intervals.
         // Do not reinterpret that startup latency as physics catch-up: the
         // first cloth is already pre-settled and its geometry is ready.
@@ -1813,14 +2242,23 @@ export default function ClothScene(props: Props) {
 
     return () => {
       disposed = true;
+      probeRunnerRef.current = null;
       if (renderer.getAnimationLoop() !== null) {
         void renderer.setAnimationLoop(null);
       }
       cancelAnimationFrame(resizeRaf);
       ro.disconnect();
       controls?.dispose();
+      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("pointermove", onPointerMove);
+      renderer.domElement.removeEventListener("pointerup", onPointerUp);
+      renderer.domElement.removeEventListener("pointercancel", onPointerCancel);
+      renderer.domElement.removeEventListener(
+        "lostpointercapture",
+        onLostPointerCapture,
+      );
       renderer.domElement.removeEventListener("pointerleave", onPointerLeave);
+      window.removeEventListener("blur", onWindowBlur);
       if (renderer.domElement.parentNode === container) {
         container.removeChild(renderer.domElement);
       }
@@ -1838,6 +2276,7 @@ export default function ClothScene(props: Props) {
       pinBodyMat.dispose();
       for (const slot of Object.values(texSlots)) slot.current?.dispose();
       for (const b of Object.values(clothBlanks)) b.dispose();
+      launchShimmer.dispose();
       objectGroup.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh) m.geometry?.dispose();
@@ -1865,4 +2304,6 @@ export default function ClothScene(props: Props) {
       }}
     />
   );
-}
+});
+
+export default ClothScene;

@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import {
+  validateMapAssetMetadata,
+  type MapAssetMetadata,
+} from "../core/mapAsset";
 
 // Extraction cache root. On Vercel (and any serverless host) the repo tree
 // is read-only — only /tmp is writable — so the cache lives there:
@@ -15,6 +19,7 @@ export const CACHE_ROOT = process.env.LOOM_CACHE_DIR
 export interface CachedMap {
   name: string;
   file: string;
+  asset?: MapAssetMetadata;
 }
 
 export interface Manifest {
@@ -60,6 +65,13 @@ export function isManifestShape(
       files.has(map.file)
     ) {
       return false;
+    }
+    if (map.asset !== undefined) {
+      try {
+        validateMapAssetMetadata(map.asset, `cache map ${map.file}`);
+      } catch {
+        return false;
+      }
     }
     names.add(map.name);
     files.add(map.file);

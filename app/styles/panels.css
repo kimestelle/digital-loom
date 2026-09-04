@@ -69,8 +69,16 @@
   border-bottom: none;
 }
 
-.side-panel-title {
+.side-panel-heading {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.side-panel-title {
+  flex: 0 1 auto;
   font-family: var(--font-mono);
   font-size: 10.5px;
   letter-spacing: 0.14em;
@@ -239,6 +247,384 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.panel-section[hidden] {
+  display: none;
+}
+
+.fine-tune[hidden] {
+  display: none;
+}
+
+/* ── compact material instrument ─────────────────────────────────────── */
+
+.instrument-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.probe-strip {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.material-draft-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--bg-elev-2) 50%, transparent);
+}
+
+.material-draft-tools .instrument-row-label {
+  padding: 1px 2px 2px;
+}
+
+.material-draft-tools .draft-strip {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1.5fr 0.8fr 0.8fr;
+}
+
+.material-draft-tools .instrument-button {
+  min-width: 0;
+}
+
+.material-draft-tools .instrument-button:nth-child(4) {
+  grid-column: span 1;
+}
+
+.material-draft-tools .instrument-button:nth-child(5) {
+  grid-column: span 2;
+}
+
+.material-draft-tools[data-dirty="true"] {
+  border-color: color-mix(in oklab, var(--dye-gardenia) 48%, var(--line));
+}
+
+.material-draft-tools[data-dirty="true"] > .instrument-row-label {
+  color: var(--dye-gardenia);
+}
+
+.instrument-row-label {
+  padding: 6px 4px 0 2px;
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.instrument-button {
+  appearance: none;
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 5px 7px;
+  background: transparent;
+  color: var(--fg-mute);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition:
+    color var(--d-fast) var(--ease-motion),
+    background var(--d-fast) var(--ease-motion),
+    border-color var(--d-fast) var(--ease-motion),
+    transform var(--d-tap) var(--ease-motion);
+}
+
+.instrument-button[data-active="true"] {
+  color: var(--fg);
+  border-color: var(--line-strong);
+  background: color-mix(in oklab, var(--bg-elev-2) 80%, transparent);
+}
+
+.instrument-button:active:not(:disabled) { transform: scale(0.96); }
+.instrument-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.instrument-button:disabled { opacity: 0.36; cursor: default; }
+.instrument-reset,
+.instrument-redo { color: var(--fg-dim); }
+
+.instrument-keep {
+  border-color: color-mix(in oklab, var(--dye-gardenia) 42%, transparent);
+  color: var(--fg);
+}
+
+.material-draft-tools[data-dirty="false"] .instrument-keep {
+  border-color: transparent;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .instrument-button:hover:not(:disabled) {
+    color: var(--fg);
+    background: color-mix(in oklab, var(--bg-elev-2) 72%, transparent);
+  }
+}
+
+@media (pointer: coarse) {
+  .instrument-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+.instrument-surface {
+  gap: 12px;
+}
+
+.instrument-surface[inert],
+.fine-tune[inert] {
+  opacity: 0.5;
+}
+
+.instrument-control-label,
+.instrument-pad-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--fg-mute);
+}
+
+.construction-control {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.construction-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.construction-option {
+  appearance: none;
+  min-width: 0;
+  padding: 7px 4px 5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--bg-elev-2) 68%, transparent);
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  cursor: pointer;
+  box-shadow: var(--shadow-dish);
+  transition:
+    color var(--d-fast) var(--ease-motion),
+    border-color var(--d-fast) var(--ease-motion),
+    background var(--d-fast) var(--ease-motion),
+    transform var(--d-tap) var(--ease-motion);
+}
+
+.construction-option .weave-diagram {
+  width: 30px;
+  height: 30px;
+}
+
+.construction-option[data-active="true"] {
+  color: var(--cat, var(--accent));
+  border-color: color-mix(in oklab, var(--cat, var(--accent)) 64%, transparent);
+  background: color-mix(in oklab, var(--cat, var(--accent)) 10%, var(--bg-elev-2));
+}
+
+.construction-option:active {
+  transform: scale(0.97);
+}
+
+.construction-option:focus-visible,
+.instrument-pad-surface:focus-visible {
+  outline: 2px solid var(--cat, var(--accent));
+  outline-offset: 2px;
+}
+
+.instrument-pad-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.instrument-pad {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.instrument-pad-title {
+  align-items: baseline;
+}
+
+.instrument-pad-surface {
+  position: relative;
+  height: 112px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  cursor: crosshair;
+  touch-action: none;
+  background:
+    linear-gradient(var(--line), var(--line)) 50% 0 / 1px 100% no-repeat,
+    linear-gradient(90deg, var(--line), var(--line)) 0 50% / 100% 1px no-repeat,
+    color-mix(in oklab, var(--bg-elev-2) 62%, transparent);
+  box-shadow: var(--shadow-dish);
+}
+
+.instrument-pad-surface::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 10%;
+  background: radial-gradient(
+    ellipse at 50% 50%,
+    color-mix(in oklab, var(--cat, var(--accent)) 72%, white 6%) 0%,
+    color-mix(in oklab, var(--cat, var(--accent)) 30%, transparent) 34%,
+    transparent 72%
+  );
+  filter: blur(14px);
+  opacity: 0.22;
+  transform: scale(0.88);
+  pointer-events: none;
+  transition:
+    opacity var(--d-med) var(--ease-motion),
+    transform var(--d-med) var(--ease-motion);
+}
+
+.instrument-pad-surface[data-active="true"]::after {
+  opacity: 0.9;
+  transform: scale(1.08);
+}
+
+.instrument-pad-axis {
+  position: absolute;
+  z-index: 1;
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  line-height: 1;
+  letter-spacing: 0.03em;
+  color: var(--fg-dim);
+  pointer-events: none;
+}
+
+.instrument-pad-axis-top,
+.instrument-pad-axis-bottom {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.instrument-pad-axis-top { top: 6px; }
+.instrument-pad-axis-bottom { bottom: 6px; }
+.instrument-pad-axis-left { left: 6px; top: calc(50% + 6px); }
+.instrument-pad-axis-right { right: 6px; top: calc(50% + 6px); }
+
+.instrument-pad-handle {
+  position: absolute;
+  z-index: 2;
+  width: 11px;
+  height: 11px;
+  border: 1px solid color-mix(in oklab, var(--cat, var(--accent)) 78%, white 12%);
+  border-radius: 50%;
+  background: var(--cat, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--cat, var(--accent)) 18%, transparent), 0 2px 7px rgba(0, 0, 0, 0.45);
+  transform: translate(-50%, 50%);
+  pointer-events: none;
+  transition: box-shadow var(--d-fast) var(--ease-motion);
+}
+
+.instrument-pad-surface:focus-visible .instrument-pad-handle {
+  box-shadow: 0 0 0 5px color-mix(in oklab, var(--cat, var(--accent)) 25%, transparent), 0 2px 7px rgba(0, 0, 0, 0.45);
+}
+
+.instrument-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.fine-tune {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.fine-tune > summary {
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--fg-mute);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.fine-tune > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fine-tune > summary::before {
+  content: "+";
+  width: 12px;
+  color: var(--cat, var(--accent));
+}
+
+.fine-tune[open] > summary::before {
+  content: "−";
+}
+
+.fine-tune > summary span:first-child {
+  margin-right: auto;
+}
+
+.fine-tune > summary span:last-child {
+  color: var(--fg-dim);
+  font-size: 8.5px;
+}
+
+@media (pointer: coarse) {
+  .side-panel-toggle,
+  .fine-tune > summary {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+.fine-tune-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 18px;
+}
+
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 .section-label {
@@ -548,6 +934,22 @@
   cursor: pointer;
 }
 
+@media (pointer: coarse) {
+  .tx-mode-tab {
+    min-height: 44px;
+  }
+
+  .slider input[type="range"] {
+    min-height: 44px;
+  }
+
+  .info-dot::before {
+    content: "";
+    position: absolute;
+    inset: -15px;
+  }
+}
+
 /* The category color now lives on the TRACK: a thin line grading from
    translucent white into the section's dye (var(--cat)). The thumb is a small
    neutral-white dot — the color has moved off the knob and onto the line. */
@@ -626,6 +1028,43 @@
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   width: 100%;
+}
+
+/* One truthful split for the dense tuning surface: material properties versus
+   the scene/device used to inspect them. Both responsive placements mount it
+   directly beside Tuning and write the same state. */
+.tuning-view-picker {
+  --cat: var(--dye-indigo);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  flex: 0 0 auto;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.tuning-view-picker-header {
+  display: grid;
+  width: 148px;
+}
+
+.tuning-view-picker-sheet {
+  display: grid;
+  width: 148px;
+  margin-left: auto;
+}
+
+.tuning-sheet-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 4;
+}
+
+@media (min-width: 821px) {
+  .tuning-sheet-heading {
+    display: none;
+  }
 }
 
 .tx-mode-tab {

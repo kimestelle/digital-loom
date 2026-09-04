@@ -109,6 +109,13 @@ function SwatchFace({
         onDoubleClick={() => {
           if (onRename) setEditing(true);
         }}
+        onKeyDown={(event) => {
+          if (event.key === "F2" && onRename) {
+            event.preventDefault();
+            setEditing(true);
+          }
+        }}
+        aria-keyshortcuts={onRename ? "F2" : undefined}
         title={
           item.title ??
           (onRename ? `${item.label} — double-click to rename` : item.label)
@@ -165,6 +172,8 @@ export interface SampleGridProps {
   onRegister: (id: string, image: HTMLImageElement | null) => void;
   onHoverIn: (id: string) => void;
   onHoverOut: (id: string) => void;
+  /** Explicit alternative to drag-to-library, available to touch and keyboard. */
+  onClone: (id: string) => void;
   onRename?: (id: string, name: string) => void;
 }
 
@@ -178,6 +187,7 @@ export const SampleGrid = memo(function SampleGrid({
   onRegister,
   onHoverIn,
   onHoverOut,
+  onClone,
   onRename,
 }: SampleGridProps) {
   if (items.length === 0) return null;
@@ -201,6 +211,15 @@ export const SampleGrid = memo(function SampleGrid({
               onHoverOut={onHoverOut}
               onRename={onRename}
             />
+            <button
+              type="button"
+              className="swatch-copy"
+              aria-label={`duplicate ${item.label} into library`}
+              title="duplicate into library"
+              onClick={() => onClone(item.id)}
+            >
+              ⧉
+            </button>
           </li>
         ))}
       </ul>
@@ -273,7 +292,7 @@ export const LibraryGrid = memo(function LibraryGrid({
           drag.end();
         }}
       >
-        {items.map((item) => {
+        {items.map((item, index) => {
           const armed = armedId === item.id;
           return (
             <li
@@ -299,10 +318,11 @@ export const LibraryGrid = memo(function LibraryGrid({
                 setDropTargetId(null);
               }}
             >
-              <span
+              <button
+                type="button"
                 className="swatch-grip"
-                role="button"
                 aria-label={`reorder ${item.label}`}
+                aria-keyshortcuts="ArrowUp ArrowDown"
                 draggable
                 onDragStart={(e) => {
                   drag.begin(item.id, "reorder");
@@ -313,9 +333,18 @@ export const LibraryGrid = memo(function LibraryGrid({
                   drag.end();
                   setDropTargetId(null);
                 }}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowUp" && index > 0) {
+                    event.preventDefault();
+                    onReorder(item.id, items[index - 1].id);
+                  } else if (event.key === "ArrowDown" && index < items.length - 1) {
+                    event.preventDefault();
+                    onReorder(item.id, items[index + 2]?.id ?? "");
+                  }
+                }}
               >
                 ⠿
-              </span>
+              </button>
               <SwatchFace
                 item={item}
                 active={activeId === item.id}
@@ -327,6 +356,39 @@ export const LibraryGrid = memo(function LibraryGrid({
                 onHoverOut={onHoverOut}
                 onRename={onRename}
               />
+              {items.length > 1 ? (
+                <div
+                  className="swatch-touch-order"
+                  role="group"
+                  aria-label={`move ${item.label}`}
+                >
+                  <button
+                    type="button"
+                    disabled={index === 0}
+                    aria-label={`move ${item.label} up`}
+                    onClick={() => onReorder(item.id, items[index - 1]?.id ?? "")}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    disabled={index === items.length - 1}
+                    aria-label={`move ${item.label} down`}
+                    onClick={() => onReorder(item.id, items[index + 2]?.id ?? "")}
+                  >
+                    ↓
+                  </button>
+                </div>
+              ) : null}
+              <button
+                type="button"
+                className="swatch-copy"
+                aria-label={`duplicate ${item.label}`}
+                title="duplicate"
+                onClick={() => onClone(item.id)}
+              >
+                ⧉
+              </button>
               {item.deletable ? (
                 <button
                   type="button"

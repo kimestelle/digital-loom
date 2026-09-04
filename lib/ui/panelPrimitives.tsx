@@ -92,9 +92,14 @@ interface SliderProps {
   label: string;
   value: number;
   onChange: (v: number) => void;
+  /** Optional transaction boundaries. A continuous pointer/key gesture can
+   * preview many values while the authoring history records one commit. */
+  onChangeStart?: () => void;
+  onChangeEnd?: (v: number) => void;
   min?: number;
   max?: number;
   step?: number;
+  formatValue?: (v: number) => string;
   /** Plain-words explanation surfaced on the ⓘ next to the label. */
   hint?: string;
 }
@@ -103,12 +108,27 @@ export function Slider({
   label,
   value,
   onChange,
+  onChangeStart,
+  onChangeEnd,
   min = 0,
   max = 1,
   step = 0.01,
+  formatValue,
   hint,
 }: SliderProps) {
   const digits = step >= 1 ? 0 : step >= 0.01 ? 2 : 3;
+  const keyboardGesture = useRef(false);
+  const pointerGesture = useRef(false);
+  const finishPointer = (next: number) => {
+    if (!pointerGesture.current) return;
+    pointerGesture.current = false;
+    onChangeEnd?.(next);
+  };
+  const finishKeyboard = (next: number) => {
+    if (!keyboardGesture.current) return;
+    keyboardGesture.current = false;
+    onChangeEnd?.(next);
+  };
   return (
     <label className="slider">
       <span className="slider-label">
@@ -116,7 +136,9 @@ export function Slider({
           {label}
           {hint ? <InfoDot hint={hint} /> : null}
         </span>
-        <span className="slider-value">{value.toFixed(digits)}</span>
+        <span className="slider-value">
+          {formatValue ? formatValue(value) : value.toFixed(digits)}
+        </span>
       </span>
       <input
         type="range"
@@ -125,6 +147,34 @@ export function Slider({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.currentTarget.value))}
+        onPointerDown={() => {
+          if (pointerGesture.current) return;
+          pointerGesture.current = true;
+          onChangeStart?.();
+        }}
+        onPointerUp={(e) => finishPointer(Number(e.currentTarget.value))}
+        onPointerCancel={(e) => finishPointer(Number(e.currentTarget.value))}
+        onLostPointerCapture={(e) =>
+          finishPointer(Number(e.currentTarget.value))
+        }
+        onKeyDown={(e) => {
+          if (keyboardGesture.current) return;
+          if (
+            e.key.startsWith("Arrow") ||
+            e.key === "Home" ||
+            e.key === "End" ||
+            e.key === "PageUp" ||
+            e.key === "PageDown"
+          ) {
+            keyboardGesture.current = true;
+            onChangeStart?.();
+          }
+        }}
+        onKeyUp={(e) => finishKeyboard(Number(e.currentTarget.value))}
+        onBlur={(e) => {
+          finishPointer(Number(e.currentTarget.value));
+          finishKeyboard(Number(e.currentTarget.value));
+        }}
       />
     </label>
   );
@@ -181,6 +231,7 @@ interface PanelHeaderProps {
   side: "left" | "right";
   collapsed: boolean;
   onToggle: () => void;
+  afterTitle?: ReactNode;
   /** When set, the header title becomes a tab strip (title is kept for the
    *  toggle's aria labels). */
   tabs?: PanelHeaderTabs<string>;
@@ -191,6 +242,7 @@ export function PanelHeader({
   side,
   collapsed,
   onToggle,
+  afterTitle,
   tabs,
 }: PanelHeaderProps) {
   // Panels collapse downward (roll up into the header bar); the caret points
@@ -226,17 +278,23 @@ export function PanelHeader({
   ) : (
     <span className="side-panel-title">{title}</span>
   );
+  const heading = (
+    <div className="side-panel-heading">
+      {titleEl}
+      {afterTitle}
+    </div>
+  );
   return (
     <header className="side-panel-header">
       {side === "left" ? (
         <>
-          {titleEl}
+          {heading}
           {toggle}
         </>
       ) : (
         <>
           {toggle}
-          {titleEl}
+          {heading}
         </>
       )}
     </header>

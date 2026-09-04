@@ -14,6 +14,7 @@ import {
   parsePatinaMapRefs,
   type PatinaMapRef,
 } from "./response";
+import { inspectMapAsset } from "../core/mapAsset";
 
 function clientFor(userKey?: string): FalClient {
   // A caller-supplied key (the user's own fal account) beats the server's
@@ -127,7 +128,11 @@ export async function extractPatina(
     const ext = extForUrl(ref.url, ref.contentType ?? dl.contentType);
     const file = `${name}.${ext}`;
     await writeBinary(hash, file, dl.bytes);
-    cachedMaps.push({ name, file });
+    const mapBytes = dl.bytes.buffer.slice(
+      dl.bytes.byteOffset,
+      dl.bytes.byteOffset + dl.bytes.byteLength,
+    ) as ArrayBuffer;
+    cachedMaps.push({ name, file, asset: await inspectMapAsset(mapBytes) });
   }
 
   const manifest: Manifest = {

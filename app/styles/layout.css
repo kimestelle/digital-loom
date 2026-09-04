@@ -118,13 +118,6 @@
   letter-spacing: -0.012em;
 }
 
-.nav-brand-sub {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--fg-mute);
-  letter-spacing: 0.02em;
-}
-
 .nav-status-group {
   display: flex;
   align-items: center;
@@ -221,6 +214,13 @@
   height: 100%;
 }
 
+@media (pointer: coarse) {
+  .mode-orb {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 /* the canvas carries the mode's color (indigo thread / accent orbit);
    the ring just echoes it. */
 .mode-orb[data-mode="object"] {
@@ -279,7 +279,7 @@
     bottom: 0;
     z-index: 28;
     gap: 3px;
-    padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
+    padding: 2px 6px calc(2px + env(safe-area-inset-bottom, 0px));
     background: color-mix(in oklab, var(--bg-elev-2) 92%, transparent);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
@@ -291,7 +291,7 @@
     appearance: none;
     background: transparent;
     border: 0;
-    height: 36px;
+    height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -347,7 +347,10 @@
     -webkit-backdrop-filter: blur(24px);
     border: 1px solid var(--line);
     border-bottom: none;
-    transition: transform 380ms var(--ease-motion);
+    visibility: visible;
+    transition:
+      transform 380ms var(--ease-motion),
+      visibility 0s linear;
   }
 
   /* Only the active tab's panel should ever be reachable/visible — the
@@ -355,7 +358,11 @@
   .side-panel.side-panel-left[data-mshow="false"],
   .side-panel.side-panel-right[data-mshow="false"] {
     transform: translateY(100%);
+    visibility: hidden;
     pointer-events: none;
+    transition:
+      transform 380ms var(--ease-motion),
+      visibility 0s linear 380ms;
   }
 
   /* The strip replaces the header + collapse; the body is the scroller.
@@ -375,15 +382,10 @@
     bottom: calc(48px + env(safe-area-inset-bottom, 0px));
   }
 
-  /* Nav bar: just the title and the mode toggle. The subtitle and the
-     status pill (loading/error only now — see StatusPill) both drop out,
-     and the mode button leaves its desktop absolute-centered position to
-     take the pill's old spot instead — last flex child, pushed to the
-     right edge by .nav-bar-inner's justify-content:space-between. */
-  .nav-brand-sub {
-    display: none;
-  }
-
+  /* Keep the stage-mode control on the viewport's true centerline instead of
+     letting the brand or status copy push it sideways. A successful local
+     save is silent at this size; actionable dirty/saving/error states remain
+     available at the right edge. */
   .status-pill {
     display: none;
   }
@@ -392,13 +394,17 @@
     margin-left: auto;
   }
 
+  .save-status[data-status="saved"] {
+    display: none;
+  }
+
   .save-status-label {
     max-width: 116px;
   }
 
   .mode-orb {
-    position: static;
-    transform: none;
+    position: absolute;
+    left: 50%;
   }
 }
 
@@ -568,110 +574,5 @@
     --line: rgba(255, 255, 255, 0.18);
     --line-strong: rgba(255, 255, 255, 0.35);
     --fg-mute: rgba(232, 230, 225, 0.82);
-  }
-}
-
-/* ── landing splash ──────────────────────────────────────────────────
-   Grey gradient in the workshop panel's palette, brand set in the navbar
-   type, drifting slowly until the scene's render loop reports frames.
-   Two extra layers ride on top of the base gradient:
-     ::before — a soft diagonal sheen in the same five dye hues PixelPlay's
-       in-button pixels cycle through (see DYES in lib/ui/pixelPlay.tsx):
-       a band of color fading to transparent on both sides, oversized and
-       drifting via background-position so it glides across like light
-       catching an iridescent surface at a shifting angle, not a drawn
-       rainbow shape. `soft-light` keeps it a tint on the surface rather
-       than paint sitting on top of it.
-     ::after — the same paper-grain texture used elsewhere
-       (2d-textures/cloth-alike.png), tiled at native size and multiplied
-       in at low opacity for organic grain over the sheen. */
-.landing {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  overflow: hidden;
-  background: linear-gradient(
-    135deg,
-    #2b2e34 0%,
-    #383b42 34%,
-    #2e3138 62%,
-    #3d4046 100%
-  );
-  background-size: 300% 300%;
-  animation: landing-drift 7s ease-in-out infinite alternate;
-  transition: opacity 650ms var(--ease-motion);
-}
-
-.landing::before {
-  content: "";
-  position: absolute;
-  inset: -40%;
-  /* Translucent stops, not solid hues — a reflection tints the light
-     passing through it, it doesn't repaint the surface. Keeps the band
-     gentle everywhere in its drift, including when it's centered in view. */
-  background: linear-gradient(
-    108deg,
-    transparent 0%,
-    transparent 30%,
-    rgba(104, 152, 210, 0.5) 40%,
-    rgba(206, 110, 88, 0.5) 48%,
-    rgba(224, 182, 96, 0.5) 56%,
-    rgba(152, 172, 116, 0.5) 64%,
-    rgba(198, 142, 94, 0.5) 72%,
-    transparent 82%,
-    transparent 100%
-  );
-  background-size: 240% 240%;
-  mix-blend-mode: soft-light;
-  animation: landing-sheen 34s ease-in-out infinite alternate;
-}
-
-.landing::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: url("/2d-textures/cloth-alike.png");
-  background-size: 96px auto;
-  background-repeat: repeat;
-  mix-blend-mode: multiply;
-  opacity: 0.22;
-}
-
-.landing[data-leaving="true"] {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.landing .nav-brand-sub {
-  color: var(--fg-dim);
-}
-
-@keyframes landing-drift {
-  from {
-    background-position: 0% 0%;
-  }
-  to {
-    background-position: 100% 100%;
-  }
-}
-
-@keyframes landing-sheen {
-  from {
-    background-position: 0% 20%;
-  }
-  to {
-    background-position: 100% 80%;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .landing,
-  .landing::before {
-    animation: none;
   }
 }

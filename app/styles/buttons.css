@@ -71,3 +71,9 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+@media (pointer: coarse) {
+  .btn {
+    min-height: 44px;
+  }
+}

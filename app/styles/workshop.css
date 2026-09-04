@@ -4,6 +4,8 @@
 /* insert cell */
 
 .mini-drop {
+  appearance: none;
+  width: 100%;
   border: 1px dashed var(--line-strong);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
@@ -17,6 +19,9 @@
     background var(--d-fast) var(--ease-motion),
     transform var(--d-tap) var(--ease-motion);
   background: color-mix(in oklab, var(--bg-elev-2) 70%, transparent);
+  color: inherit;
+  font: inherit;
+  text-align: left;
 }
 
 .mini-drop[data-over="true"] {
@@ -100,6 +105,13 @@
   width: 100%;
   justify-content: center;
   margin-top: 2px;
+}
+
+@media (pointer: coarse) {
+  .mini-drop,
+  .prompt-input {
+    min-height: 44px;
+  }
 }
 
 
@@ -481,6 +493,31 @@
     overflow: visible;
     border-top: 1px solid var(--line);
     border-left: 0;
+  }
+}
+
+@media (max-height: 600px) {
+  .map-studio-backdrop {
+    padding: 8px;
+  }
+
+  .map-studio {
+    height: calc(100dvh - 16px);
+    min-height: 0;
+  }
+}
+
+@media (pointer: coarse) {
+  .map-studio-close {
+    width: 44px;
+    height: 44px;
+  }
+
+  .map-studio-recipes button,
+  .map-studio-toggle,
+  .map-studio-source-action .btn,
+  .map-studio-footer .btn {
+    min-height: 44px;
   }
 }
 

@@ -13,8 +13,14 @@ import {
 
 const PNG = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03,
 ]).buffer;
-const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xdb]).buffer;
+const JPEG = new Uint8Array([
+  0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08,
+  0x00, 0x03, 0x00, 0x02, 0x03, 0x01, 0x11,
+  0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00,
+]).buffer;
 
 function input(): ExportInput {
   const pkg: MaterialPackage = {
@@ -71,6 +77,52 @@ describe("map format detection", () => {
 });
 
 describe("single-material bundle", () => {
+  it("exports the authored swatch identity and display name over its map package", async () => {
+    const source = input();
+    const result = await buildMaterialBundle(
+      {
+        ...source,
+        materialId: "authored-clone-id",
+        name: "quiet sage copy",
+      },
+      {
+        resolveMap: async (name) => ({
+          bytes: name === "albedo" ? JPEG : PNG,
+          extension: name === "albedo" ? "jpeg" : "png",
+        }),
+        includeDerivedArtifacts: false,
+      },
+    );
+
+    expect(result.filename).toBe("quiet-sage-copy.zip");
+    expect(result.document.id).toBe("authored-clone-id");
+    expect(result.document.name).toBe("quiet sage copy");
+    expect(result.document.source.packageId).toBe("runtime-package");
+  });
+
+  it("round-trips an explicit zero metalness with a metalness map", async () => {
+    const source = input();
+    source.metalness = 0;
+    source.pkg.maps.metalness = {
+      name: "metalness",
+      url: "/api/cache/source-hash/metalness.png",
+      provenance: "patina",
+      sourceHash: "source-hash",
+    };
+    const result = await buildMaterialBundle(source, {
+      resolveMap: async (name) => ({
+        bytes: name === "albedo" ? JPEG : PNG,
+        extension: name === "albedo" ? "jpeg" : "png",
+      }),
+      includeDerivedArtifacts: false,
+    });
+    const reopened = await readMaterialBundle(result.bytes);
+
+    expect(result.document.authored.metalness).toBe(0);
+    expect(reopened.metalness).toBe(0);
+    reopened.revoke();
+  });
+
   it("resolves every source map once, preserves extensions, and reopens", async () => {
     const calls = new Map<string, number>();
     const resolveMap: MaterialMapResolver = async (name) => {
@@ -96,6 +148,11 @@ describe("single-material bundle", () => {
       mimeType: "image/jpeg",
       extension: "jpeg",
       colorSpace: "srgb",
+      asset: {
+        byteLength: JPEG.byteLength,
+        width: 2,
+        height: 3,
+      },
     });
     expect(result.document.maps.normal).toMatchObject({
       file: "sage-linen_Normal.png",
@@ -151,5 +208,22 @@ describe("single-material bundle", () => {
     zip.remove("sage-linen/sage-linen_Normal.png");
     const broken = await zip.generateAsync({ type: "uint8array" });
     await expect(readMaterialBundle(broken)).rejects.toThrow(/missing sage-linen_Normal/);
+  });
+
+  it("refuses map bytes that no longer match the exported digest", async () => {
+    const result = await buildMaterialBundle(input(), {
+      includeDerivedArtifacts: false,
+      resolveMap: async (name) => ({
+        bytes: name === "albedo" ? JPEG : PNG,
+        extension: name === "albedo" ? "jpeg" : "png",
+      }),
+    });
+    const zip = await JSZip.loadAsync(result.bytes);
+    const changed = JPEG.slice(0);
+    new Uint8Array(changed)[changed.byteLength - 1] ^= 1;
+    zip.file("sage-linen/sage-linen_BaseColor.jpeg", changed);
+    const broken = await zip.generateAsync({ type: "uint8array" });
+
+    await expect(readMaterialBundle(broken)).rejects.toThrow(/sha256 mismatch/);
   });
 });

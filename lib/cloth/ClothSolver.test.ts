@@ -5,6 +5,14 @@ import {
   type ClothConfig,
 } from "./ClothSolver";
 import { FABRICS, resolveFabric, type ResolvedFabric } from "./fabrics";
+import {
+  CLOTH_INTERACTION_RADIUS,
+  CLOTH_PLUCK_RADIUS,
+  CLOTH_POINTER_PROFILES,
+  MAX_CONTACT_TRAVEL_PER_TICK,
+  MAX_MOUSE_FORCE,
+  MAX_POINTER_TRAVEL_PER_TICK,
+} from "./pointerInteraction";
 
 const BASE_FABRIC = resolveFabric(FABRICS.myeongju);
 
@@ -172,6 +180,101 @@ describe("ClothSolver XPBD invariants", () => {
 
   it("replays the same seeded force sequence exactly", () => {
     expect(seededReplay(0xc0ffee)).toEqual(seededReplay(0xc0ffee));
+  });
+
+  it("stays finite under sustained strong touch pressure, swipes, and plucks", () => {
+    const solver = new ClothSolver(config(), fabric());
+    solver.pinTopEdge();
+    solver.selfCollisionEvery = 1;
+    const touch = CLOTH_POINTER_PROFILES.touch;
+
+    for (let tick = 0; tick < 180; tick++) {
+      solver.applyContactField(
+        35,
+        35,
+        CLOTH_INTERACTION_RADIUS,
+        tick % 2 === 0
+          ? MAX_CONTACT_TRAVEL_PER_TICK
+          : -MAX_CONTACT_TRAVEL_PER_TICK,
+        MAX_CONTACT_TRAVEL_PER_TICK * 0.35,
+        touch.pressureStrength,
+        touch.dragStrength,
+      );
+      if (tick % 30 === 0) {
+        solver.applyPluck(
+          35,
+          35,
+          CLOTH_PLUCK_RADIUS,
+          touch.pluckStrength,
+        );
+      }
+      solver.step(1);
+    }
+
+    for (const value of solver.pos) {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(Math.abs(value)).toBeLessThan(1_000_000);
+    }
+  });
+
+  it("stays finite at the maximum tuneable mouse force", () => {
+    const solver = new ClothSolver(config(), fabric());
+    solver.pinTopEdge();
+    solver.selfCollisionEvery = 1;
+    const mouse = CLOTH_POINTER_PROFILES.mouse;
+    const pinnedBefore = new Float32Array(solver.pos.slice(0, solver.cols * 3));
+
+    for (let tick = 0; tick < 180; tick++) {
+      solver.applyDrag(
+        35,
+        35,
+        tick % 2 === 0
+          ? MAX_POINTER_TRAVEL_PER_TICK
+          : -MAX_POINTER_TRAVEL_PER_TICK,
+        MAX_POINTER_TRAVEL_PER_TICK * 0.25,
+        CLOTH_INTERACTION_RADIUS,
+        mouse.dragStrength * MAX_MOUSE_FORCE,
+      );
+      solver.applyCursor(
+        35,
+        35,
+        CLOTH_INTERACTION_RADIUS,
+        mouse.pressureStrength * MAX_MOUSE_FORCE,
+      );
+      solver.step(1);
+    }
+
+    expect(solver.pos.slice(0, solver.cols * 3)).toEqual(pinnedBefore);
+    for (const value of solver.pos) {
+      expect(Number.isFinite(value)).toBe(true);
+      expect(Math.abs(value)).toBeLessThan(1_000_000);
+    }
+  });
+
+  it("moves a direct-contact patch while keeping pinned particles fixed", () => {
+    const solver = new ClothSolver(
+      config({ cols: 4, rows: 4, gravity: 0, iterations: 2 }),
+      fabric(),
+    );
+    solver.pinTopEdge();
+    solver.selfCollisionEvery = 0;
+    const pinnedBefore = new Float32Array(solver.pos.slice(0, solver.cols * 3));
+    const moving = 10;
+    const zBefore = solver.pos[moving * 3 + 2];
+
+    solver.applyContactField(
+      solver.pos[moving * 3],
+      solver.pos[moving * 3 + 1],
+      CLOTH_INTERACTION_RADIUS,
+      8,
+      0,
+      CLOTH_POINTER_PROFILES.touch.pressureStrength,
+      CLOTH_POINTER_PROFILES.touch.dragStrength,
+    );
+    solver.step(1);
+
+    expect(solver.pos.slice(0, solver.cols * 3)).toEqual(pinnedBefore);
+    expect(solver.pos[moving * 3 + 2]).toBeLessThan(zBefore);
   });
 
   it("rejects invalid timesteps before they can poison the state", () => {

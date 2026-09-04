@@ -14,6 +14,8 @@ import {
   putVaultCollection,
   putVaultMaterial,
   putVaultPreset,
+  hydrateVaultEntry,
+  type HydratedEntry,
   type VaultMaterial,
   type VaultMap,
 } from "@/lib/library/vault";
@@ -21,6 +23,7 @@ import {
   PRESET_VERSION,
   type MaterialPreset,
 } from "@/lib/presets/types";
+import { mapPackageSha256 } from "@/lib/core/mapAsset";
 
 export interface AuthoringMap extends VaultMap {
   url: string;
@@ -76,30 +79,14 @@ export async function saveAuthoringMaterialBytes(
   await putVaultMaterial(material, bytesByFile);
 }
 
-function hex(bytes: ArrayBuffer): string {
-  return [...new Uint8Array(bytes)]
-    .map((value) => value.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-/** Preserve an extraction hash when it is already route-safe; otherwise derive
- *  a stable SHA-256 identity from the source id plus each named map's digest. */
+/** Derive package identity from the complete named byte set. `sourceIdentity`
+ *  is retained in the signature for callers and provenance, but never trusted
+ *  as the address: a hex-looking source id is not proof of these map bytes. */
 export async function normalizeAuthoringHash(
-  sourceIdentity: string,
+  _sourceIdentity: string,
   bytesByFile: Map<string, ArrayBuffer>,
 ): Promise<string> {
-  if (HASH_RE.test(sourceIdentity)) return sourceIdentity;
-  const mapDigests: string[] = [];
-  for (const [file, bytes] of [...bytesByFile].sort(([a], [b]) =>
-    a.localeCompare(b),
-  )) {
-    const digest = await crypto.subtle.digest("SHA-256", bytes);
-    mapDigests.push(`${file}:${hex(digest)}`);
-  }
-  const canonical = `${sourceIdentity}\n${mapDigests.join("\n")}`;
-  return hex(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical)),
-  );
+  return mapPackageSha256(bytesByFile);
 }
 
 async function bytesForMap(
@@ -135,11 +122,12 @@ export async function saveAuthoringMaterial(
     createdAt: material.createdAt,
     prompt: material.prompt,
     sourceFilename: material.sourceFilename,
-    maps: material.maps.map(({ name, file, provenance, sourceHash }) => ({
+    maps: material.maps.map(({ name, file, provenance, sourceHash, asset }) => ({
       name,
       file,
       provenance,
       sourceHash,
+      asset,
     })),
     hidden: material.hidden ?? false,
   };
@@ -213,13 +201,15 @@ export async function importAuthoringMaterialBytes(
     [preset],
     [...order],
   );
-  void mirrorPresetToServer(preset);
   return preset;
 }
 
 /** Local commit first, ordered per material; the returned object is exactly what
  *  was committed and can be folded into React state immediately. */
-export function saveAuthoringPreset(draft: PresetDraft): Promise<MaterialPreset> {
+export function saveAuthoringPreset(
+  draft: PresetDraft,
+  options: { mirrorToServer?: boolean } = {},
+): Promise<MaterialPreset> {
   return enqueuePreset(draft.slug, async () => {
     const preset: MaterialPreset = {
       ...draft,
@@ -227,9 +217,16 @@ export function saveAuthoringPreset(draft: PresetDraft): Promise<MaterialPreset>
       createdAt: new Date().toISOString(),
     };
     await putVaultPreset(preset);
-    void mirrorPresetToServer(preset);
+    if (options.mirrorToServer !== false) void mirrorPresetToServer(preset);
     return preset;
   });
+}
+
+/** Targeted read-back for a just-committed authoring operation. */
+export function loadAuthoringEntry(
+  hash: string,
+): Promise<HydratedEntry | null> {
+  return hydrateVaultEntry(hash);
 }
 
 /** One-time migration path for seed/runtime presets discovered on the server. */

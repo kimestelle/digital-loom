@@ -643,7 +643,7 @@ export default function Landing() {
 ├─ `}<b>sage-linen_Height.png</b>{`
 ├─ `}<b>sage-linen_ORM.png</b>{`      `}<span>occlusion · roughness · metallic</span>{`
 ├─ `}<b>sage-linen.glb</b>{`          `}<span>sheen + transmission specimen</span>{`
-├─ `}<b>material.json</b>{`           `}<span>schema loom.material/2</span>{`
+├─ `}<b>material.json</b>{`           `}<span>schema loom.material/3</span>{`
 └─ `}<b>README.md</b>{`               `}<span>per-engine import steps</span>
               </pre>
               <div className="lp-engines">
@@ -658,7 +658,7 @@ export default function Landing() {
             <div className="lp-reveal">
               <pre className="lp-code">
 {`{
-  `}<span className="a">&quot;schema&quot;</span>{`: `}<span className="s">&quot;loom.material/2&quot;</span>{`,
+  `}<span className="a">&quot;schema&quot;</span>{`: `}<span className="s">&quot;loom.material/3&quot;</span>{`,
   `}<span className="a">&quot;source&quot;</span>{`: {
     `}<span className="a">&quot;identity&quot;</span>{`: `}<span className="s">&quot;8c91…e3a2&quot;</span>{`,
     `}<span className="a">&quot;extractor&quot;</span>{`: `}<span className="s">&quot;fal-ai/patina/material/extract&quot;</span>{`

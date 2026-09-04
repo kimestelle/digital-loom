@@ -1,9 +1,13 @@
 import { MAP_ORDER } from "../core/materialPackage";
 import {
   parseLoomMaterial,
-  type LoomMaterialV2,
+  type LoomMaterialV3,
 } from "../core/loomMaterial";
 import type { FabricKnobs } from "../ui/knobs";
+import {
+  validateMapAssetMetadata,
+  type MapAssetMetadata,
+} from "../core/mapAsset";
 
 export interface ManifestMaterial {
   slug: string;
@@ -13,10 +17,12 @@ export interface ManifestMaterial {
   prompt?: string;
   sourceFilename?: string;
   maps?: Record<string, string>;
+  /** Byte metadata for every owned map. Optional only for legacy v1 archives. */
+  mapAssets?: Partial<Record<(typeof MAP_ORDER)[number], MapAssetMetadata>>;
   mapsOf?: string;
   /** Canonical authored state. New exports write this; `params` remains only
    *  as a compatibility mirror for collection readers predating material/2. */
-  material?: LoomMaterialV2;
+  material?: LoomMaterialV3;
   /** @deprecated Read only for older collection archives. */
   params?: {
     fabricId: string;
@@ -28,13 +34,14 @@ export interface ManifestMaterial {
 export interface CollectionManifest {
   app: "digital-loom";
   kind: "collection";
-  version: 1;
+  version: 1 | 2;
   exportedAt: string;
   order: string[];
   materials: ManifestMaterial[];
 }
 
-const SUPPORTED_VERSION = 1;
+export const CURRENT_COLLECTION_VERSION = 2 as const;
+const SUPPORTED_VERSIONS = [1, CURRENT_COLLECTION_VERSION] as const;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -43,9 +50,9 @@ export function validateCollectionManifest(value: unknown): CollectionManifest {
   if (!isRecord(value) || value.app !== "digital-loom" || value.kind !== "collection") {
     throw new Error("not a loom collection zip");
   }
-  if (value.version !== SUPPORTED_VERSION) {
+  if (!SUPPORTED_VERSIONS.includes(value.version as 1 | 2)) {
     throw new Error(
-      `unsupported collection version ${String(value.version)} — this build reads version ${SUPPORTED_VERSION}`,
+      `unsupported collection version ${String(value.version)} — this build reads versions ${SUPPORTED_VERSIONS.join(" and ")}`,
     );
   }
   if (!Array.isArray(value.materials) || !Array.isArray(value.order)) {
@@ -73,10 +80,32 @@ export function validateCollectionManifest(value: unknown): CollectionManifest {
         paths.add(path);
       }
     }
+    let mapAssets: ManifestMaterial["mapAssets"];
+    if (candidate.mapAssets !== undefined) {
+      if (!isRecord(candidate.mapAssets)) {
+        throw new Error(`material ${index} has invalid mapAssets`);
+      }
+      mapAssets = {};
+      for (const [name, metadata] of Object.entries(candidate.mapAssets)) {
+        if (!MAP_ORDER.includes(name as (typeof MAP_ORDER)[number])) {
+          throw new Error(`material ${index} has an invalid map asset name`);
+        }
+        mapAssets[name as (typeof MAP_ORDER)[number]] =
+          validateMapAssetMetadata(
+            metadata,
+            `material ${index} mapAssets.${name}`,
+          );
+      }
+      const mapNames = Object.keys(candidate.maps ?? {}).sort();
+      const assetNames = Object.keys(mapAssets).sort();
+      if (mapNames.join("\n") !== assetNames.join("\n")) {
+        throw new Error(`material ${index} map assets must describe every owned map`);
+      }
+    }
     if (candidate.mapsOf !== undefined && typeof candidate.mapsOf !== "string") {
       throw new Error(`material ${index} has invalid mapsOf`);
     }
-    let material: LoomMaterialV2 | undefined;
+    let material: LoomMaterialV3 | undefined;
     if (candidate.material !== undefined) {
       material = parseLoomMaterial(candidate.material);
       if (
@@ -103,12 +132,13 @@ export function validateCollectionManifest(value: unknown): CollectionManifest {
           JSON.stringify(candidate.params.knobs) !==
             JSON.stringify(material.authored.knobs))
       ) {
-        throw new Error(`material ${index} compatibility params disagree with material/2`);
+        throw new Error(`material ${index} compatibility params disagree with canonical material`);
       }
     }
     return {
       ...(candidate as unknown as ManifestMaterial),
       material,
+      mapAssets,
     };
   });
 
@@ -177,13 +207,23 @@ export function validateCollectionManifest(value: unknown): CollectionManifest {
             `material ${material.slug} map filename disagrees with its package`,
           );
         }
+        const asset = owner?.mapAssets?.[name];
+        if (
+          descriptor?.asset &&
+          asset &&
+          JSON.stringify(descriptor.asset) !== JSON.stringify(asset)
+        ) {
+          throw new Error(
+            `material ${material.slug} map asset metadata disagrees with its package`,
+          );
+        }
       }
     }
   }
   return {
     app: "digital-loom",
     kind: "collection",
-    version: 1,
+    version: value.version as 1 | 2,
     exportedAt:
       typeof value.exportedAt === "string"
         ? value.exportedAt

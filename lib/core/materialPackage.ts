@@ -56,14 +56,27 @@ export function emptyPackage(fabricName: string): MaterialPackage {
 }
 
 /** Build a package from a manifest-style map list (pregen bundle, sample, or
- *  cache entry). `base` prefixes each file name. Cache/sample entries carry
- *  full per-map URLs instead — callers overwrite `url` after building.
- *  Unknown map names are skipped. */
+ *  cache entry). `base` prefixes bare file names; hydrated entries can supply
+ *  their full URL and authored provenance directly. Unknown map names are
+ *  skipped. */
 export function pkgFromMaps(
   name: string,
   base: string,
-  maps: { name: string; file: string }[],
-  meta: { prompt?: string | null; sourceFilename?: string | null; hash?: string } = {},
+  maps: {
+    name: string;
+    file: string;
+    /** Hydrated cache/vault entries already have their session-local URL. */
+    url?: string;
+    provenance?: Provenance;
+    sourceHash?: string;
+  }[],
+  meta: {
+    prompt?: string | null;
+    sourceFilename?: string | null;
+    hash?: string;
+    /** Preserve the package timestamp when rebuilding a runtime projection. */
+    createdAt?: string;
+  } = {},
 ): MaterialPackage {
   const pkg: MaterialPackage = {
     id: meta.hash ?? crypto.randomUUID(),
@@ -74,15 +87,26 @@ export function pkgFromMaps(
       captureNotes: meta.prompt
         ? `prompt: ${meta.prompt}${meta.sourceFilename ? ` · ${meta.sourceFilename}` : ""}`
         : undefined,
-      createdAt: new Date().toISOString(),
+      createdAt: meta.createdAt ?? new Date().toISOString(),
     },
   };
   for (const m of maps) {
     if (!(MAP_ORDER as string[]).includes(m.name)) continue;
+    const provenance = m.provenance ?? "patina";
     pkg.maps[m.name as MapName] = {
       name: m.name as MapName,
-      url: base.endsWith("/") ? `${base}${m.file}` : `${base}/${m.file}`,
-      provenance: "patina",
+      url:
+        m.url ??
+        (base.endsWith("/") ? `${base}${m.file}` : `${base}/${m.file}`),
+      provenance,
+      // Older Patina manifests did not repeat the extraction hash per map.
+      // Their package hash is the map source identity; authored/derived maps
+      // retain an explicitly stored sourceHash (including `undefined`).
+      sourceHash:
+        m.sourceHash ??
+        (m.provenance === undefined && provenance === "patina"
+          ? meta.hash
+          : undefined),
     };
   }
   return pkg;

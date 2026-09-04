@@ -13,13 +13,18 @@ import {
   type MapName,
   type Provenance,
 } from "./materialPackage";
+import {
+  validateMapAssetMetadata,
+  type MapAssetMetadata,
+} from "./mapAsset";
 
 /**
  * Stable, portable material contract. Runtime MaterialPackage objects are light
  * renderer inputs; this document is the authored interchange format written to
  * material.json and read back from a single-material bundle.
  */
-export const LOOM_MATERIAL_SCHEMA = "loom.material/2" as const;
+export const LOOM_MATERIAL_SCHEMA = "loom.material/3" as const;
+export const LEGACY_LOOM_MATERIAL_V2_SCHEMA = "loom.material/2" as const;
 export const LEGACY_LOOM_MATERIAL_SCHEMA = "loom.material/1" as const;
 
 export type LoomMapMimeType =
@@ -41,6 +46,8 @@ export interface LoomMapFile {
   normalConvention?: LoomNormalConvention;
   provenance: Provenance;
   sourceHash?: string;
+  /** Optional only when a legacy material is migrated without its map bytes. */
+  asset?: MapAssetMetadata;
 }
 
 export interface LoomOrmArtifact {
@@ -61,7 +68,7 @@ export interface LoomGlbArtifact {
   extension: "glb";
 }
 
-export interface LoomMaterialV2 {
+export interface LoomMaterialV3 {
   schema: typeof LOOM_MATERIAL_SCHEMA;
   /** Identity of this authored material document. */
   id: string;
@@ -139,7 +146,7 @@ export function isLoomMapExtension(value: string): value is LoomMapExtension {
   return value in MAP_MIME_BY_EXTENSION;
 }
 
-export function parseLoomMaterial(input: string | unknown): LoomMaterialV2 {
+export function parseLoomMaterial(input: string | unknown): LoomMaterialV3 {
   let raw: unknown = input;
   if (typeof input === "string") {
     try {
@@ -157,11 +164,14 @@ export function parseLoomMaterial(input: string | unknown): LoomMaterialV2 {
  * Version-dispatch entry point. Every historical format gets its own migration;
  * never loosen the current validator to accommodate an older shape.
  */
-export function migrateLoomMaterial(input: unknown): LoomMaterialV2 {
+export function migrateLoomMaterial(input: unknown): LoomMaterialV3 {
   const raw = expectRecord(input, "document");
-  if (raw.schema === LOOM_MATERIAL_SCHEMA) return validateV2(raw);
+  if (raw.schema === LOOM_MATERIAL_SCHEMA) return validateV3(raw);
+  if (raw.schema === LEGACY_LOOM_MATERIAL_V2_SCHEMA) {
+    return validateV3(migrateV2(raw));
+  }
   if (raw.schema === LEGACY_LOOM_MATERIAL_SCHEMA) {
-    return validateV2(
+    return validateV3(
       migrateV1(raw) as unknown as Record<string, unknown>,
     );
   }
@@ -170,12 +180,12 @@ export function migrateLoomMaterial(input: unknown): LoomMaterialV2 {
   );
 }
 
-export function serializeLoomMaterial(document: LoomMaterialV2): string {
-  const validated = validateV2(document as unknown as Record<string, unknown>);
+export function serializeLoomMaterial(document: LoomMaterialV3): string {
+  const validated = validateV3(document as unknown as Record<string, unknown>);
   return JSON.stringify(validated, null, 2) + "\n";
 }
 
-function validateV2(raw: Record<string, unknown>): LoomMaterialV2 {
+function validateV3(raw: Record<string, unknown>): LoomMaterialV3 {
   rejectUnknownKeys(
     raw,
     [
@@ -247,7 +257,7 @@ function validateV2(raw: Record<string, unknown>): LoomMaterialV2 {
 
   const artifactsRaw = expectRecord(raw.artifacts, "artifacts");
   rejectUnknownKeys(artifactsRaw, ["orm", "glb"], "artifacts");
-  const artifacts: LoomMaterialV2["artifacts"] = {};
+  const artifacts: LoomMaterialV3["artifacts"] = {};
   if (artifactsRaw.orm !== undefined) artifacts.orm = parseOrm(artifactsRaw.orm);
   if (artifactsRaw.glb !== undefined) artifacts.glb = parseGlb(artifactsRaw.glb);
 
@@ -343,6 +353,7 @@ function parseMapFile(name: MapName, input: unknown): LoomMapFile {
       "normalConvention",
       "provenance",
       "sourceHash",
+      "asset",
     ],
     `maps.${name}`,
   );
@@ -396,6 +407,10 @@ function parseMapFile(name: MapName, input: unknown): LoomMapFile {
     raw.sourceHash === undefined
       ? undefined
       : expectNonEmptyString(raw.sourceHash, `maps.${name}.sourceHash`);
+  const asset =
+    raw.asset === undefined
+      ? undefined
+      : validateMapAssetMetadata(raw.asset, `loom material: maps.${name}.asset`);
   return {
     name,
     file,
@@ -405,6 +420,7 @@ function parseMapFile(name: MapName, input: unknown): LoomMapFile {
     normalConvention: name === "normal" ? "opengl-y+" : undefined,
     provenance,
     sourceHash,
+    asset,
   };
 }
 
@@ -457,7 +473,22 @@ function parseGlb(input: unknown): LoomGlbArtifact {
   return { file, mimeType: "model/gltf-binary", extension: "glb" };
 }
 
-function migrateV1(raw: Record<string, unknown>): LoomMaterialV2 {
+/** Validate the former strict contract before changing only its schema tag. */
+function migrateV2(raw: Record<string, unknown>): Record<string, unknown> {
+  const maps = expectRecord(raw.maps, "maps");
+  for (const name of MAP_ORDER) {
+    if (maps[name] === undefined) continue;
+    const map = expectRecord(maps[name], `maps.${name}`);
+    if ("asset" in map) {
+      throw new Error(
+        `loom material: maps.${name} asset metadata requires ${LOOM_MATERIAL_SCHEMA}`,
+      );
+    }
+  }
+  return { ...raw, schema: LOOM_MATERIAL_SCHEMA };
+}
+
+function migrateV1(raw: Record<string, unknown>): LoomMaterialV3 {
   rejectUnknownKeys(
     raw,
     [
@@ -521,7 +552,7 @@ function migrateV1(raw: Record<string, unknown>): LoomMaterialV2 {
     anisoDirection: "anisoDirection",
     anisoCoherence: "anisoCoherence",
   };
-  const maps: LoomMaterialV2["maps"] = {};
+  const maps: LoomMaterialV3["maps"] = {};
   for (const [legacyKey, mapName] of Object.entries(legacyMapKeys)) {
     const value = files[legacyKey];
     if (value === undefined || !mapName) continue;
@@ -539,7 +570,7 @@ function migrateV1(raw: Record<string, unknown>): LoomMaterialV2 {
     };
   }
 
-  const artifacts: LoomMaterialV2["artifacts"] = {};
+  const artifacts: LoomMaterialV3["artifacts"] = {};
   if (files.orm !== undefined) {
     const file = expectSafeFile(files.orm, "files.orm");
     artifacts.orm = {

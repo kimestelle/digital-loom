@@ -34,5 +34,17 @@ describe("fal cache manifests", () => {
         maps: [{ name: "albedo", file: "../albedo.png" }],
       }),
     ).toBe(false);
+    expect(
+      isManifestShape({
+        ...manifest,
+        maps: [
+          {
+            name: "albedo",
+            file: "albedo.png",
+            asset: { sha256: "bad", byteLength: 1, width: 1, height: 1 },
+          },
+        ],
+      }),
+    ).toBe(false);
   });
 });

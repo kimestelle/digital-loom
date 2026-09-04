@@ -16,10 +16,15 @@ import {
   type LoomMapExtension,
   type LoomMapFile,
   type LoomMapMimeType,
-  type LoomMaterialV2,
+  type LoomMaterialV3,
 } from "../core/loomMaterial";
 import type { FabricKnobs } from "../ui/knobs";
 import type { FabricProfile } from "../cloth/fabrics";
+import { inspectMapAsset, verifyMapAsset } from "../core/mapAsset";
+import {
+  assertArchiveInputSize,
+  assertSafeArchiveContents,
+} from "./archiveSafety";
 
 export interface ExportInput {
   name: string;
@@ -53,7 +58,7 @@ export interface MaterialExportResult {
   /** ZIP bytes are exposed so callers can persist/share without rebuilding. */
   bytes: Uint8Array;
   blob: Blob;
-  document: LoomMaterialV2;
+  document: LoomMaterialV3;
   includedFiles: string[];
   issues: MaterialExportIssue[];
   complete: boolean;
@@ -77,7 +82,7 @@ export interface MaterialBundleOptions {
 }
 
 export interface ReopenedMaterialBundle {
-  document: LoomMaterialV2;
+  document: LoomMaterialV3;
   pkg: MaterialPackage;
   knobs: FabricKnobs;
   metalness: number;
@@ -429,7 +434,7 @@ function mapUse(name: MapName): string {
 }
 
 function buildReadme(
-  material: LoomMaterialV2,
+  material: LoomMaterialV3,
   issues: MaterialExportIssue[],
 ): string {
   const { name, authored, fabric, maps, artifacts } = material;
@@ -516,7 +521,7 @@ export async function buildMaterialBundle(
   const issues: MaterialExportIssue[] = [];
   const includedFiles: string[] = [];
   const resolved: Partial<Record<MapName, ResolvedMap>> = {};
-  const maps: LoomMaterialV2["maps"] = {};
+  const maps: LoomMaterialV3["maps"] = {};
   const resolver = options.resolveMap ?? defaultResolveMap;
 
   const outcomes = await Promise.all(
@@ -560,6 +565,7 @@ export async function buildMaterialBundle(
           normalConvention: name === "normal" ? "opengl-y+" : undefined,
           provenance: entry.provenance,
           sourceHash: entry.sourceHash,
+          asset: await inspectMapAsset(asset.bytes),
         };
         return { name, asset: { bytes: asset.bytes, descriptor } };
       } catch (error) {
@@ -588,7 +594,7 @@ export async function buildMaterialBundle(
     includedFiles.push(asset.descriptor.file);
   }
 
-  const artifacts: LoomMaterialV2["artifacts"] = {};
+  const artifacts: LoomMaterialV3["artifacts"] = {};
   let ormBlob: Blob | null = null;
   if (options.includeDerivedArtifacts !== false) {
     if (resolved.roughness || resolved.metalness || resolved.ao) {
@@ -641,7 +647,7 @@ export async function buildMaterialBundle(
     }
   }
 
-  const material: LoomMaterialV2 = {
+  const material: LoomMaterialV3 = {
     schema: LOOM_MATERIAL_SCHEMA,
     id: input.materialId?.trim() || input.pkg.id,
     name: input.name,
@@ -745,7 +751,10 @@ export async function readMaterialBundle(
   input: Blob | ArrayBuffer | Uint8Array,
 ): Promise<ReopenedMaterialBundle> {
   const { default: JSZip } = await import("jszip");
-  const zip = await JSZip.loadAsync(await asZipInput(input));
+  const archiveInput = await asZipInput(input);
+  assertArchiveInputSize(archiveInput.byteLength);
+  const zip = await JSZip.loadAsync(archiveInput);
+  assertSafeArchiveContents(zip.files);
   const manifests = Object.values(zip.files).filter(
     (entry) => !entry.dir && /(^|\/)material\.json$/.test(entry.name),
   );
@@ -771,6 +780,16 @@ export async function readMaterialBundle(
       );
     }
     const bytes = await entry.async("arraybuffer");
+    if (descriptor.asset) {
+      try {
+        await verifyMapAsset(bytes, descriptor.asset, descriptor.file);
+      } catch (error) {
+        for (const revoke of revokers) revoke();
+        throw new Error(
+          `loom material bundle: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     const detected = detectMapFormat(bytes, { extension: descriptor.extension });
     if (
       !detected ||

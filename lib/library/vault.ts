@@ -33,12 +33,20 @@ import type {
   MapName,
   Provenance,
 } from "@/lib/core/materialPackage";
+import {
+  inspectMapAsset,
+  sha256Hex,
+  verifyMapAsset,
+  type MapAssetMetadata,
+} from "@/lib/core/mapAsset";
 
 export interface VaultMap {
   name: MapName;
   file: string;
   provenance?: Provenance;
   sourceHash?: string;
+  /** Byte identity used to detect corruption and package-id collisions. */
+  asset?: MapAssetMetadata;
 }
 
 export interface VaultMaterial {
@@ -186,24 +194,81 @@ function put(store: string, key: string, value: unknown): Promise<void> {
   return write(store, (tx) => tx.objectStore(store).put(value, key));
 }
 
+async function prepareVaultMaterial(
+  material: VaultMaterial,
+  bytesByFile: Map<string, ArrayBuffer>,
+): Promise<VaultMaterial> {
+  if (material.maps.length === 0) throw new Error("material needs at least one map");
+  const maps = await Promise.all(
+    material.maps.map(async (map): Promise<VaultMap> => {
+      const bytes = bytesByFile.get(map.file);
+      if (!bytes || bytes.byteLength === 0) {
+        throw new Error(`missing bytes for ${map.file}`);
+      }
+      const asset = map.asset
+        ? await verifyMapAsset(bytes, map.asset, map.file)
+        : await inspectMapAsset(bytes);
+      return { ...map, asset };
+    }),
+  );
+  return { ...material, maps };
+}
+
+/** A package address can be reused only for the exact same named byte set. */
+async function assertNoPackageIdentityConflict(
+  incoming: VaultMaterial,
+  bytesByFile: Map<string, ArrayBuffer>,
+  existing: VaultMaterial | null,
+): Promise<void> {
+  if (!existing) return;
+  const incomingKeys = incoming.maps
+    .map((map) => `${map.name}:${map.file}`)
+    .sort();
+  const existingKeys = existing.maps
+    .map((map) => `${map.name}:${map.file}`)
+    .sort();
+  if (incomingKeys.join("\n") !== existingKeys.join("\n")) {
+    throw new Error(`map package ${incoming.hash} conflicts with stored map names`);
+  }
+  for (const map of incoming.maps) {
+    const priorBytes = await getOne<ArrayBuffer>(
+      STORE_MAPS,
+      cacheUrl(incoming.hash, map.file),
+    );
+    // A missing byte row is repairable. An existing, different byte row is an
+    // identity collision and must never be silently overwritten.
+    if (!priorBytes) continue;
+    const [priorDigest, incomingDigest] = await Promise.all([
+      sha256Hex(priorBytes),
+      map.asset?.sha256 ?? sha256Hex(bytesByFile.get(map.file)!),
+    ]);
+    if (priorDigest !== incomingDigest) {
+      throw new Error(
+        `map package ${incoming.hash} conflicts with stored bytes for ${map.file}`,
+      );
+    }
+  }
+}
+
 /** Persist one material and all of its map bytes in a single transaction. A
  *  material row is never committed with only part of its declared map set. */
 export async function putVaultMaterial(
   material: VaultMaterial,
   bytesByFile: Map<string, ArrayBuffer>,
 ): Promise<void> {
-  for (const m of material.maps) {
-    const bytes = bytesByFile.get(m.file);
-    if (!bytes) throw new Error(`missing bytes for ${m.file}`);
-  }
-  if (material.maps.length === 0) throw new Error("material needs at least one map");
+  const prepared = await prepareVaultMaterial(material, bytesByFile);
+  await assertNoPackageIdentityConflict(
+    prepared,
+    bytesByFile,
+    await getVaultMaterial(prepared.hash),
+  );
   await write([STORE_MAPS, STORE_MATERIALS, STORE_SETTINGS], (tx) => {
     const maps = tx.objectStore(STORE_MAPS);
-    for (const m of material.maps) {
-      maps.put(bytesByFile.get(m.file)!, cacheUrl(material.hash, m.file));
+    for (const m of prepared.maps) {
+      maps.put(bytesByFile.get(m.file)!, cacheUrl(prepared.hash, m.file));
     }
-    tx.objectStore(STORE_MATERIALS).put(material, material.hash);
-    tx.objectStore(STORE_SETTINGS).delete(deletedMaterialKey(material.hash));
+    tx.objectStore(STORE_MATERIALS).put(prepared, prepared.hash);
+    tx.objectStore(STORE_SETTINGS).delete(deletedMaterialKey(prepared.hash));
   });
 }
 
@@ -220,28 +285,34 @@ export async function putVaultCollection(
   presets: MaterialPreset[],
   order: string[],
 ): Promise<void> {
+  const preparedPackages = await Promise.all(
+    packages.map(async (pkg) => ({
+      ...pkg,
+      material: await prepareVaultMaterial(pkg.material, pkg.bytesByFile),
+    })),
+  );
   const hashes = new Set<string>();
-  for (const pkg of packages) {
+  for (const pkg of preparedPackages) {
     if (hashes.has(pkg.material.hash)) {
       throw new Error(`duplicate map package ${pkg.material.hash}`);
     }
     hashes.add(pkg.material.hash);
-    if (pkg.material.maps.length === 0) {
-      throw new Error(`material ${pkg.material.hash} has no maps`);
-    }
-    for (const map of pkg.material.maps) {
-      const bytes = pkg.bytesByFile.get(map.file);
-      if (!bytes || bytes.byteLength === 0) {
-        throw new Error(`missing bytes for ${map.file}`);
-      }
-    }
   }
   const existing = new Map(
     await Promise.all(
-      packages.map(async ({ material }) => [
+      preparedPackages.map(async ({ material }) => [
         material.hash,
         await getVaultMaterial(material.hash),
       ] as const),
+    ),
+  );
+  await Promise.all(
+    preparedPackages.map((pkg) =>
+      assertNoPackageIdentityConflict(
+        pkg.material,
+        pkg.bytesByFile,
+        existing.get(pkg.material.hash) ?? null,
+      ),
     ),
   );
   await write(
@@ -251,7 +322,7 @@ export async function putVaultCollection(
       const materials = tx.objectStore(STORE_MATERIALS);
       const presetStore = tx.objectStore(STORE_PRESETS);
       const settings = tx.objectStore(STORE_SETTINGS);
-      for (const pkg of packages) {
+      for (const pkg of preparedPackages) {
         const prior = existing.get(pkg.material.hash);
         for (const map of prior?.maps ?? []) {
           maps.delete(cacheUrl(pkg.material.hash, map.file));
@@ -464,41 +535,57 @@ export async function getVaultDeletedPresetSlugs(): Promise<Set<string>> {
 /** All vaulted materials as CacheEntry-shaped records with blob: map URLs.
  *  A material whose bytes are missing (partial import, evicted) is dropped —
  *  a library row that can't paint its own maps is worse than no row. */
+async function hydrateVaultMaterial(
+  mat: VaultMaterial,
+): Promise<HydratedEntry | null> {
+  const bytesByFile = new Map<string, ArrayBuffer>();
+  for (const m of mat.maps) {
+    const canonical = cacheUrl(mat.hash, m.file);
+    const bytes = await getOne<ArrayBuffer>(STORE_MAPS, canonical);
+    if (!bytes || bytes.byteLength === 0) return null;
+    if (m.asset) {
+      try {
+        await verifyMapAsset(bytes, m.asset, m.file);
+      } catch {
+        return null;
+      }
+    }
+    bytesByFile.set(m.file, bytes);
+  }
+  const maps: HydratedEntry["maps"] = mat.maps.map((m) => {
+    const canonical = cacheUrl(mat.hash, m.file);
+    return {
+      name: m.name,
+      file: m.file,
+      provenance: m.provenance,
+      sourceHash: m.sourceHash,
+      asset: m.asset,
+      url: blobUrlFor(canonical, m.file, bytesByFile.get(m.file)!),
+    };
+  });
+  return {
+    hash: mat.hash,
+    createdAt: mat.createdAt,
+    prompt: mat.prompt,
+    sourceFilename: mat.sourceFilename,
+    maps,
+    hidden: mat.hidden,
+  };
+}
+
+/** Reopen one just-committed package without rescanning and rehashing the
+ *  user's entire material library. */
+export async function hydrateVaultEntry(
+  hash: string,
+): Promise<HydratedEntry | null> {
+  const material = await getVaultMaterial(hash);
+  return material ? hydrateVaultMaterial(material) : null;
+}
+
 export async function hydrateVaultEntries(): Promise<HydratedEntry[]> {
   const materials = await getAll<VaultMaterial>(STORE_MATERIALS);
-  const out: HydratedEntry[] = [];
-  for (const mat of materials) {
-    const bytesByFile = new Map<string, ArrayBuffer>();
-    for (const m of mat.maps) {
-      const canonical = cacheUrl(mat.hash, m.file);
-      const bytes = await getOne<ArrayBuffer>(STORE_MAPS, canonical);
-      if (!bytes || bytes.byteLength === 0) {
-        bytesByFile.clear();
-        break;
-      }
-      bytesByFile.set(m.file, bytes);
-    }
-    if (bytesByFile.size !== mat.maps.length) continue;
-    const maps: HydratedEntry["maps"] = mat.maps.map((m) => {
-      const canonical = cacheUrl(mat.hash, m.file);
-      return {
-        name: m.name,
-        file: m.file,
-        provenance: m.provenance,
-        sourceHash: m.sourceHash,
-        url: blobUrlFor(canonical, m.file, bytesByFile.get(m.file)!),
-      };
-    });
-    out.push({
-      hash: mat.hash,
-      createdAt: mat.createdAt,
-      prompt: mat.prompt,
-      sourceFilename: mat.sourceFilename,
-      maps,
-      hidden: mat.hidden,
-    });
-  }
-  return out;
+  const entries = await Promise.all(materials.map(hydrateVaultMaterial));
+  return entries.filter((entry): entry is HydratedEntry => entry !== null);
 }
 
 export async function getVaultPresets(): Promise<MaterialPreset[]> {

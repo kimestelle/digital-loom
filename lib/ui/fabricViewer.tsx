@@ -139,6 +139,7 @@ export default function FabricViewer({
         meshRows={MESH_PRESETS[knobs.meshRes].rows}
         breeze={knobs.breeze}
         skyMode={knobs.skyMode === "sky" ? 0 : 1}
+        mouseForce={knobs.mouseForce}
         iterations={knobs.iterations}
         selfCollide={knobs.selfCollide}
         anisotropy={knobs.anisotropy}
