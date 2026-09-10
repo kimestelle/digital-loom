@@ -22,66 +22,13 @@
 // heuristics wholesale behind the same signature.
 
 import type { MaterialPackage } from "@/lib/core/materialPackage";
+import { getMapStats } from "@/lib/pipeline/mapStats";
 import type { FabricKnobs } from "@/lib/ui/knobs";
 
 export interface EstimatedParams {
   knobs: Partial<FabricKnobs>;
   /** Suggested insert-panel metalness amount (0..1), or 0 if none. */
   metalness: number;
-}
-
-const SAMPLE = 64;
-
-interface MapStats {
-  /** mean luminance 0..1 */
-  mean: number;
-  /** std-dev of luminance 0..1 */
-  std: number;
-  /** fraction of pixels below 0.18 luminance */
-  darkFrac: number;
-  /** mean saturation 0..1 */
-  sat: number;
-}
-
-async function statsFor(url: string): Promise<MapStats | null> {
-  const img = await new Promise<HTMLImageElement | null>((resolve) => {
-    const im = new Image();
-    im.crossOrigin = "anonymous";
-    im.onload = () => resolve(im);
-    im.onerror = () => resolve(null);
-    im.src = url;
-  });
-  if (!img) return null;
-  const c = document.createElement("canvas");
-  c.width = c.height = SAMPLE;
-  const ctx = c.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return null;
-  ctx.drawImage(img, 0, 0, SAMPLE, SAMPLE);
-  let data: Uint8ClampedArray;
-  try {
-    data = ctx.getImageData(0, 0, SAMPLE, SAMPLE).data;
-  } catch {
-    return null; // cross-origin taint — bail, keep defaults
-  }
-  const n = SAMPLE * SAMPLE;
-  let sum = 0, sumSq = 0, dark = 0, satSum = 0;
-  for (let i = 0; i < n; i++) {
-    const j = i * 4;
-    const r = data[j] / 255, g = data[j + 1] / 255, b = data[j + 2] / 255;
-    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    sum += lum;
-    sumSq += lum * lum;
-    if (lum < 0.18) dark++;
-    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-    satSum += mx > 1e-4 ? (mx - mn) / mx : 0;
-  }
-  const mean = sum / n;
-  return {
-    mean,
-    std: Math.sqrt(Math.max(0, sumSq / n - mean * mean)),
-    darkFrac: dark / n,
-    sat: satSum / n,
-  };
 }
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
@@ -95,11 +42,11 @@ export async function estimateParams(
   let metalness = 0;
 
   const [rough, height, albedo, normal, metal] = await Promise.all([
-    pkg.maps.roughness ? statsFor(pkg.maps.roughness.url) : null,
-    pkg.maps.height ? statsFor(pkg.maps.height.url) : null,
-    pkg.maps.albedo ? statsFor(pkg.maps.albedo.url) : null,
-    pkg.maps.normal ? statsFor(pkg.maps.normal.url) : null,
-    pkg.maps.metalness ? statsFor(pkg.maps.metalness.url) : null,
+    pkg.maps.roughness ? getMapStats(pkg.maps.roughness.url) : null,
+    pkg.maps.height ? getMapStats(pkg.maps.height.url) : null,
+    pkg.maps.albedo ? getMapStats(pkg.maps.albedo.url) : null,
+    pkg.maps.normal ? getMapStats(pkg.maps.normal.url) : null,
+    pkg.maps.metalness ? getMapStats(pkg.maps.metalness.url) : null,
   ]);
 
   // Sheen: inverse of roughness. A glossy silk (roughness ~0.2) → sheen ~0.9;

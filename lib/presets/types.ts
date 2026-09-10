@@ -15,6 +15,9 @@ export const PRESET_VERSION = 1;
 
 export interface MaterialPreset {
   version: typeof PRESET_VERSION;
+  /** A committed specimen baseline. Local drafts may branch from it, but a
+   *  stale browser/server overlay must not redefine the shared reference. */
+  builtIn?: boolean;
   /** Display name, e.g. "red silk". */
   name: string;
   /** Filesystem-safe identity derived from name; also the file basename. */

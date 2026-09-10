@@ -1,0 +1,20 @@
+/* ─── globals.css ─────────────────────────────────────────────────────────────
+   Entry stylesheet — a manifest of per-concern files under app/styles/.
+   Order matters (later files may override earlier ones):
+
+     tokens.css    design tokens: fonts, color/size variables, reset
+     layout.css    app shell, header, stage, mode toggle, status pill, mobile
+     buttons.css   shared button styles
+     pixelplay.css companion-pixel canvas for buttons/pickers
+     panels.css    side-panel chrome, sections, sliders, pickers, meters
+     workshop.css  insert cell, prompt fields, generated-maps strip
+     library.css   material swatches, hover previews, drag grip/markers
+*/
+
+@import "./styles/tokens.css";
+@import "./styles/layout.css";
+@import "./styles/buttons.css";
+@import "./styles/pixelplay.css";
+@import "./styles/panels.css";
+@import "./styles/workshop.css";
+@import "./styles/library.css";

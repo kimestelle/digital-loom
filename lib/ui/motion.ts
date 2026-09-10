@@ -2,14 +2,14 @@
 // The interface's ONE motion curve. Every discrete state-A → state-B
 // transition in the app — panel slides, tab tracks, the drawer collapse, the
 // cloth↔object transition, the mesh-resolution slide-swap, and the material
-// pixel-dissolve reveal — eases through this same curve, so the whole
+// opacity handoff — eases through this same curve, so the whole
 // interface reads as one coherent hand moving it, not several unrelated
 // timing functions layered by accident.
 //
 // Two representations of the identical curve, kept in sync deliberately:
 //   - CSS: --ease-motion in app/styles/tokens.css (same 4 numbers).
 //   - JS:  EASE_MOTION here, for code driving its own rAF loop (cloth scene,
-//     canvas pixel-dissolve) rather than a CSS transition.
+//     material opacity) rather than a CSS transition.
 // If you retune the curve, change both.
 //
 // (Continuous, target-seeking motion — PixelPlay's orbit chase and burst

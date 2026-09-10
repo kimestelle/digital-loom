@@ -65,8 +65,12 @@ export async function listPresets(): Promise<MaterialPreset[]> {
   const seed = await readPresetDir(SEED_ROOT);
   const bySlug = new Map(seed.map((p) => [p.slug, p]));
   if (PRESETS_ROOT !== SEED_ROOT) {
-    // Writable overlay wins: a user's tweak of a seeded material shadows it.
-    for (const p of await readPresetDir(PRESETS_ROOT)) bySlug.set(p.slug, p);
+    // Writable overlays own ordinary presets. A built-in seed is the shared
+    // comparison specimen, though, so edits must live under a variation slug
+    // rather than silently redefining that baseline on one machine.
+    for (const p of await readPresetDir(PRESETS_ROOT)) {
+      if (!bySlug.get(p.slug)?.builtIn) bySlug.set(p.slug, p);
+    }
   }
   const out = [...bySlug.values()];
   out.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));

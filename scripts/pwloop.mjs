@@ -4,10 +4,10 @@
 // scene to actually render, runs a named scenario, and captures a timed burst
 // of stage screenshots so transitions can be inspected frame by frame.
 //
-//   node scripts/pwloop.mjs <scenario> [--url=http://localhost:3000]
+//   node scripts/pwloop.mjs <scenario> [--url=http://localhost:3000/room]
 //        [--headed] [--out=shots] [--reduced]
 //
-// Scenarios: boot, weave, sample, sky, rapid, hoverclick
+// Scenarios: boot, mobile, cabinet, light, loupe, weave, sample, rapid, iris
 // Frames land in <out>/<scenario>/frame-NN.png. Console errors and the
 // detected render backend are printed to stdout.
 
@@ -21,7 +21,7 @@ const opt = (name, dflt) => {
   const hit = args.find((a) => a.startsWith(`--${name}=`));
   return hit ? hit.split("=").slice(1).join("=") : dflt;
 };
-const URL_ = opt("url", "http://localhost:3000");
+const URL_ = opt("url", "http://localhost:3000/room");
 const OUT = path.resolve(opt("out", "shots"), scenario);
 const HEADED = args.includes("--headed");
 const REDUCED = args.includes("--reduced");
@@ -38,7 +38,7 @@ async function bigCanvas(page) {
 
 async function waitForScene(page, timeoutMs = 90_000) {
   const t0 = Date.now();
-  // Sample thumbs registering is the same signal the transfer system keys on.
+  // Wait for both the persistent specimen renderer and a real archive source.
   await page.waitForSelector('section[data-dye="gardenia"] .swatch-face', {
     timeout: timeoutMs,
   });
@@ -95,69 +95,91 @@ async function burst(page, label, frames = 14, intervalMs = 100) {
   }
 }
 
+async function showCabinetFace(page, face) {
+  const cabinet = page.locator(".material-cabinet");
+  if ((await cabinet.getAttribute("data-face")) === face) return;
+  await page
+    .getByRole("button", {
+      name: face === "material" ? "show material dossier" : "show swatch archive",
+    })
+    .click();
+  await cabinet.waitFor({ state: "visible" });
+  await page.waitForTimeout(500);
+}
+
 const scenarios = {
   // Just boot and take one settled shot.
   boot: async (page) => {
     await shot(page, "settled");
   },
 
-  // Mobile viewport: tri-tab dock, sheet collapse, no stray labels.
+  // Mobile viewport: the archive and dossier share one fixed lower-third
+  // cabinet while the specimen keeps the upper two thirds.
   mobile: async (page) => {
     FULLPAGE = true;
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(1500);
-    await shot(page, "workshop");
-    await page.locator(".mobile-nav-tab", { hasText: "my swatches" }).click();
-    await page.waitForTimeout(600);
-    await shot(page, "swatches");
-    await page.locator(".mobile-nav-tab", { hasText: "tuning" }).click();
-    await page.waitForTimeout(600);
-    await shot(page, "tuning");
-    await page.locator(".mobile-nav-tab", { hasText: "tuning" }).click();
-    await page.waitForTimeout(600);
-    await shot(page, "collapsed");
+    await shot(page, "archive");
+    await showCabinetFace(page, "material");
+    await shot(page, "material");
+    await showCabinetFace(page, "archive");
+    await shot(page, "archive-return");
   },
 
-  // Workshop panel tabs: slide to "my swatches" (frayed stamp masks) and
-  // back, catching mid-transition frames.
-  tabs: async (page) => {
+  // Cabinet reversal: both faces stay mounted while the punched handle keeps
+  // a stable position and DOM identity.
+  cabinet: async (page) => {
     FULLPAGE = true;
-    await shot(page, "workshop");
-    await page.getByRole("tab", { name: "my swatches" }).click();
-    await burst(page, "to-swatches", 6, 120);
-    await page.waitForTimeout(400);
-    await shot(page, "swatches-settled");
-    await page.getByRole("tab", { name: "workshop", exact: true }).click();
-    await burst(page, "to-workshop", 6, 120);
+    await shot(page, "archive");
+    await page.getByRole("button", { name: "show material dossier" }).click();
+    await burst(page, "to-material", 7, 90);
+    await page.getByRole("button", { name: "show swatch archive" }).click();
+    await burst(page, "to-archive", 7, 90);
   },
 
-  // Stamp flight: in the swatches tab, hover then click a swatch and catch
-  // the canvas fly-layer mid-flight — the flying copy must keep its frayed
-  // stamp silhouette (and the drop caret CSS is exercised via drag in
-  // manual testing; grid gaps are visible here).
-  stampfly: async (page) => {
+  // The Figma mark opens the one-control daylight sheet. Sample the left,
+  // high-center, and right positions and their room projections.
+  light: async (page) => {
     FULLPAGE = true;
-    await page.getByRole("tab", { name: "my swatches" }).click();
-    await page.waitForTimeout(600);
-    const faces = page.locator('section[data-dye="gardenia"] .swatch-face');
-    await faces.nth(2).hover();
-    await burst(page, "hover-fly", 5, 70);
-    await faces.nth(2).click();
-    await burst(page, "click-fly", 8, 90);
+    await page.getByRole("button", { name: "open daylight controls" }).click();
+    const slider = page.getByRole("dialog", { name: "daylight path" }).getByRole("slider");
+    for (const [label, value] of [["left", "0"], ["high", "0.5"], ["right", "1"]]) {
+      await slider.fill(value);
+      await page.waitForTimeout(350);
+      await shot(page, label);
+    }
+    await page.keyboard.press("Escape");
   },
 
-  // Click a non-active weave tile → expect mesh dissolve out + in (~520ms),
-  // then a second tile to confirm repeatability.
+  // Renderer-native magnifier: no preview canvas or second scene, just the
+  // bounded local inspection pass on the persistent specimen renderer.
+  loupe: async (page) => {
+    const canvas = (await bigCanvas(page)).asElement();
+    if (!canvas) throw new Error("scene canvas not found");
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error("scene canvas has no bounds");
+    await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.45);
+    await burst(page, "left", 5, 100);
+    await page.mouse.move(box.x + box.width * 0.62, box.y + box.height * 0.52, {
+      steps: 8,
+    });
+    await burst(page, "right", 5, 100);
+    await page.mouse.move(box.x + box.width + 4, box.y + box.height + 4);
+    await shot(page, "released");
+  },
+
+  // Change construction twice and capture how the live specimen settles.
   weave: async (page) => {
+    await showCabinetFace(page, "material");
     await shot(page, "before");
-    await page.locator("button.weave-tile:not([data-active='true'])").first().click();
+    await page.locator("button.construction-option:not([data-active='true'])").first().click();
     await burst(page, "tile1", 10, 90);
-    await page.locator("button.weave-tile:not([data-active='true'])").nth(1).click();
+    await page.locator("button.construction-option:not([data-active='true'])").nth(1).click();
     await burst(page, "tile2", 10, 90);
   },
 
-  // Click the second sample swatch → canvas fly + mesh dissolve, gated on the
-  // new albedo. Longer burst to cover the full flight.
+  // Click the second sample swatch → one uniform specimen fade, gated on the
+  // new albedo. Longer burst covers the complete material handoff.
   sample: async (page) => {
     await shot(page, "before");
     await page
@@ -167,25 +189,14 @@ const scenarios = {
     await burst(page, "swap", 18, 100);
   },
 
-  // Sky → black backdrop toggle, then back.
-  sky: async (page) => {
-    await shot(page, "sky-before");
-    await page.getByRole("tab", { name: "black" }).click();
-    await page.waitForTimeout(400);
-    await shot(page, "black");
-    await page.waitForTimeout(400);
-    await shot(page, "black-late");
-    await page.getByRole("tab", { name: "sky", exact: true }).click();
-    await page.waitForTimeout(400);
-    await shot(page, "sky-after");
-  },
-
   // Hammer several committing intents quickly — the queue must serialize with
   // the newest pending intent winning; no stuck-invisible cloth at the end.
   rapid: async (page) => {
+    await showCabinetFace(page, "material");
     await shot(page, "before");
-    const tiles = page.locator("button.weave-tile");
+    const tiles = page.locator("button.construction-option");
     for (let i = 0; i < 4; i++) await tiles.nth(i).click({ delay: 40 });
+    await showCabinetFace(page, "archive");
     await page
       .locator('section[data-dye="gardenia"] .swatch-face')
       .nth(1)
@@ -196,6 +207,7 @@ const scenarios = {
   // Iridescence A/B: measure fps at 0 and at 1 (rAF counter, 2s each), then
   // burst frames across ~10s of sun orbit to catch backlit + grazing looks.
   iris: async (page) => {
+    await showCabinetFace(page, "material");
     const setIris = (v) =>
       page.evaluate((val) => {
         const label = [...document.querySelectorAll("label.slider")].find(
@@ -232,30 +244,7 @@ const scenarios = {
     await setIris(1);
     await page.waitForTimeout(300);
     log(`fps @ iridescence=1: ${await measureFps()}`);
-    // Full sun orbit is ~66s; sample the whole lap so the frames catch the
-    // sun crossing the narrow 30° FOV (that's when the lens flare fires).
-    await burst(page, "iris-max", 22, 3000);
-  },
-
-  // Hover a swatch, then click THAT swatch: the parked preview must hand off
-  // straight to the mesh reveal — no retreat to the box, no second fly-out.
-  hoversame: async (page) => {
-    const faces = page.locator('section[data-dye="gardenia"] .swatch-face');
-    await faces.nth(1).hover();
-    await page.waitForTimeout(500);
-    await shot(page, "hover-held");
-    await faces.nth(1).click();
-    await burst(page, "handoff", 14, 100);
-  },
-
-  // Hover a swatch then click another mid-hover: hover preview must yield.
-  hoverclick: async (page) => {
-    const faces = page.locator('section[data-dye="gardenia"] .swatch-face');
-    await faces.nth(2).hover();
-    await page.waitForTimeout(250);
-    await shot(page, "hovering");
-    await faces.nth(1).click();
-    await burst(page, "click-during-hover", 16, 100);
+    await burst(page, "iris-max", 12, 600);
   },
 };
 

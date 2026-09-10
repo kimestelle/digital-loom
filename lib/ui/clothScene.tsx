@@ -41,11 +41,25 @@ import {
   seedClothLaunchDrape,
 } from "@/lib/ui/clothLaunchShimmer";
 import { easeMotion } from "@/lib/ui/motion";
+import type { ResolvedRoomLight } from "@/lib/ui/roomLight";
+import { createRoomWindow3d } from "@/lib/ui/roomWindow3d";
+import {
+  createMaterialLoupeNodes,
+  MATERIAL_LOUPE_DIAMETER_PX,
+  MATERIAL_LOUPE_LAYER,
+  resolveMaterialLoupeCenter,
+  resolveMaterialLoupeDiameter,
+  type MaterialLoupeRenderState,
+} from "@/lib/ui/materialLoupeNodes";
 
 // Development escape hatch: flip to true to run the scene on the WebGL 2
 // backend even where WebGPU is available (the same fallback path browsers
 // without WebGPU take automatically). Useful for eyeballing backend parity.
 const FORCE_WEBGL = false;
+
+// Room composition rotates the complete suspended specimen through depth. The
+// dowel stays level under gravity; no screen-space roll is authored into it.
+const ROOM_DOWEL_YAW = THREE.MathUtils.degToRad(4);
 
 // Object maps that map onto MeshPhysicalMaterial slots. Shared with the
 // object-material sync below.
@@ -136,6 +150,13 @@ interface Props {
   /** Multiplier on the safe mouse hover + travel profile. Touch and pen keep
    *  their own direct-contact profiles. */
   mouseForce?: number;
+
+  /** Mount-time environment boundary. The reusable viewer keeps the authored
+   * sky; the studio room renders transparently over DOM/CSS architecture. */
+  environment?: "sky" | "room";
+  /** Shared room-light snapshot. Read directly in the render loop so the DOM
+   * room and specimen never drift onto separate clocks. */
+  roomLightRef?: MutableRefObject<ResolvedRoomLight>;
 
   /** Shared, imperatively animated reveal value for material transfers. The
    *  render loop reads it directly so a pixel dissolve never re-renders the
@@ -235,10 +256,16 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     if (!container) return;
 
     let disposed = false;
+    // WebGPURenderer does not create its internal animation controller until
+    // init() resolves. React's development double-mount can run this cleanup
+    // before that happens, so asking the renderer for its current loop here
+    // would dereference an uninitialized controller.
+    let animationLoopStarted = false;
 
     // ── Renderer / scene / camera ───────────────────────────────────────
     // WebGPU where the browser supports it; the renderer transparently falls
     // back to a WebGL 2 backend elsewhere (TSL materials compile for both).
+    const roomEnvironment = propsRef.current.environment === "room";
     const renderer = new THREE.WebGPURenderer({
       // MSAA on top of ≥1.5× supersampling is redundant — the supersample
       // already anti-aliases, and the combined backing-store bandwidth is
@@ -246,7 +273,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       // where edges would otherwise stair-step. (Construction-time only;
       // runtime quality flips keep whichever choice the mount made.)
       antialias: pixelScale < 1.5,
-      alpha: false,
+      alpha: roomEnvironment,
       powerPreference: "high-performance",
       forceWebGL: FORCE_WEBGL,
       // Gives the in-product meter an actual GPU duration instead of asking
@@ -262,9 +289,12 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     renderer.domElement.style.display = "block";
+    // The loupe is an inspection cost, not an idle scene cost. Allocate its
+    // bounded target only on first use and keep it for the rest of the mount.
+    let materialLoupe: ReturnType<typeof createMaterialLoupeNodes> | null = null;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xa8bfd0);
+    scene.background = roomEnvironment ? null : new THREE.Color(0xa8bfd0);
 
     // Exponential fog — the "little volumetric" ask. Distance-based haze
     // knits the cloth into the sky, gives the sun its atmospheric weight,
@@ -272,24 +302,64 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     // 0.00035 — with the veiling glare now adding its own near-sun haze the
     // original density read as an overcast murk.)
     const fogColor = new THREE.Color(0xbecfe0);
-    scene.fog = new THREE.FogExp2(fogColor.getHex(), 0.00019);
+    scene.fog = roomEnvironment
+      ? null
+      : new THREE.FogExp2(fogColor.getHex(), 0.00019);
 
-    // Camera framing — cloth spans roughly 423 units in solver units and we
-    // want it to occupy about 60% of the frame vertically (matches the
-    // original cloth-sim look). At FOV 30, tan(15°) ≈ 0.268, so a distance
-    // of ~1300 puts the visible view height near ~695 units → cloth at
-    // ~60% vertical.
+    // Camera framing — cloth spans roughly 423 units in solver units. The sky
+    // keeps the original low, oblique view. The room uses a right-side view:
+    // its 42° azimuth optically narrows the square simulation into the tall
+    // hanging specimen from the interface composition without scaling the
+    // mesh, changing solver density, or lowering fragment quality.
     const camera = new THREE.PerspectiveCamera(30, 1, 1, 8000);
-    // Starting framing: a low, oblique angle nearly along the clothesline's
-    // own length — the line reads as a long diagonal across the frame
-    // instead of a level bar, and the cloth looms large and a little
-    // twisted, more editorial than a dead-on catalog shot. Target stays the
-    // origin (OrbitControls' own default target), so this only shapes the
-    // opening frame — the orbit pivot for later interaction is unaffected,
-    // and there's no target mismatch for controls.update() to snap away on
-    // the first drag.
-    camera.position.set(0, -720, -1200);
-    camera.lookAt(0, 0, 0);
+    if (roomEnvironment) {
+      // Radius 1300 at 42° around Y. A 20-unit target offset keeps the
+      // specimen clear of the fixed logo while leaving its interaction plane
+      // and every rig/solver coordinate in real world units.
+      camera.position.set(890, 0, -966);
+      camera.lookAt(20, 0, 0);
+    } else {
+      // Starting framing: a low, oblique angle nearly along the clothesline's
+      // own length — the line reads as a long diagonal across the frame
+      // instead of a level bar, and the cloth looms large and a little
+      // twisted. Target stays the origin (OrbitControls' default target), so
+      // the first drag cannot snap to a mismatched pivot.
+      camera.position.set(0, -720, -1200);
+      camera.lookAt(0, 0, 0);
+    }
+    const roomWindowFrame = roomEnvironment
+      ? container.closest<HTMLElement>(".room-frame")
+      : null;
+    // Share the wall's actual authored color. This is read once at setup,
+    // not during light drift or pointer interaction.
+    const roomSillColor = roomWindowFrame
+      ? getComputedStyle(roomWindowFrame).getPropertyValue("--room-wall-mid").trim()
+      : undefined;
+    const roomWindow = roomEnvironment
+      ? createRoomWindow3d(camera, roomSillColor || undefined)
+      : null;
+    const roomWindowDayColor = roomWindow?.frame.material.color.clone();
+    const roomWindowAperture =
+      roomWindowFrame?.querySelector<HTMLElement>("[data-room-window-mask]") ?? null;
+    // Reuse the aperture measurement from resize; flare tracking does not
+    // trigger a layout read on animation frames.
+    const roomWindowScreenRect = { left: 0, top: 0, width: 0, height: 0 };
+    if (roomWindow) {
+      scene.add(roomWindow.root);
+      container.dataset.roomWindowModel = "ready";
+      container.dataset.roomWindowInstances = String(
+        roomWindow.metrics.instances,
+      );
+      container.dataset.roomWindowTriangles = String(
+        roomWindow.metrics.triangles,
+      );
+      container.dataset.roomWindowDrawCalls = String(
+        roomWindow.metrics.drawCalls,
+      );
+      container.dataset.roomWindowPanels = String(roomWindow.metrics.panels);
+      container.dataset.roomWindowMembers = String(roomWindow.metrics.members);
+      container.dataset.roomWindowForm = "single";
+    }
     // Orbit controls — dynamic import so the example addon doesn't drag
     // into the initial bundle chunk. Camera can rotate around the fabric
     // and zoom in/out within the configured distance limits. Damping
@@ -299,35 +369,92 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       update: () => void;
       dispose: () => void;
     } | null = null;
-    import("three/examples/jsm/controls/OrbitControls.js")
-      .then((mod) => {
-        if (disposed) return;
-        const c = new mod.OrbitControls(camera, renderer.domElement);
-        c.enableDamping = true;
-        c.dampingFactor = 0.08;
-        c.enablePan = false;
-        c.minDistance = 500;   // don't dive inside the fabric
-        c.maxDistance = 2400;  // don't drift out past the sky
-        c.minPolarAngle = Math.PI * 0.1;  // keep the horizon roughly in view
-        c.maxPolarAngle = Math.PI * 0.9;
-        c.rotateSpeed = 0.65;
-        c.zoomSpeed = 0.9;
-        // Touch remap: two fingers get the mouse-drag effect (orbit, plus
-        // pinch-to-zoom standing in for the scroll wheel); one finger gets
-        // NO camera gesture at all, so it falls straight through to the
-        // pointermove listener below as the mouse-hover equivalent (that
-        // listener isn't gated on button state — it already treats any
-        // pointer motion over the canvas, mouse or touch, as "hovering").
-        // `null` is OrbitControls' documented way to disable a touch-count
-        // mapping (there's no TOUCH.NONE constant).
-        c.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };
-        controls = c;
-      })
-      .catch(() => {
-        // Orbit controls are enhancement, not required. Silently continue
-        // with a static camera if the dynamic import fails.
-      });
+    if (!roomEnvironment) {
+      import("three/examples/jsm/controls/OrbitControls.js")
+        .then((mod) => {
+          if (disposed) return;
+          const c = new mod.OrbitControls(camera, renderer.domElement);
+          c.enableDamping = true;
+          c.dampingFactor = 0.08;
+          c.enablePan = false;
+          c.minDistance = 500;   // don't dive inside the fabric
+          c.maxDistance = 2400;  // don't drift out past the sky
+          c.minPolarAngle = Math.PI * 0.1;  // keep the horizon roughly in view
+          c.maxPolarAngle = Math.PI * 0.9;
+          c.rotateSpeed = 0.65;
+          c.zoomSpeed = 0.9;
+          // Touch remap: two fingers orbit/zoom the reusable sky viewer while
+          // one finger remains a direct material contact.
+          c.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };
+          controls = c;
+        })
+        .catch(() => {
+          // Orbit controls are enhancement, not required. Silently continue
+          // with a static camera if the dynamic import fails.
+        });
+    }
 
+    // All pointer and loupe coordinates are CSS pixels relative to the canvas.
+    // Keep one mutable bounds record rather than forcing layout during every
+    // pointer sample and twice again on each rendered loupe frame.
+    const canvasBounds = {
+      left: 0,
+      top: 0,
+      width: 1,
+      height: 1,
+    };
+    const loupeRingState = {
+      rawX: 0,
+      rawY: 0,
+      x: Number.NaN,
+      y: Number.NaN,
+      diameter: Number.NaN,
+    };
+    const syncLoupeRing = (rawX = loupeRingState.rawX, rawY = loupeRingState.rawY) => {
+      const requestedDiameter = Math.min(
+        MATERIAL_LOUPE_DIAMETER_PX,
+        Math.max(168, canvasBounds.width * 0.32),
+      );
+      const diameter = resolveMaterialLoupeDiameter(
+        canvasBounds.width,
+        canvasBounds.height,
+        requestedDiameter,
+      );
+      const x = resolveMaterialLoupeCenter(
+        rawX,
+        canvasBounds.width,
+        diameter,
+      );
+      const y = resolveMaterialLoupeCenter(
+        rawY,
+        canvasBounds.height,
+        diameter,
+      );
+      loupeRingState.rawX = rawX;
+      loupeRingState.rawY = rawY;
+      if (x !== loupeRingState.x) {
+        loupeRingState.x = x;
+        container.style.setProperty("--material-loupe-x", `${x}px`);
+      }
+      if (y !== loupeRingState.y) {
+        loupeRingState.y = y;
+        container.style.setProperty("--material-loupe-y", `${y}px`);
+      }
+      if (diameter !== loupeRingState.diameter) {
+        loupeRingState.diameter = diameter;
+        container.style.setProperty(
+          "--material-loupe-diameter",
+          `${diameter}px`,
+        );
+      }
+    };
+    const refreshCanvasBounds = () => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      canvasBounds.left = rect.left;
+      canvasBounds.top = rect.top;
+      canvasBounds.width = rect.width;
+      canvasBounds.height = rect.height;
+    };
     const resize = () => {
       const w = container.clientWidth;
       const h = container.clientHeight;
@@ -335,6 +462,37 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      refreshCanvasBounds();
+      if (roomWindow && roomWindowAperture) {
+        const apertureRect = roomWindowAperture.getBoundingClientRect();
+        roomWindowScreenRect.left = apertureRect.left - canvasBounds.left;
+        roomWindowScreenRect.top = apertureRect.top - canvasBounds.top;
+        roomWindowScreenRect.width = apertureRect.width;
+        roomWindowScreenRect.height = apertureRect.height;
+        const roomRect = roomWindowFrame?.getBoundingClientRect();
+        const windowLayout = roomWindow.layout(
+          camera,
+          canvasBounds.width,
+          canvasBounds.height,
+          {
+            left: apertureRect.left - canvasBounds.left,
+            top: apertureRect.top - canvasBounds.top,
+            width: apertureRect.width,
+            height: apertureRect.height,
+          },
+          roomRect
+            ? {
+                left: roomRect.left - canvasBounds.left,
+                width: roomRect.width,
+              }
+            : undefined,
+        );
+        roomWindowAperture.style.setProperty(
+          "--room-window-right-bottom",
+          `${windowLayout.rightVerticalScale * 100}%`,
+        );
+      }
+      if (container.dataset.materialLoupe === "visible") syncLoupeRing();
     };
     resize();
     // ResizeObserver fires repeatedly — often dozens of times a second —
@@ -356,37 +514,55 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     ro.observe(container);
 
     // ── Sky ─────────────────────────────────────────────────────────────
-    const skyGeom = new THREE.SphereGeometry(3500, 32, 24);
-    const { material: skyMat, u: skyU } = createSkyMaterial();
-    // The bundle owns its own Color instances (no aliasing with fogColor) —
-    // seed the fog tint once; updateSun keeps it in sync every frame.
-    skyU.u_fogColor.value.copy(fogColor);
-    const skyMesh = new THREE.Mesh(skyGeom, skyMat);
-    scene.add(skyMesh);
+    const skyGeom = roomEnvironment
+      ? null
+      : new THREE.SphereGeometry(3500, 32, 24);
+    const skyBundle = roomEnvironment ? null : createSkyMaterial();
+    const skyMat = skyBundle?.material ?? null;
+    const skyU = skyBundle?.u ?? null;
+    if (skyGeom && skyMat && skyU) {
+      // The bundle owns its own Color instances (no aliasing with fogColor) —
+      // seed the fog tint once; updateSun keeps it in sync every frame.
+      skyU.u_fogColor.value.copy(fogColor);
+      scene.add(new THREE.Mesh(skyGeom, skyMat));
+    }
 
     // ── Lens flare overlay ──────────────────────────────────────────────
     // Additive fullscreen quad drawn after everything (the material's
     // vertexNode bypasses the camera). The tick projects the sun to NDC,
     // fades the flare at the frame edges, and hides the quad outright when
     // it would be invisible so the overlay costs nothing most of the time.
-    const { material: flareMat, u: flareU } = createLensFlareMaterial();
+    const flareBundle = createLensFlareMaterial({ transparentBackground: roomEnvironment });
+    const flareMat = flareBundle?.material ?? null;
+    const flareU = flareBundle?.u ?? null;
     const flareGeom = new THREE.PlaneGeometry(2, 2);
-    const flareQuad = new THREE.Mesh(flareGeom, flareMat);
-    flareQuad.frustumCulled = false;
-    flareQuad.renderOrder = 999;
-    flareQuad.visible = false;
-    scene.add(flareQuad);
+    const flareQuad =
+      flareGeom && flareMat ? new THREE.Mesh(flareGeom, flareMat) : null;
+    if (flareQuad) {
+      flareQuad.frustumCulled = false;
+      flareQuad.renderOrder = 999;
+      flareQuad.visible = false;
+      scene.add(flareQuad);
+    }
     const flareSunVec = new THREE.Vector3();
     const flareDirVec = new THREE.Vector3();
     const flareCamDir = new THREE.Vector3();
+    const flarePointerNdc = new THREE.Vector2();
+    const flareRaycaster = new THREE.Raycaster();
+    const flareLocalRay = new THREE.Ray();
+    const flareLocalInverse = new THREE.Matrix4();
+    const flareLocalPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const flareLocalHit = new THREE.Vector3();
     // Smoothed cloth-occlusion factor for the flare (1 = unobstructed).
     let flareOcclusion = 1;
 
     // ── Lighting ────────────────────────────────────────────────────────
     // Hemisphere sky-bounce plus the moving sun as a directional.
     const hemi = new THREE.HemisphereLight(0xb5d0e6, 0x8b7146, 0.55);
+    hemi.layers.enable(MATERIAL_LOUPE_LAYER);
     scene.add(hemi);
     const sun = new THREE.DirectionalLight(0xfff2d0, 1.4);
+    sun.layers.enable(MATERIAL_LOUPE_LAYER);
     scene.add(sun);
     const sunTarget = new THREE.Object3D();
     scene.add(sunTarget);
@@ -417,6 +593,38 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       kind: "mouse" as ClothPointerKind,
     };
     const directPointerIds = new Set<number>();
+    const directPointerPositions = new Map<number, { x: number; y: number }>();
+    const loupeState = {
+      visible: false,
+      x: 0,
+      y: 0,
+      boundedToSpecimen: false,
+    };
+    const loupeHitBounds = new THREE.Box2();
+    const loupePointerNdc = new THREE.Vector2();
+    const loupeRenderState: MaterialLoupeRenderState = {
+      visible: true,
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      diameter: MATERIAL_LOUPE_DIAMETER_PX,
+    };
+    let loupeHitBoundsValid = false;
+    let mouseLoupeEnabled = false;
+    if (roomEnvironment) {
+      container.dataset.materialLoupe = "hidden";
+      container.dataset.materialLoupeEnabled = "false";
+    }
+    const objectGesture = {
+      pointerId: null as number | null,
+      startX: 0,
+      startY: 0,
+      baseYaw: 0,
+      basePitch: 0,
+    };
+    let objectUserYaw = 0;
+    let objectUserPitch = 0;
     const mousePress = {
       pointerId: null as number | null,
       startX: 0,
@@ -424,6 +632,67 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       moved: false,
     };
     let suppressDirectGesture = false;
+    const hideLoupe = () => {
+      loupeState.visible = false;
+      loupeState.boundedToSpecimen = false;
+      container.dataset.materialLoupe = "hidden";
+    };
+    const disableMouseLoupe = () => {
+      mouseLoupeEnabled = false;
+      if (roomEnvironment) container.dataset.materialLoupeEnabled = "false";
+      hideLoupe();
+    };
+    const setLoupePosition = (clientX: number, clientY: number) => {
+      if (!roomEnvironment) return;
+      loupeState.x = THREE.MathUtils.clamp(
+        clientX - canvasBounds.left,
+        0,
+        canvasBounds.width,
+      );
+      loupeState.y = THREE.MathUtils.clamp(
+        clientY - canvasBounds.top,
+        0,
+        canvasBounds.height,
+      );
+      loupeState.visible = true;
+      loupeState.boundedToSpecimen = false;
+      syncLoupeRing(loupeState.x, loupeState.y);
+      container.dataset.materialLoupe = "visible";
+    };
+    const setFinePointerLoupePosition = (clientX: number, clientY: number) => {
+      if (!roomEnvironment) return;
+      loupePointerNdc.set(
+        ((clientX - canvasBounds.left) / canvasBounds.width) * 2 - 1,
+        1 - ((clientY - canvasBounds.top) / canvasBounds.height) * 2,
+      );
+      if (
+        !loupeHitBoundsValid ||
+        !loupeHitBounds.containsPoint(loupePointerNdc)
+      ) {
+        hideLoupe();
+        return;
+      }
+      setLoupePosition(clientX, clientY);
+      loupeState.boundedToSpecimen = true;
+    };
+    let touchLoupePointCount = 0;
+    let touchLoupeX = 0;
+    let touchLoupeY = 0;
+    const collectTouchLoupePoint = (point: { x: number; y: number }) => {
+      if (touchLoupePointCount >= 2) return;
+      touchLoupeX += point.x;
+      touchLoupeY += point.y;
+      touchLoupePointCount++;
+    };
+    const updateTouchLoupe = () => {
+      if (!roomEnvironment || directPointerPositions.size < 2) return;
+      touchLoupePointCount = 0;
+      touchLoupeX = 0;
+      touchLoupeY = 0;
+      directPointerPositions.forEach(collectTouchLoupePoint);
+      if (touchLoupePointCount < 2) return;
+      setLoupePosition(touchLoupeX / 2, touchLoupeY / 2);
+    };
     const clearDirectPointer = () => {
       pointer.active = false;
       pointer.pending = false;
@@ -436,21 +705,37 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       pointer.velocityY = 0;
     };
     const raycaster = new THREE.Raycaster();
-    const cursorPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const roomYawCos = Math.cos(ROOM_DOWEL_YAW);
+    const roomYawSin = Math.sin(ROOM_DOWEL_YAW);
+    const cursorPlane = new THREE.Plane(
+      new THREE.Vector3(
+        roomEnvironment ? roomYawSin : 0,
+        0,
+        roomEnvironment ? roomYawCos : 1,
+      ),
+      0,
+    );
     const cursorPoint = new THREE.Vector3();
     const ndc = new THREE.Vector2();
     const updatePointerPosition = (
       e: PointerEvent,
       accumulateTravel: boolean,
     ): boolean => {
-      const rect = renderer.domElement.getBoundingClientRect();
-      ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      ndc.x = ((e.clientX - canvasBounds.left) / canvasBounds.width) * 2 - 1;
+      ndc.y = -((e.clientY - canvasBounds.top) / canvasBounds.height) * 2 + 1;
       raycaster.setFromCamera(ndc, camera);
+      if (roomEnvironment) cursorPlane.constant = -roomRig.z;
       const hit = raycaster.ray.intersectPlane(cursorPlane, cursorPoint);
       if (hit) {
-        const nextX = cursorPoint.x;
-        const nextY = -cursorPoint.y; // world Y+ up → solver Y+ down
+        // Convert the hit back into the suspended specimen's local frame. The
+        // room rig is yawed as one object, so cursor force must use that same
+        // frame instead of the old world-Z plane coordinates.
+        const nextX = roomEnvironment
+          ? cursorPoint.x * roomYawCos - cursorPoint.z * roomYawSin
+          : cursorPoint.x;
+        const nextY = -(
+          cursorPoint.y - (roomEnvironment ? clothGroup.position.y : 0)
+        ); // world Y+ up → solver Y+ down
         if (pointer.active && accumulateTravel) {
           // Accumulate events between fixed ticks; the solver consumes the
           // total path once rather than multiplying work by pointer-event rate.
@@ -472,6 +757,40 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
         mousePress.moved ||=
           Math.hypot(e.clientX - mousePress.startX, e.clientY - mousePress.startY) > 6;
       }
+      const directPointerPosition = directPointerPositions.get(e.pointerId);
+      if (directPointerPosition) {
+        directPointerPosition.x = e.clientX;
+        directPointerPosition.y = e.clientY;
+      }
+      if (roomEnvironment && directPointerPositions.size > 1) {
+        updateTouchLoupe();
+        return;
+      }
+      if (roomEnvironment && objectGesture.pointerId === e.pointerId) {
+        // A click may jitter without also rotating the object underneath it.
+        if (kind === "mouse" && !mousePress.moved) return;
+        objectUserYaw = THREE.MathUtils.clamp(
+          objectGesture.baseYaw + (e.clientX - objectGesture.startX) * 0.004,
+          THREE.MathUtils.degToRad(-18),
+          THREE.MathUtils.degToRad(18),
+        );
+        objectUserPitch = THREE.MathUtils.clamp(
+          objectGesture.basePitch + (e.clientY - objectGesture.startY) * 0.003,
+          THREE.MathUtils.degToRad(-6),
+          THREE.MathUtils.degToRad(6),
+        );
+        if (kind !== "mouse") setLoupePosition(e.clientX, e.clientY);
+        return;
+      }
+      if (
+        roomEnvironment &&
+        ((kind === "mouse" && mouseLoupeEnabled) ||
+          (kind === "pen" && e.buttons === 0))
+      ) {
+        setFinePointerLoupePosition(e.clientX, e.clientY);
+        // Inspect without applying a second pointer force to the specimen.
+        if (kind === "mouse") return;
+      }
       if (
         kind !== "mouse" &&
         (suppressDirectGesture ||
@@ -486,23 +805,53 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       updatePointerPosition(e, true);
     };
     const onPointerDown = (e: PointerEvent) => {
+      refreshCanvasBounds();
       const kind = normalizeClothPointerKind(e.pointerType);
-      // Mouse remains a hover instrument so its primary drag can orbit the
-      // camera. Touch and pen are direct material contacts.
       if (kind === "mouse") {
+        if (
+          e.button !== 0 || pointer.pressed || directPointerIds.size > 0 ||
+          (objectGesture.pointerId !== null && objectGesture.pointerId !== e.pointerId)
+        ) return;
         mousePress.pointerId = e.pointerId;
         mousePress.startX = e.clientX;
         mousePress.startY = e.clientY;
         mousePress.moved = false;
+        if (roomEnvironment && mouseLoupeEnabled) return;
+      } else if (roomEnvironment) {
+        // Switching input devices must not leave mouse inspection latched.
+        disableMouseLoupe();
+      }
+      if (roomEnvironment && propsRef.current.mode === "object") {
+        // One pointer owns object rotation until it ends. A second contact must
+        // not steal capture and strand the original gesture mid-drag.
+        if (
+          objectGesture.pointerId !== null &&
+          objectGesture.pointerId !== e.pointerId
+        ) {
+          return;
+        }
+        objectGesture.pointerId = e.pointerId;
+        objectGesture.startX = e.clientX;
+        objectGesture.startY = e.clientY;
+        objectGesture.baseYaw = objectUserYaw;
+        objectGesture.basePitch = objectUserPitch;
+        renderer.domElement.setPointerCapture?.(e.pointerId);
+        if (kind !== "mouse") setLoupePosition(e.clientX, e.clientY);
+        return;
+      }
+      // Mouse remains a hover instrument so its primary drag can orbit the
+      // camera. Touch and pen are direct material contacts.
+      if (kind === "mouse") {
         return;
       }
       directPointerIds.add(e.pointerId);
+      directPointerPositions.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (directPointerIds.size > 1) {
-        // Two fingers belong exclusively to OrbitControls. Without this gate,
-        // the primary finger also fed the newly amplified cloth force while the
-        // camera orbited, leaving an accidental crease after navigation.
+        // Two fingers inspect the room specimen with the local loupe. In the
+        // reusable sky viewer they remain OrbitControls' orbit/zoom gesture.
         suppressDirectGesture = true;
         clearDirectPointer();
+        updateTouchLoupe();
         return;
       }
       if (suppressDirectGesture || !e.isPrimary) return;
@@ -521,6 +870,8 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     };
     const finishDirectPointer = (e: PointerEvent, cancelled: boolean) => {
       directPointerIds.delete(e.pointerId);
+      directPointerPositions.delete(e.pointerId);
+      if (roomEnvironment && directPointerPositions.size < 2) hideLoupe();
       if (suppressDirectGesture) {
         clearDirectPointer();
         if (directPointerIds.size === 0) suppressDirectGesture = false;
@@ -540,34 +891,81 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       pointer.velocityY = 0;
     };
     const onPointerUp = (e: PointerEvent) => {
+      if (objectGesture.pointerId === e.pointerId) {
+        objectGesture.pointerId = null;
+        if (e.pointerType !== "mouse") {
+          hideLoupe();
+          return;
+        }
+      }
       if (mousePress.pointerId === e.pointerId) {
-        if (!mousePress.moved && updatePointerPosition(e, false)) {
-          pointer.kind = "mouse";
-          pointer.pendingPluck = true;
+        const clicked = e.button === 0 && !mousePress.moved &&
+          Math.hypot(e.clientX - mousePress.startX, e.clientY - mousePress.startY) <= 6;
+        if (clicked) {
+          if (roomEnvironment) {
+            mouseLoupeEnabled = !mouseLoupeEnabled;
+            container.dataset.materialLoupeEnabled = String(mouseLoupeEnabled);
+            clearDirectPointer();
+            if (mouseLoupeEnabled) {
+              setFinePointerLoupePosition(e.clientX, e.clientY);
+            } else {
+              hideLoupe();
+              updatePointerPosition(e, false);
+            }
+          } else if (updatePointerPosition(e, false)) {
+            pointer.kind = "mouse";
+            pointer.pendingPluck = true;
+          }
         }
         mousePress.pointerId = null;
         return;
       }
+      // Secondary mouse releases are not touch endings and must not dismiss
+      // an already enabled lens.
+      if (e.pointerType === "mouse") return;
       finishDirectPointer(e, false);
     };
     const onPointerCancel = (e: PointerEvent) => {
+      if (e.pointerType === "mouse") {
+        mousePress.pointerId = null;
+        disableMouseLoupe();
+      }
+      if (objectGesture.pointerId === e.pointerId) {
+        objectGesture.pointerId = null;
+        hideLoupe();
+        return;
+      }
       if (mousePress.pointerId === e.pointerId) mousePress.pointerId = null;
       finishDirectPointer(e, true);
     };
     const onLostPointerCapture = (e: PointerEvent) => {
+      if (objectGesture.pointerId === e.pointerId) {
+        objectGesture.pointerId = null;
+        hideLoupe();
+      }
+      if (mousePress.pointerId === e.pointerId) mousePress.pointerId = null;
       if (e.pointerId === pointer.pointerId) finishDirectPointer(e, true);
     };
     const onWindowBlur = () => {
       mousePress.pointerId = null;
+      objectGesture.pointerId = null;
       directPointerIds.clear();
+      directPointerPositions.clear();
       suppressDirectGesture = false;
       clearDirectPointer();
+      disableMouseLoupe();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !roomEnvironment) return;
+      mousePress.pointerId = null;
+      disableMouseLoupe();
     };
     const onPointerLeave = () => {
       // Direct pointers receive pointerup/pointercancel through implicit touch
       // capture. A mouse leaving the canvas should stop compounding at once.
       if (pointer.pressed) return;
       mousePress.pointerId = null;
+      if (roomEnvironment) hideLoupe();
       pointer.active = false;
       pointer.pending = false;
       pointer.pendingPluck = false;
@@ -577,6 +975,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       pointer.velocityY = 0;
     };
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    renderer.domElement.addEventListener("pointerenter", refreshCanvasBounds);
     renderer.domElement.addEventListener("pointermove", onPointerMove);
     renderer.domElement.addEventListener("pointerup", onPointerUp);
     renderer.domElement.addEventListener("pointercancel", onPointerCancel);
@@ -586,6 +985,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     );
     renderer.domElement.addEventListener("pointerleave", onPointerLeave);
     window.addEventListener("blur", onWindowBlur);
+    window.addEventListener("keydown", onKeyDown);
     renderer.domElement.style.touchAction = "none";
 
     // ── Cloth rig (shared bits) ──────────────────────────────────────────
@@ -645,8 +1045,8 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     // A "unit" is a complete, independent cloth: its own solver, geometry,
     // wire-debug draws, and pins, all under one group. Normally one is live;
     // during a resolution/pin change two coexist briefly while the old slides
-    // off and the new slides in. `ropeAt` / `clothGroup` are referenced lazily
-    // (defined below) — the factory is only *called* after they exist.
+    // off and the new slides in. `supportAt` / `clothGroup` are referenced
+    // lazily (defined below) — the factory is only *called* after they exist.
     const WIRE_V_MAX = 8; // wire-view velocity→white clip (units/fixed tick)
     const FULL_SETTLE_STEPS = 110; // off-screen pre-drape for later unit swaps
     const WIND_RAMP = 90; // fixed ticks to fade breeze in on a fresh unit
@@ -667,6 +1067,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       solver: ClothSolver;
       cfg: ClothConfig;
       group: THREE.Group;
+      hitBounds: THREE.Box3;
       birth: number;
       fromX: number;
       toX: number;
@@ -730,6 +1131,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       geom.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uvs), 2));
       geom.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
       const clothMesh = new THREE.Mesh(geom, clothMat);
+      clothMesh.layers.enable(MATERIAL_LOUPE_LAYER);
 
       // Wire debug: edges over the constraint topology + points, sharing this
       // unit's live position buffer; velocity-colored.
@@ -755,12 +1157,19 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       wirePointGeom.setAttribute("position", posAttr);
       wirePointGeom.setAttribute("color", wireColorAttr);
       const wirePoints = new THREE.Points(wirePointGeom, wirePointMat);
+      wireEdges.layers.enable(MATERIAL_LOUPE_LAYER);
+      wirePoints.layers.enable(MATERIAL_LOUPE_LAYER);
       wireEdges.visible = false;
       wirePoints.visible = false;
 
       const pinIndices: number[] = [];
       for (let c = 0; c < cols; c++) if (solver.pinned[c]) pinIndices.push(c);
-      const pins = pinIndices.map(() => new THREE.Mesh(pinBodyGeom, pinBodyMat));
+      // The room's fabric wraps directly over a rigid dowel; clothespins would
+      // add a second, contradictory hanging story. Keep the authored pegs in
+      // the reusable sky viewer only.
+      const pins = roomEnvironment
+        ? []
+        : pinIndices.map(() => new THREE.Mesh(pinBodyGeom, pinBodyMat));
 
       const group = new THREE.Group();
       group.add(clothMesh, wireEdges, wirePoints, ...pins);
@@ -768,19 +1177,37 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
 
       const fabricH = (rows - 1) * spacing;
       const pinVec = new THREE.Vector3();
+      const hitBounds = new THREE.Box3();
 
       let strainActive = false;
       const syncGeometry = () => {
         solver.computeNormals(indices, normals);
+        let minX = Infinity;
+        let minY = Infinity;
+        let minZ = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let maxZ = -Infinity;
         for (let i = 0; i < solver.count; i++) {
           const i3 = i * 3;
-          posArr[i3] = solver.pos[i3];
-          posArr[i3 + 1] = -solver.pos[i3 + 1]; // flip so Y+ is up
-          posArr[i3 + 2] = solver.pos[i3 + 2];
+          const x = solver.pos[i3];
+          const y = -solver.pos[i3 + 1]; // flip so Y+ is up
+          const z = solver.pos[i3 + 2];
+          posArr[i3] = x;
+          posArr[i3 + 1] = y;
+          posArr[i3 + 2] = z;
           norArr[i3] = normals[i3];
           norArr[i3 + 1] = -normals[i3 + 1];
           norArr[i3 + 2] = normals[i3 + 2];
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          minZ = Math.min(minZ, z);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+          maxZ = Math.max(maxZ, z);
         }
+        hitBounds.min.set(minX, minY, minZ);
+        hitBounds.max.set(maxX, maxY, maxZ);
         posAttr.needsUpdate = true;
         norAttr.needsUpdate = true;
         // Per-vertex strain (Tier B) — only when the stretch effect/debug is
@@ -825,10 +1252,11 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
         wireColorAttr.needsUpdate = true;
       };
 
-      // Snap pinned particles to the rope at their *sliding* world-x. The rope
-      // lives in clothGroup-local coords; the unit group adds the slide
-      // offset, so sample at (localX + slideX) and store the local x back
-      // (rope is ~horizontal, so local x stays put and only y tracks the wire).
+      // Snap pinned particles to the current support at their *sliding*
+      // world-x. The support lives in clothGroup-local coords; the unit group
+      // adds the slide offset, so sample at (localX + slideX) and store local
+      // x back. In the room this is an analytic level line yawed through depth;
+      // in the sky it remains the live Verlet clothesline.
       const snapPins = () => {
         const inset = propsRef.current.edgeInset ?? 0.008;
         const frayAmp = (propsRef.current.edgeFray ?? 0.12) * 0.08;
@@ -836,7 +1264,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
         for (let c = 0; c < cols; c++) {
           if (!solver.pinned[c]) continue;
           const worldX = cfg.originX + c * spacing + group.position.x;
-          ropeAt(worldX, SNAP_VEC);
+          supportAt(worldX, SNAP_VEC);
           const ci = c * 3;
           solver.pos[ci] = SNAP_VEC.x - group.position.x;
           solver.pos[ci + 1] = -(SNAP_VEC.y + clothLift);
@@ -848,9 +1276,9 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       };
 
       const syncPins = () => {
-        for (let i = 0; i < pinIndices.length; i++) {
+        for (let i = 0; i < pins.length; i++) {
           const src = pinIndices[i] * 3;
-          ropeAt(solver.pos[src] + group.position.x, pinVec);
+          supportAt(solver.pos[src] + group.position.x, pinVec);
           pins[i].position.set(solver.pos[src], pinVec.y - 1.5, pinVec.z + 1.2);
         }
       };
@@ -921,6 +1349,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
         solver,
         cfg,
         group,
+        hitBounds,
         birth,
         fromX: startX,
         toX: startX,
@@ -1266,6 +1695,29 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     // (First syncTextures() runs post-init — texture configuration reads the
     // backend's anisotropy cap.)
     let lastReadyKey = -1;
+    // Readiness is URL state, not frame state. Cache the normalized comparison
+    // until a declared or loaded URL actually changes; this avoids rebuilding
+    // closures/arrays and allocating URL objects on every rendered frame after
+    // the material has settled.
+    const absoluteTextureUrl = (url: string) =>
+      url ? new URL(url, window.location.href).href : "";
+    const textureUrlsMatch = (loaded: string, declared: string) =>
+      loaded === declared ||
+      absoluteTextureUrl(loaded) === absoluteTextureUrl(declared);
+    let readinessCacheInitialized = false;
+    let cachedExpectedAlbedo: string | undefined;
+    let cachedLoadedAlbedo = "";
+    let cachedAlbedoUrl = "";
+    let cachedLoadedDensity = "";
+    let cachedDensityUrl = "";
+    let cachedLoadedNormal = "";
+    let cachedNormalUrl = "";
+    let cachedLoadedRoughness = "";
+    let cachedRoughnessUrl = "";
+    let cachedLoadedMetalness = "";
+    let cachedMetalnessUrl = "";
+    let cachedExpectedReady = false;
+    let cachedAllDeclaredMapsReady = false;
 
     // Anisotropy is a live perf lever — push the current value onto every
     // loaded cloth + object texture whenever it changes.
@@ -1287,16 +1739,17 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     };
     // (Porosity is now sampled per cloth unit — see makeClothUnit.)
 
-    // ── Verlet clothesline ──────────────────────────────────────────────
-    // Independent particle system pinned at exactly two points: a distant
-    // left anchor and a right anchor pulled in close to the fabric's
-    // right edge (asymmetric drape — the rope hangs like a real
-    // clothesline strung between two posts at different distances).
-    // Weak wind, high damping, near-inextensible constraints so the rope
-    // reads as taut twine that barely notices the breeze.
-    // Constant, decoupled from any unit's cfg so the line stays put across
-    // resolution swaps (SHEET_SIZE fixes the sheet height).
+    // ── Hanging support ─────────────────────────────────────────────────
+    // Sky keeps the authored Verlet clothesline. Room uses one damped,
+    // suspended-dowel state and two straight string segments instead: the
+    // support can settle/sway without string particles, a constraint loop,
+    // or rebuilt tube geometry in that environment.
     const topWorldY = SHEET_SIZE / 2; // = -cfg.originY, held constant
+    const ROOM_DOWEL_LENGTH = SHEET_SIZE * 1.08;
+    // Keep the room specimen centered around world Y=0 so the same camera also
+    // frames mesh/object mode. This is a pure room-space translation; the
+    // support-to-hem span and therefore the simulated drape are unchanged.
+    const ROOM_DOWEL_CENTER_Y = topWorldY + 20;
     const ropeN = 40;
     // Symmetric endpoints: rope stretches evenly across the viewport at
     // one height. The asymmetric drape lives in the fabric (only two
@@ -1327,11 +1780,13 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     ropePinned[ropeN - 1] = 1;
     const ropeBaseline = new Float32Array(ropePos);
     const resetRope = () => {
+      if (roomEnvironment) return;
       ropePos.set(ropeBaseline);
       ropePrev.set(ropeBaseline);
     };
 
     const stepRope = (t: number, breezeStrength: number) => {
+      if (roomEnvironment) return;
       const g = 0.08;
       const damp = 0.97;
       const gustEnv = Math.max(
@@ -1388,20 +1843,20 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       }
     };
 
-    // Rope mesh — narrow dark tube through the Verlet particles.
-    const ropePoints = Array.from({ length: ropeN }, () => new THREE.Vector3());
+    // Rope mesh — narrow dark tube through the Verlet particles. Room never
+    // allocates the curve or its forty Vector3 control points.
+    const ropePoints = roomEnvironment
+      ? []
+      : Array.from({ length: ropeN }, () => new THREE.Vector3());
     const syncRopePoints = () => {
       for (let i = 0; i < ropeN; i++) {
         ropePoints[i].set(ropePos[i * 3], ropePos[i * 3 + 1], ropePos[i * 3 + 2]);
       }
     };
-    syncRopePoints();
-    const ropeCurve = new THREE.CatmullRomCurve3(
-      ropePoints,
-      false,
-      "catmullrom",
-      0.5,
-    );
+    if (!roomEnvironment) syncRopePoints();
+    const ropeCurve = roomEnvironment
+      ? null
+      : new THREE.CatmullRomCurve3(ropePoints, false, "catmullrom", 0.5);
     const wireRadius = 0.9;
     // Radial segments around the tube's circumference. A thin, dark strand
     // seen mostly against the bright sky is the worst case for under-
@@ -1419,15 +1874,148 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     // 16-segment tessellation above stops the facets from glinting, this
     // stops the sub-pixel-wide silhouette itself from shimmering.
     const wireMat = createWireMaterial();
-    let wireTube = new THREE.TubeGeometry(
-      ropeCurve,
-      100,
-      wireRadius,
-      WIRE_RADIAL_SEGMENTS,
-      false,
-    );
-    const wireMesh = new THREE.Mesh(wireTube, wireMat);
+    let wireTube: THREE.BufferGeometry;
+    let wireMesh: THREE.Mesh;
+    let roomStringGeom: THREE.BufferGeometry | null = null;
+    let roomStringMat: THREE.LineBasicMaterial | null = null;
+    let roomStringMesh: THREE.LineSegments | null = null;
+    let roomStringPositionAttr: THREE.BufferAttribute | null = null;
+    const roomRig = {
+      x: 0,
+      z: 0,
+      vx: 0,
+      vz: 0,
+      rise: 0,
+    };
+    if (roomEnvironment) {
+      // One low-poly cylinder replaces the long, animated tube. CylinderGeometry
+      // is Y-aligned, so rotate it onto the authored support line.
+      wireTube = new THREE.CylinderGeometry(
+        4.2,
+        4.2,
+        ROOM_DOWEL_LENGTH,
+        12,
+        1,
+        false,
+      );
+      wireMat.color.set(0x60452f);
+      wireMat.roughness = 0.88;
+      wireMat.metalness = 0.03;
+      wireMesh = new THREE.Mesh(wireTube, wireMat);
+      wireMesh.position.set(0, ROOM_DOWEL_CENTER_Y, -4);
+      // CylinderGeometry is Y-aligned. This quarter-turn only lays the dowel
+      // level on local X; the complete suspended assembly is yawed later.
+      wireMesh.rotation.z = -Math.PI / 2;
+
+      const half = ROOM_DOWEL_LENGTH / 2;
+      roomStringGeom = new THREE.BufferGeometry();
+      roomStringPositionAttr = new THREE.BufferAttribute(
+        new Float32Array([
+          -half,
+          ROOM_DOWEL_CENTER_Y + 235,
+          -3,
+          -half,
+          ROOM_DOWEL_CENTER_Y,
+          -3,
+          half,
+          ROOM_DOWEL_CENTER_Y + 235,
+          -3,
+          half,
+          ROOM_DOWEL_CENTER_Y,
+          -3,
+        ]),
+        3,
+      );
+      roomStringPositionAttr.setUsage(THREE.DynamicDrawUsage);
+      roomStringGeom.setAttribute("position", roomStringPositionAttr);
+      roomStringMat = new THREE.LineBasicMaterial({
+        color: 0x4d443a,
+        transparent: true,
+        opacity: 0.62,
+        depthWrite: false,
+      });
+      roomStringMesh = new THREE.LineSegments(roomStringGeom, roomStringMat);
+      // Four vertices are cheaper to update than recomputing line bounds, and
+      // the authored sway never takes them anywhere near the stage edge.
+      roomStringMesh.frustumCulled = false;
+    } else {
+      // ropeCurve is guaranteed in sky mode.
+      wireTube = new THREE.TubeGeometry(
+        ropeCurve!,
+        100,
+        wireRadius,
+        WIRE_RADIAL_SEGMENTS,
+        false,
+      );
+      wireMesh = new THREE.Mesh(wireTube, wireMat);
+    }
     scene.add(wireMesh);
+    if (roomStringMesh) scene.add(roomStringMesh);
+
+    const syncRoomRigView = () => {
+      if (!roomEnvironment || !roomStringPositionAttr) return;
+      const half = ROOM_DOWEL_LENGTH / 2;
+      roomRig.rise =
+        (roomRig.x * roomRig.x + roomRig.z * roomRig.z) / (2 * 230);
+      const centerY = ROOM_DOWEL_CENTER_Y + roomRig.rise;
+      const leftX = roomRig.x - half;
+      const rightX = roomRig.x + half;
+
+      wireMesh.position.set(roomRig.x, centerY, roomRig.z - 4);
+
+      // Anchor vertices (0 and 2) stay fixed. Only the two dowel endpoints
+      // move, so this is six scalar writes and one existing-buffer upload.
+      const positions = roomStringPositionAttr.array as Float32Array;
+      positions[3] = leftX;
+      positions[4] = centerY;
+      positions[5] = roomRig.z - 3;
+      positions[9] = rightX;
+      positions[10] = centerY;
+      positions[11] = roomRig.z - 3;
+      roomStringPositionAttr.needsUpdate = true;
+    };
+    const resetRoomRig = () => {
+      roomRig.x = 0;
+      roomRig.z = 0;
+      roomRig.vx = 0;
+      roomRig.vz = 0;
+      syncRoomRigView();
+    };
+    const stepRoomRig = (
+      time: number,
+      breezeStrength: number,
+      pullEnvelope: number,
+      pluckX: number | null,
+    ) => {
+      if (!roomEnvironment) return;
+      // Reduced-order suspended-body model: two damped swing modes instead
+      // of a general rigid-body or string solver. The same breeze/probe clock
+      // as the cloth gives the motion a shared cause without particle feedback.
+      const strength = THREE.MathUtils.clamp(breezeStrength, 0, 0.35);
+      const targetX =
+        (Math.sin(time * 0.018) * 0.66 + Math.sin(time * 0.011 + 1.8) * 0.34) *
+          strength *
+          24 +
+        pullEnvelope * 2.4;
+      const targetZ =
+        (Math.cos(time * 0.016 + 0.7) * 0.72 +
+          Math.sin(time * 0.009 + 2.4) * 0.28) *
+          strength *
+          34 -
+        pullEnvelope * 3.8;
+      if (pluckX !== null) {
+        roomRig.vz -= 0.7;
+      }
+
+      roomRig.vx =
+        (roomRig.vx + (targetX - roomRig.x) * 0.032) * 0.86;
+      roomRig.vz =
+        (roomRig.vz + (targetZ - roomRig.z) * 0.026) * 0.88;
+      roomRig.x += roomRig.vx;
+      roomRig.z += roomRig.vz;
+      syncRoomRigView();
+    };
+    syncRoomRigView();
     // Tube regeneration is the priciest per-frame allocation in the loop:
     // Frenet frames + ~600 fresh vertices + GPU upload + the old geometry's
     // GC. But the rope is taut and heavily damped — most frames it moves
@@ -1437,6 +2025,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     const ropeSnapshot = new Float32Array(ropePos);
     const ROPE_REBUILD_EPS = 0.15;
     const rebuildWireTube = () => {
+      if (roomEnvironment || !ropeCurve) return;
       let moved = false;
       for (let i = 0; i < ropeN * 3; i++) {
         if (Math.abs(ropePos[i] - ropeSnapshot[i]) > ROPE_REBUILD_EPS) {
@@ -1459,10 +2048,21 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       wireMesh.geometry = next;
     };
 
-    // Interpolate the rope's world position at a given cloth-particle X.
-    // Used both for pinning cloth's top row and for placing clothespins.
+    // Resolve the support's position at a cloth-particle width sample. The
+    // room support is level in its local frame and deliberately extends beyond
+    // the visible dowel so
+    // an off-screen resolution-swap unit stays fully pinned while sliding in.
+    // Sky interpolates the live rope as before.
     const ropeSpan = ropeEndX - ropeStartX;
-    const ropeAt = (worldX: number, out: THREE.Vector3) => {
+    const supportAt = (worldX: number, out: THREE.Vector3) => {
+      if (roomEnvironment) {
+        const localX = worldX;
+        return out.set(
+          roomRig.x + localX,
+          ROOM_DOWEL_CENTER_Y + roomRig.rise,
+          roomRig.z,
+        );
+      }
       const t = (worldX - ropeStartX) / ropeSpan;
       const rf = Math.max(0, Math.min(ropeN - 1, t * (ropeN - 1)));
       const i0 = Math.floor(rf);
@@ -1479,8 +2079,8 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     };
 
     // (Clothespins, geometry sync, and pin placement now live inside each
-    // cloth unit — see makeClothUnit above. `ropeAt` is defined above and is
-    // what those per-unit closures snap to.)
+    // cloth unit — see makeClothUnit above. `supportAt` is what those per-unit
+    // closures snap to.)
 
     // ── Sun animation ───────────────────────────────────────────────────
     // Slow full orbit (~50s at 60fps) around the Y axis; the vertical
@@ -1511,8 +2111,52 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     const skyTopScratch = new THREE.Color();
     const skyBottomScratch = new THREE.Color();
     const fogScratch = new THREE.Color();
-    const sceneFog = scene.fog as THREE.FogExp2;
+    const sceneFog = scene.fog instanceof THREE.FogExp2 ? scene.fog : null;
+    const applyRoomLight = () => {
+      const resolved = propsRef.current.roomLightRef?.current;
+      if (!resolved) return;
+      const source = resolved.sourcePosition;
+      const direction = resolved.lightDirection;
+      const target = resolved.specimenTarget;
+      sun.position.set(source.x, source.y, source.z);
+      sunTarget.position.set(target.x, target.y, target.z);
+      sun.color.setRGB(
+        resolved.direct.tint.r,
+        resolved.direct.tint.g,
+        resolved.direct.tint.b,
+      );
+      sun.intensity = resolved.direct.intensity;
+      clothU.u_lightDir.value.set(direction.x, direction.y, direction.z);
+      clothU.u_lightColor.value
+        .copy(sun.color)
+        .multiplyScalar(resolved.direct.intensity);
+      hemi.color.setRGB(
+        resolved.ambient.skyTint.r,
+        resolved.ambient.skyTint.g,
+        resolved.ambient.skyTint.b,
+      );
+      hemi.groundColor.setRGB(
+        resolved.ambient.groundTint.r,
+        resolved.ambient.groundTint.g,
+        resolved.ambient.groundTint.b,
+      );
+      hemi.intensity = resolved.ambient.intensity;
+      if (roomWindow && roomWindowDayColor) {
+        roomWindow.frame.material.color
+          .copy(roomWindowDayColor)
+          .multiplyScalar(0.18 + 0.82 * resolved.atmosphere.daylight);
+      }
+      clothU.u_ambientColor.value
+        .copy(hemi.color)
+        .multiplyScalar(resolved.ambient.intensity);
+      clothU.u_fogDensity.value = 0;
+    };
     const updateSun = (dtSeconds: number) => {
+      if (roomEnvironment) {
+        applyRoomLight();
+        return;
+      }
+      if (!skyU) return;
       // Preserve the authored 60 Hz orbit speed while keeping it wall-clock
       // correct on throttled, high-refresh, and temporarily slow displays.
       sunPhase += 0.00025 * (2 * Math.PI) * dtSeconds * 60;
@@ -1550,25 +2194,29 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       // as lit by the current time of day.
       fogScratch.copy(skyBottomScratch).lerp(skyTopScratch, 0.35);
       fogColor.copy(fogScratch);
-      sceneFog.color.copy(fogScratch);
+      sceneFog?.color.copy(fogScratch);
       clothU.u_fogColor.value.copy(fogScratch);
       skyU.u_fogColor.value.copy(fogScratch);
     };
 
     // ── Cloth ↔ object transition ───────────────────────────────────────
-    // Everything cloth-y (rope + the live cloth unit(s)) goes under one group
+    // Everything cloth-y (support + the live cloth unit(s)) goes under one group
     // so the whisk-away is a single transform + fade. Cloth units are added to
     // this group as they're built.
     const clothGroup = new THREE.Group();
+    // Angle the complete physical story through depth: dowel, cords, pins, and
+    // cloth all share one Y-axis transform while remaining level in local Y.
+    if (roomEnvironment) clothGroup.rotation.y = ROOM_DOWEL_YAW;
     clothGroup.add(wireMesh);
+    if (roomStringMesh) clothGroup.add(roomStringMesh);
     scene.add(clothGroup);
-    // Rope + pins are opaque standard materials; let them fade with the cloth.
+    // Support + pins are opaque standard materials; let them fade with cloth.
     wireMat.transparent = true;
     pinBodyMat.transparent = true;
 
-    // The initial cloth unit. `ropeAt` and `clothGroup` now exist, so the
-    // factory can settle (which snaps to the rope). Pre-settled so it appears
-    // already draped, not slamming into the line.
+    // The initial cloth unit. `supportAt` and `clothGroup` now exist, so the
+    // factory can settle onto the rig. Pre-settled so it appears already
+    // draped, not slamming into the support.
     {
       const p0 = propsRef.current;
       const initial = makeClothUnit(
@@ -1609,6 +2257,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     const objectGroup = new THREE.Group();
     objectGroup.visible = false;
     scene.add(objectGroup);
+    const objectHitBounds = new THREE.Box3();
     const objectMat = new THREE.MeshPhysicalMaterial({
       color: 0xbfc4c8,
       roughness: 0.9,
@@ -1653,8 +2302,17 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
           const center = new THREE.Vector3();
           box.getCenter(center);
           root.position.sub(center);
+          // Capture one objectGroup-local bound after fitting and centering.
+          // Pointer hover projects its eight corners instead of raycasting the
+          // full GLTF on every event.
+          box.setFromObject(root);
+          objectHitBounds.copy(box);
           root.traverse((o) => {
-            if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).material = objectMat;
+            if ((o as THREE.Mesh).isMesh) {
+              const mesh = o as THREE.Mesh;
+              mesh.material = objectMat;
+              mesh.layers.enable(MATERIAL_LOUPE_LAYER);
+            }
           });
           objectGroup.add(root);
           objectReady = true;
@@ -1751,6 +2409,50 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     let blend = props.mode === "object" ? 1 : 0;
     let easedPrev = easeMotion(blend);
     let objectSpin = 0;
+    let lastMode = props.mode ?? "cloth";
+    const projectedCorner = new THREE.Vector3();
+    const updateLoupeHitBounds = (
+      bounds: THREE.Box3 | null,
+      matrixWorld: THREE.Matrix4 | null,
+    ) => {
+      loupeHitBoundsValid = false;
+      if (!roomEnvironment || !bounds || bounds.isEmpty() || !matrixWorld) return;
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (let xi = 0; xi < 2; xi++) {
+        for (let yi = 0; yi < 2; yi++) {
+          for (let zi = 0; zi < 2; zi++) {
+            projectedCorner
+              .set(
+                xi === 0 ? bounds.min.x : bounds.max.x,
+                yi === 0 ? bounds.min.y : bounds.max.y,
+                zi === 0 ? bounds.min.z : bounds.max.z,
+              )
+              .applyMatrix4(matrixWorld)
+              .project(camera);
+            if (
+              !Number.isFinite(projectedCorner.x) ||
+              !Number.isFinite(projectedCorner.y)
+            ) {
+              continue;
+            }
+            minX = Math.min(minX, projectedCorner.x);
+            minY = Math.min(minY, projectedCorner.y);
+            maxX = Math.max(maxX, projectedCorner.x);
+            maxY = Math.max(maxY, projectedCorner.y);
+          }
+        }
+      }
+      if (!Number.isFinite(minX)) return;
+      // A restrained screen-space pad keeps the lens from flickering at a
+      // moving hem without turning the whole canvas into an inspection target.
+      const pad = 0.02;
+      loupeHitBounds.min.set(minX - pad, minY - pad);
+      loupeHitBounds.max.set(maxX + pad, maxY + pad);
+      loupeHitBoundsValid = true;
+    };
 
     // ── Loop ────────────────────────────────────────────────────────────
     // Physics targets normalized 60 Hz ticks but pays at most one per rendered
@@ -1772,7 +2474,8 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       activeProbe = null;
       simulationTick = 0;
       simClock.reset();
-      resetRope();
+      if (roomEnvironment) resetRoomRig();
+      else resetRope();
       clearDirectPointer();
       directPointerIds.clear();
       suppressDirectGesture = false;
@@ -1831,6 +2534,20 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       renderBudgetMs = Math.max(0, renderBudgetMs - RENDER_INTERVAL_MS);
 
       const p = propsRef.current;
+      const nextMode = p.mode ?? "cloth";
+      if (nextMode !== lastMode) {
+        lastMode = nextMode;
+        objectGesture.pointerId = null;
+        directPointerIds.clear();
+        directPointerPositions.clear();
+        suppressDirectGesture = false;
+        clearDirectPointer();
+        hideLoupe();
+        if (nextMode === "cloth") {
+          objectUserYaw = 0;
+          objectUserPitch = 0;
+        }
+      }
       // Wall-clock delta, clamped so a background-tab stall doesn't teleport
       // the transition or spike the FPS meter.
       const now = animationNow;
@@ -1846,7 +2563,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
 
       // Advance the cloth↔object blend toward the target mode, ease it, and
       // derive the two visibility gates.
-      const target = p.mode === "object" ? 1 : 0;
+      const target = nextMode === "object" ? 1 : 0;
       const blendStep = dtMs / TRANSITION_MS;
       if (blend < target) blend = Math.min(target, blend + blendStep);
       else if (blend > target) blend = Math.max(target, blend - blendStep);
@@ -1858,6 +2575,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       clothGroup.visible = clothVisible;
       clothU.u_fade.value = 1 - eased;
       wireMat.opacity = 1 - eased;
+      if (roomStringMat) roomStringMat.opacity = (1 - eased) * 0.62;
       pinBodyMat.opacity = 1 - eased;
       wireEdgeMat.opacity = (1 - eased) * 0.65;
       wirePointMat.opacity = 1 - eased;
@@ -1930,21 +2648,44 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
         const currentUnit = units[units.length - 1];
         const simSteps = simClock.advance(dtMs / 1000, () => {
           simulationTick++;
-          // Rope physics runs first — its positions drive both cloth pinning
-          // and the visible wire geometry in this fixed simulation tick.
-          const ropeStrength = activeProbe
-            ? activeProbe.kind === "gust"
-              ? GUST_PROBE_STRENGTH *
-                Math.sin(
+          if (roomEnvironment) {
+            const probeEnvelope = activeProbe
+              ? Math.sin(
                   Math.PI *
-                    ((activeProbe.tick + 1) / GUST_PROBE_TICKS),
+                    ((activeProbe.tick + 1) /
+                      (activeProbe.kind === "gust"
+                        ? GUST_PROBE_TICKS
+                        : PULL_PROBE_TICKS)),
                 )
-              : 0
-            : p.breeze ?? 0.06;
-          stepRope(
-            activeProbe ? 40 + activeProbe.tick : simulationTick,
-            ropeStrength,
-          );
+              : 0;
+            const rigBreeze = activeProbe
+              ? activeProbe.kind === "gust"
+                ? GUST_PROBE_STRENGTH * probeEnvelope
+                : 0
+              : p.breeze ?? 0.06;
+            stepRoomRig(
+              activeProbe ? 40 + activeProbe.tick : simulationTick,
+              rigBreeze,
+              activeProbe?.kind === "pull" ? probeEnvelope : 0,
+              pointer.pendingPluck ? pointer.x : null,
+            );
+          } else {
+            // Sky retains all forty clothesline integrations and 390
+            // constraint solves; the room never enters this path.
+            const ropeStrength = activeProbe
+              ? activeProbe.kind === "gust"
+                ? GUST_PROBE_STRENGTH *
+                  Math.sin(
+                    Math.PI *
+                      ((activeProbe.tick + 1) / GUST_PROBE_TICKS),
+                  )
+                : 0
+              : p.breeze ?? 0.06;
+            stepRope(
+              activeProbe ? 40 + activeProbe.tick : simulationTick,
+              ropeStrength,
+            );
+          }
           // Only the CURRENT unit simulates. During a slide the departing
           // sheet(s) ride off as frozen drapes — nobody inspects their physics
           // at slide speed, and this keeps a res-switch from double-billing the
@@ -1960,39 +2701,68 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
           }
         });
         if (simSteps > 0) currentUnit.syncView();
-        // rebuildWireTube syncs curve points itself, and only when the rope
-        // has actually drifted since the last built tube.
-        rebuildWireTube();
+        // Room updates transforms and six string-position scalars in place.
+        // Sky rebuilds only when its rope has moved visibly.
+        if (!roomEnvironment) rebuildWireTube();
         // Cloth material textures are shared across units — sync once.
         syncTextures();
         const readyKey = propsRef.current.materialTransitionKey ?? 0;
         const expectedAlbedo = propsRef.current.materialExpectedAlbedoURL;
         const loadedAlbedo = texSlots.albedo.currentUrl;
-        // Normalize BOTH sides: callers hand over swatch `currentSrc` values
-        // (absolute) as well as cache-relative map URLs (/api/cache/…), and
-        // the loader stores whatever string it fetched with.
-        const toAbs = (u: string) =>
-          u ? new URL(u, window.location.href).href : "";
-        const expectedReady = expectedAlbedo
-          ? toAbs(loadedAlbedo) === toAbs(expectedAlbedo)
-          : loadedAlbedo === fabricRef.current.albedoURL;
-        const allDeclaredMapsReady = [
-          [texSlots.albedo, fabricRef.current.albedoURL],
-          [texSlots.density, fabricRef.current.textureURL],
-          [texSlots.normal, propsRef.current.normalMapURL ?? ""],
-          [texSlots.roughness, propsRef.current.roughnessMapURL ?? ""],
-          [texSlots.metalness, propsRef.current.metalnessMapURL ?? ""],
-        ].every(([slot, url]) =>
-          typeof url === "string" && url
-            ? toAbs((slot as TexSlot).currentUrl) === toAbs(url)
-            : true,
-        );
+        const albedoUrl = fabricRef.current.albedoURL;
+        const loadedDensity = texSlots.density.currentUrl;
+        const densityUrl = fabricRef.current.textureURL;
+        const loadedNormal = texSlots.normal.currentUrl;
+        const normalUrl = propsRef.current.normalMapURL ?? "";
+        const loadedRoughness = texSlots.roughness.currentUrl;
+        const roughnessUrl = propsRef.current.roughnessMapURL ?? "";
+        const loadedMetalness = texSlots.metalness.currentUrl;
+        const metalnessUrl = propsRef.current.metalnessMapURL ?? "";
+        if (
+          !readinessCacheInitialized ||
+          expectedAlbedo !== cachedExpectedAlbedo ||
+          loadedAlbedo !== cachedLoadedAlbedo ||
+          albedoUrl !== cachedAlbedoUrl ||
+          loadedDensity !== cachedLoadedDensity ||
+          densityUrl !== cachedDensityUrl ||
+          loadedNormal !== cachedLoadedNormal ||
+          normalUrl !== cachedNormalUrl ||
+          loadedRoughness !== cachedLoadedRoughness ||
+          roughnessUrl !== cachedRoughnessUrl ||
+          loadedMetalness !== cachedLoadedMetalness ||
+          metalnessUrl !== cachedMetalnessUrl
+        ) {
+          readinessCacheInitialized = true;
+          cachedExpectedAlbedo = expectedAlbedo;
+          cachedLoadedAlbedo = loadedAlbedo;
+          cachedAlbedoUrl = albedoUrl;
+          cachedLoadedDensity = loadedDensity;
+          cachedDensityUrl = densityUrl;
+          cachedLoadedNormal = loadedNormal;
+          cachedNormalUrl = normalUrl;
+          cachedLoadedRoughness = loadedRoughness;
+          cachedRoughnessUrl = roughnessUrl;
+          cachedLoadedMetalness = loadedMetalness;
+          cachedMetalnessUrl = metalnessUrl;
+          // Normalize both sides only when they change: callers hand over
+          // absolute currentSrc values as well as cache-relative map URLs.
+          cachedExpectedReady = expectedAlbedo
+            ? textureUrlsMatch(loadedAlbedo, expectedAlbedo)
+            : loadedAlbedo === albedoUrl;
+          cachedAllDeclaredMapsReady =
+            (!albedoUrl || textureUrlsMatch(loadedAlbedo, albedoUrl)) &&
+            (!densityUrl || textureUrlsMatch(loadedDensity, densityUrl)) &&
+            (!normalUrl || textureUrlsMatch(loadedNormal, normalUrl)) &&
+            (!roughnessUrl ||
+              textureUrlsMatch(loadedRoughness, roughnessUrl)) &&
+            (!metalnessUrl || textureUrlsMatch(loadedMetalness, metalnessUrl));
+        }
         if (
           !launchReducedMotion &&
           !launchComplete &&
           launchStartedAt === null &&
           simulationTick >= CLOTH_LAUNCH_HIDDEN_SETTLE_TICKS &&
-          (allDeclaredMapsReady ||
+          (cachedAllDeclaredMapsReady ||
             now - launchWaitStartedAt >= CLOTH_LAUNCH_MAP_WAIT_MS)
         ) {
           launchStartedAt = now;
@@ -2012,8 +2782,8 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
         }
         if (
           readyKey !== lastReadyKey &&
-          expectedReady &&
-          allDeclaredMapsReady
+          cachedExpectedReady &&
+          cachedAllDeclaredMapsReady
         ) {
           lastReadyKey = readyKey;
           propsRef.current.onMaterialReady?.(readyKey);
@@ -2031,10 +2801,11 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       objectGroup.visible = objectVisible && objectReady;
       if (objectVisible) {
         objectSpin += (eased - easedPrev) * OBJECT_SPIN;
-        objectGroup.rotation.y = objectSpin;
+        objectGroup.rotation.x = objectUserPitch;
+        objectGroup.rotation.y = objectSpin + objectUserYaw;
         objectGroup.position.y = (1 - eased) * -620;
         objectGroup.scale.setScalar(0.8 + 0.2 * eased);
-        objectMat.opacity = eased;
+        objectMat.opacity = eased * (p.materialRevealRef?.current ?? 1);
         // Three's sheen BRDF is stronger than the cloth's ×0.5 grazing rim,
         // so scale it down to keep the two renderers' rim intensity matched.
         objectMat.sheen = fabricRef.current.sheen * 0.6;
@@ -2088,8 +2859,10 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       // Skybox mode is just a shader uniform on the sky mesh — lighting is
       // driven by the DirectionalLight/HemisphereLight/cloth uniforms and
       // stays exactly the same across modes.
-      skyU.u_skyMode.value = p.skyMode ?? 0;
-      skyU.u_halo.value = p.iridescence ?? 0;
+      if (skyU) {
+        skyU.u_skyMode.value = p.skyMode ?? 0;
+        skyU.u_halo.value = p.iridescence ?? 0;
+      }
 
       // setPixelRatio unconditionally re-runs setSize, which reassigns
       // canvas.width — per the HTML spec that clears/reallocates the drawing
@@ -2102,12 +2875,48 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       // Lens flare: project the sun, fade near the frame edges, and skip
       // the overlay entirely when the sun is off-frame, behind the camera,
       // or the backdrop is the flat black stage (no visible sun to flare).
-      {
+      if (flareU && flareQuad) {
         flareCamDir.set(0, 0, -1).applyQuaternion(camera.quaternion);
         flareDirVec.copy(sun.position).sub(camera.position);
         const facing = flareDirVec.dot(flareCamDir) > 0;
         let amt = 0;
-        if (facing && (p.skyMode ?? 0) !== 1) {
+        const roomSnapshot = p.roomLightRef?.current;
+        if (roomEnvironment && roomSnapshot && flareMat?.blending === THREE.NormalBlending) {
+          // The room window is a measured DOM aperture, not a sky sphere.
+          // Derive the optical source from that same hotspot, rather than
+          // projecting a world sun that was authored for the old camera.
+          flarePointerNdc.set(
+            ((roomWindowScreenRect.left + roomWindowScreenRect.width * roomSnapshot.window.hotspotX) / canvasBounds.width) * 2 - 1,
+            1 - ((roomWindowScreenRect.top + roomWindowScreenRect.height * roomSnapshot.window.hotspotY) / canvasBounds.height) * 2,
+          );
+          const edge = (v: number) => Math.max(0, Math.min(1, (1.25 - Math.abs(v)) / 0.35));
+          amt = edge(flarePointerNdc.x) * edge(flarePointerNdc.y) * roomSnapshot.window.glow;
+          let coverageTarget = 1;
+          if (amt > 0.003 && clothVisible && units.length > 0) {
+            const unit = units[units.length - 1];
+            unit.group.updateWorldMatrix(true, false);
+            flareLocalInverse.copy(unit.group.matrixWorld).invert();
+            flareRaycaster.setFromCamera(flarePointerNdc, camera);
+            flareLocalRay.copy(flareRaycaster.ray).applyMatrix4(flareLocalInverse);
+            if (flareLocalRay.intersectPlane(flareLocalPlane, flareLocalHit)) {
+              // This uses the existing solver points, including the room's
+              // Y rotation. No mesh raycast, shadow map, or second scene pass.
+              let nearest = Infinity;
+              const pos = unit.solver.pos;
+              for (let i = 0; i < unit.solver.count; i++) {
+                const dx = pos[i * 3] - flareLocalHit.x;
+                const dy = pos[i * 3 + 1] + flareLocalHit.y;
+                nearest = Math.min(nearest, dx * dx + dy * dy);
+              }
+              const coverage = THREE.MathUtils.clamp((unit.cfg.spacing * 2.5 - Math.sqrt(nearest)) / unit.cfg.spacing, 0, 1);
+              coverageTarget = 1 - coverage * (1 - (0.12 + 0.68 * (p.openness ?? 0.55)));
+            }
+          }
+          flareOcclusion += (coverageTarget - flareOcclusion) * 0.12;
+          amt *= flareOcclusion;
+          flareU.u_sun.value.copy(flarePointerNdc);
+          flareU.u_aspect.value = camera.aspect;
+        } else if (!roomEnvironment && facing && (p.skyMode ?? 0) !== 1) {
           flareSunVec.copy(sun.position).project(camera);
           const edge = (v: number) =>
             Math.max(0, Math.min(1, (1.25 - Math.abs(v)) / 0.35));
@@ -2172,6 +2981,48 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       // after the pointer is released.
       controls?.update();
       renderer.render(scene, camera);
+      if (roomEnvironment) {
+        const specimenTransitioning = blend > 0.001 && blend < 0.999;
+        if (specimenTransitioning) {
+          loupeHitBoundsValid = false;
+          hideLoupe();
+        } else if (nextMode === "object" && objectReady) {
+          updateLoupeHitBounds(objectHitBounds, objectGroup.matrixWorld);
+        } else if (nextMode === "cloth") {
+          const activeUnit = units[units.length - 1];
+          updateLoupeHitBounds(
+            activeUnit?.hitBounds ?? null,
+            activeUnit?.group.matrixWorld ?? null,
+          );
+        } else {
+          loupeHitBoundsValid = false;
+        }
+        if (loupeState.visible && loupeState.boundedToSpecimen) {
+          loupePointerNdc.set(
+            (loupeState.x / canvasBounds.width) * 2 - 1,
+            1 - (loupeState.y / canvasBounds.height) * 2,
+          );
+          if (
+            !loupeHitBoundsValid ||
+            !loupeHitBounds.containsPoint(loupePointerNdc)
+          ) {
+            hideLoupe();
+          }
+        }
+      }
+      if (roomEnvironment && loupeState.visible) {
+        materialLoupe ??= createMaterialLoupeNodes();
+        loupeRenderState.visible = loupeState.visible;
+        loupeRenderState.x = loupeState.x;
+        loupeRenderState.y = loupeState.y;
+        loupeRenderState.width = canvasBounds.width;
+        loupeRenderState.height = canvasBounds.height;
+        loupeRenderState.diameter = Math.min(
+          MATERIAL_LOUPE_DIAMETER_PX,
+          Math.max(168, canvasBounds.width * 0.32),
+        );
+        materialLoupe.render(renderer, scene, camera, loupeRenderState);
+      }
 
       // Telemetry: average over ~30 frames (2 Hz) and hand back FPS, sim-ms,
       // and draw stats. renderer.info is populated by the render() above.
@@ -2235,6 +3086,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
         // Three owns the rAF lifecycle so renderer.info and WebGPU timestamp
         // frame IDs advance in the same loop as the render they describe.
         void renderer.setAnimationLoop(tick);
+        animationLoopStarted = true;
       })
       .catch((err) => {
         console.error("ClothScene: renderer init failed", err);
@@ -2243,13 +3095,18 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     return () => {
       disposed = true;
       probeRunnerRef.current = null;
-      if (renderer.getAnimationLoop() !== null) {
+      if (animationLoopStarted) {
         void renderer.setAnimationLoop(null);
+        animationLoopStarted = false;
       }
       cancelAnimationFrame(resizeRaf);
       ro.disconnect();
       controls?.dispose();
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+      renderer.domElement.removeEventListener(
+        "pointerenter",
+        refreshCanvasBounds,
+      );
       renderer.domElement.removeEventListener("pointermove", onPointerMove);
       renderer.domElement.removeEventListener("pointerup", onPointerUp);
       renderer.domElement.removeEventListener("pointercancel", onPointerCancel);
@@ -2259,6 +3116,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       );
       renderer.domElement.removeEventListener("pointerleave", onPointerLeave);
       window.removeEventListener("blur", onWindowBlur);
+      window.removeEventListener("keydown", onKeyDown);
       if (renderer.domElement.parentNode === container) {
         container.removeChild(renderer.domElement);
       }
@@ -2266,23 +3124,42 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       clothMat.dispose();
       wireEdgeMat.dispose();
       wirePointMat.dispose();
-      skyGeom.dispose();
-      skyMat.dispose();
-      flareGeom.dispose();
-      flareMat.dispose();
+      skyGeom?.dispose();
+      skyMat?.dispose();
+      flareGeom?.dispose();
+      flareMat?.dispose();
       wireTube.dispose();
       wireMat.dispose();
+      roomStringGeom?.dispose();
+      roomStringMat?.dispose();
       pinBodyGeom.dispose();
       pinBodyMat.dispose();
       for (const slot of Object.values(texSlots)) slot.current?.dispose();
       for (const b of Object.values(clothBlanks)) b.dispose();
       launchShimmer.dispose();
+      roomWindow?.dispose();
       objectGroup.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh) m.geometry?.dispose();
       });
       objectMat.dispose();
       for (const t of objTextures) t.dispose();
+      materialLoupe?.dispose();
+      container.style.removeProperty("--material-loupe-x");
+      container.style.removeProperty("--material-loupe-y");
+      container.style.removeProperty("--material-loupe-diameter");
+      delete container.dataset.materialLoupe;
+      delete container.dataset.materialLoupeEnabled;
+      delete container.dataset.roomWindowModel;
+      delete container.dataset.roomWindowInstances;
+      delete container.dataset.roomWindowTriangles;
+      delete container.dataset.roomWindowDrawCalls;
+      delete container.dataset.roomWindowPanels;
+      delete container.dataset.roomWindowMembers;
+      delete container.dataset.roomWindowForm;
+      roomWindowAperture?.style.removeProperty(
+        "--room-window-right-bottom",
+      );
       // If init() is still pending, its .then() disposes the renderer once
       // the backend exists (see above).
       if (renderer.initialized) renderer.dispose();
@@ -2296,13 +3173,16 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
   return (
     <div
       ref={mountRef}
+      className="cloth-scene"
       style={{
         display: "block",
         width: width ? `${width}px` : "100%",
         height: height ? `${height}px` : "100%",
         touchAction: "none",
       }}
-    />
+    >
+      <span className="cloth-scene__loupe-ring" aria-hidden="true" />
+    </div>
   );
 });
 

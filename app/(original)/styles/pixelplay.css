@@ -1,0 +1,30 @@
+/* ─── pixelplay.css ───────────────────────────────────────────────────
+   PixelPlay plumbing: the companion-pixel canvas that lives on the gray
+   buttons and segmented pickers, plus the host rules that seat it. */
+
+/* The canvas fills the host, clipped to its radius. Default layer paints at
+   z-index -1 — above the host's own gray background but below its label
+   (the host's `isolation: isolate` pins the negative z-index inside it). */
+.pixel-play {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* Container hosts (weave picker) whose children carry their own opaque
+   backgrounds: float the pixel above them instead. */
+.pixel-play-over {
+  z-index: 1;
+}
+
+/* Pixel-play hosts — the gray-background buttons and selectors. */
+.btn-ghost,
+.tx-mode-picker,
+.weave-picker {
+  position: relative;
+  isolation: isolate;
+}

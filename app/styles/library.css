@@ -1,5 +1,5 @@
 /* ─── library.css ─────────────────────────────────────────────────────
-   Material swatches: samples/library grids, hover-bloom preview, drag grip, drop markers. */
+   Material swatches: samples/library grids, local hover state, drag grip, drop markers. */
 
 /* materials library — swatch grid */
 
@@ -61,32 +61,6 @@
   opacity: 1;
 }
 
-/* The fly-layer canvas covers these exact pixels for the whole time the
-   thumbnail is "away", so only the outgoing edge needs a transition (to
-   soften the handoff as the canvas takes over) — coming back needs none,
-   since the canvas's last frame already shows this image at full opacity
-   in this exact spot. A transition on both edges left a ~80ms gap where
-   the canvas had already been removed but this img was still ramping up
-   from 0, reading as a flicker/flash right when the pointer left. */
-.material-thumbnail[data-away="true"] img {
-  opacity: 0;
-  transition: opacity 80ms linear;
-}
-
-.material-thumbnail-ghost {
-  position: absolute;
-  inset: 0;
-  border: 1px dashed color-mix(in oklab, var(--cat, var(--accent)) 55%, transparent);
-  background: color-mix(in oklab, var(--bg-elev-1) 70%, transparent);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms var(--ease-motion);
-}
-
-.material-thumbnail[data-away="true"] .material-thumbnail-ghost {
-  opacity: 1;
-}
-
 .swatch-blank {
   background: repeating-conic-gradient(
       var(--bg-elev-1) 0% 25%,
@@ -134,8 +108,7 @@
   color: var(--cat, var(--accent));
 }
 
-/* (--stamp-mask itself is injected inline by page.tsx from
-   lib/ui/stampMask.ts — one artwork shared with the transfer canvas.) */
+/* --stamp-mask itself is injected inline by page.tsx from stampMask.ts. */
 
 /* inline rename field — replaces the label ribbon during a double-click edit.
    Chromeless (no border/outline) and inset past the stamp mask's fray +
@@ -257,46 +230,6 @@
 @media (max-width: 360px) and (pointer: coarse) {
   .swatch-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-/* dissolve preview (portal to body — escapes panel clip). PreviewBox paints
-   the dissolving cells onto this full-viewport canvas each frame; it only
-   needs placement + stacking here. */
-.preview-canvas {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  z-index: 1000;
-  pointer-events: none;
-}
-
-.material-transfer-canvas {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  z-index: 1001;
-  pointer-events: none;
-}
-
-/* the empty slot left behind while the image is dissolved away */
-.preview-ghost {
-  position: fixed;
-  z-index: 999;
-  pointer-events: none;
-  border: 1.5px dashed color-mix(in oklab, var(--cat, var(--accent)) 55%, transparent);
-  background: color-mix(in oklab, var(--bg-elev-1) 65%, transparent);
-  animation: ghost-in 160ms var(--ease-motion);
-}
-
-@keyframes ghost-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
   }
 }
 

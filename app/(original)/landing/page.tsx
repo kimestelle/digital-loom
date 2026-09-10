@@ -33,7 +33,7 @@ import "../styles/landing.css";
 
 // The viewer pulls in three/webgpu and the whole solver — it must never touch
 // the server render, and it shouldn't sit in the initial bundle either.
-const FabricViewer = dynamic(() => import("@/lib/ui/fabricViewer"), {
+const FabricViewer = dynamic(() => import("@/lib/original/ui/fabricViewer"), {
   ssr: false,
   loading: () => <div className="lp-stage-fallback">hanging the cloth…</div>,
 });

@@ -1,13 +1,8 @@
 // ─── stampMask.ts ─────────────────────────────────────────────────────────────
 // Single source of truth for the frayed-stamp silhouette: a turbulence-
 // displaced rect (the fray) bitten by straight rows of machine-punched
-// perforation holes. Consumed two ways:
-//   - as a CSS mask on the "my swatches" grid (page.tsx injects it via the
-//     --stamp-mask custom property),
-//   - rasterized onto the material-transfer canvas so a swatch KEEPS its
-//     frayed edge while flying between its box and the stage.
-// width/height attributes matter: canvas drawImage() rasterizes SVG at its
-// intrinsic size before scaling, and an unsized SVG falls back to 300×150.
+// perforation holes. The swatch archive consumes it as a CSS mask via the
+// --stamp-mask custom property.
 
 const HOLE_STOPS = [5, 17, 30, 43, 57, 70, 83, 95];
 
@@ -34,16 +29,3 @@ const STAMP_SVG =
   `</g></svg>`;
 
 export const STAMP_MASK_URI = `data:image/svg+xml,${encodeURIComponent(STAMP_SVG)}`;
-
-let img: HTMLImageElement | null = null;
-
-/** The stamp silhouette as a drawable image. Kicks off the (instant, data-URI)
- *  load on first call; returns null until decoded. */
-export function stampMaskImage(): HTMLImageElement | null {
-  if (typeof window === "undefined") return null;
-  if (!img) {
-    img = new Image();
-    img.src = STAMP_MASK_URI;
-  }
-  return img.complete && img.naturalWidth > 0 ? img : null;
-}

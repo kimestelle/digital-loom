@@ -16,19 +16,41 @@ import {
 } from "./response";
 import { inspectMapAsset } from "../core/mapAsset";
 
+export interface FalCredentialEnvironment {
+  FAL_KEY?: string;
+  FAL_API_KEY?: string;
+}
+
+/**
+ * Resolve credentials at the request boundary without mutating the fal SDK's
+ * process-wide singleton. A user-provided key is intentionally first; FAL_KEY
+ * is the canonical server setting and FAL_API_KEY remains a migration fallback.
+ */
+export function resolveFalCredentials(
+  userKey?: string,
+  environment: FalCredentialEnvironment = {
+    FAL_KEY: process.env.FAL_KEY,
+    FAL_API_KEY: process.env.FAL_API_KEY,
+  },
+): string {
+  const credentials =
+    userKey?.trim() ||
+    environment.FAL_KEY?.trim() ||
+    environment.FAL_API_KEY?.trim();
+  if (!credentials) {
+    throw new Error(
+      "No fal key: set FAL_KEY in the server environment, or paste your own key in the material import panel.",
+    );
+  }
+  return credentials;
+}
+
 function clientFor(userKey?: string): FalClient {
   // A caller-supplied key (the user's own fal account) beats the server's
   // env credential. Each extraction receives an isolated SDK client: mutating
   // the package-level singleton allowed overlapping requests from two people
   // to race and potentially continue under the wrong account.
-  const credentials =
-    userKey?.trim() || process.env.FAL_API_KEY || process.env.FAL_KEY;
-  if (!credentials) {
-    throw new Error(
-      "No fal key: set FAL_API_KEY in the server env, or paste your own key in the workshop panel.",
-    );
-  }
-  return createFalClient({ credentials });
+  return createFalClient({ credentials: resolveFalCredentials(userKey) });
 }
 
 export const PATINA_ENDPOINT =

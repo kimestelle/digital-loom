@@ -35,6 +35,7 @@ import {
   LinearFilter,
   MeshBasicNodeMaterial,
   MeshStandardNodeMaterial,
+  NormalBlending,
   RepeatWrapping,
   Vector2,
   Vector3,
@@ -52,7 +53,6 @@ import {
   dot,
   exp,
   float,
-  floor,
   fract,
   length,
   materialOpacity,
@@ -69,7 +69,6 @@ import {
   select,
   sin,
   smoothstep,
-  step,
   texture,
   transpose,
   uniform,
@@ -673,27 +672,13 @@ export function createClothMaterial() {
         const alpha = clamp(lossExp.oneMinus(), 0.0, 1.0).toVar();
         alpha.assign(mix(alpha, max(alpha, 0.9), metal));
 
-        // A deterministic UV-space pixel mask used while a material moves
-        // between its swatch and this mesh. The canvas transfer layer uses the
-        // same hash and 64×64 grid, so cells disappear there on the frame they
-        // appear here.
-        const pixelReveal = float(1.0).toVar();
-        // A real uniform branch keeps the hash's sin() out of the steady-state
-        // shader path. select() evaluates both values, even at reveal = 1.
-        If(u.u_materialReveal.lessThanEqual(0.0), () => {
-          pixelReveal.assign(0.0);
-        }).ElseIf(u.u_materialReveal.lessThan(1.0), () => {
-          const revealCell = floor(vUv.mul(64.0));
-          const revealNoise = fract(
-            sin(dot(revealCell, vec2(127.1, 311.7))).mul(43758.5453123),
-          );
-          pixelReveal.assign(step(revealNoise, u.u_materialReveal));
-        });
-
+        // Material changes use one quiet whole-specimen opacity. Pixel motion
+        // is reserved for stateful selector buttons; selection no longer adds
+        // a UV hash or a second visual language to the rendered material.
         outColor.assign(
           vec4(
             color,
-            alpha.mul(u.u_fade).mul(pixelReveal).mul(launchOpacity),
+            alpha.mul(u.u_fade).mul(u.u_materialReveal).mul(launchOpacity),
           ),
         );
       });
@@ -859,7 +844,9 @@ export function createSkyMaterial() {
 // would be invisible, so the overlay costs nothing while the sun is off-frame.
 export type LensFlareBundle = ReturnType<typeof createLensFlareMaterial>;
 
-export function createLensFlareMaterial() {
+export function createLensFlareMaterial(
+  { transparentBackground = false }: { transparentBackground?: boolean } = {},
+) {
   const u = {
     /** Sun position in NDC (−1…1, y up). */
     u_sun: uniform(new Vector2(0, 0)),
@@ -871,7 +858,7 @@ export function createLensFlareMaterial() {
 
   const material = new MeshBasicNodeMaterial();
   material.transparent = true;
-  material.blending = AdditiveBlending;
+  material.blending = transparentBackground ? NormalBlending : AdditiveBlending;
   material.depthTest = false;
   material.depthWrite = false;
   material.fog = false;
@@ -930,7 +917,17 @@ export function createLensFlareMaterial() {
 
     // Additive blend uses src alpha as a multiplier — bake the strength into
     // the color and keep alpha at 1 so u_amt scales the whole flare.
-    return vec4(col.mul(u.u_amt), 1.0);
+    const flare = col.mul(u.u_amt);
+    if (!transparentBackground) return vec4(flare, 1.0);
+
+    // A transparent room canvas is composited over the CSS room. Additive
+    // blending cannot carry that contribution through the canvas alpha, and
+    // an alpha-1 fullscreen quad would instead expose a black plate. Encode
+    // the same flare as straight alpha: maxRGB becomes coverage and the tint
+    // is un-premultiplied so NormalBlending reconstructs the original color.
+    const alpha = clamp(max(max(flare.r, flare.g), flare.b), 0.0, 1.0);
+    const tint = clamp(flare.div(max(alpha, 1e-6)), 0.0, 1.0);
+    return vec4(tint, alpha);
   })();
 
   return { material, u };

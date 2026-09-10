@@ -1,13 +1,12 @@
 "use client";
 
-// ─── appHeader.tsx ────────────────────────────────────────────────────────────
-// The top chrome: brand, cloth/object mode toggle, and the pipeline status
-// pill. Also home of `PipelineStatus`, the one union every stage of the
+// The top chrome: the logo opens the environment rail; status stays separate.
+// Also home of `PipelineStatus`, the one union every stage of the
 // extract pipeline reports through — the page owns the state, this renders it.
-// Styles live in app/styles/layout.css (.app-header / .mode-tabs / .status-*).
+// Styles live in app/styles/layout.css (.nav-bar / .status-*).
 
 import { memo } from "react";
-import ModeButton from "@/lib/ui/modeButton";
+import { PixelPlay } from "@/lib/ui/pixelPlay";
 import {
   SaveStatus,
   type SaveStatusKind,
@@ -55,8 +54,8 @@ export function StatusPill({ status }: { status: PipelineStatus }) {
 }
 
 export interface NavBarProps {
-  mode: StageMode;
-  onMode: (m: StageMode) => void;
+  onOpenLight: () => void;
+  lightDialogOpen?: boolean;
   status: PipelineStatus;
   saveStatus: SaveStatusKind;
   saveMessage?: string | null;
@@ -64,20 +63,42 @@ export interface NavBarProps {
 }
 
 export const NavBar = memo(function NavBar({
-  mode,
-  onMode,
+  onOpenLight,
+  lightDialogOpen = false,
   status,
   saveStatus,
   saveMessage,
   onRetrySave,
 }: NavBarProps) {
   return (
-    <header className="nav-bar glass">
+    <header className="nav-bar" data-controls-open={lightDialogOpen}>
+      <svg className="nav-environment-guide" aria-hidden="true" focusable="false">
+        <line x1="0.5" y1="0" x2="0.5" y2="100%" />
+      </svg>
       <div className="nav-bar-inner">
         <div className="nav-brand">
-          <span className="nav-brand-name">digital loom</span>
+          <button
+            type="button"
+            className="nav-logo-button"
+            aria-label="environment controls"
+            aria-controls="room-environment-controls"
+            aria-expanded={lightDialogOpen}
+            title={lightDialogOpen ? "close environment controls" : "environment controls"}
+            onClick={onOpenLight}
+          >
+            <span
+              className="nav-logo-mark"
+              aria-hidden="true"
+            />
+            <span
+              className="nav-logo-pixel-home"
+              data-pressed={lightDialogOpen}
+              aria-hidden="true"
+            >
+              <PixelPlay pixel={5} layer="over" className="nav-logo-pixel" />
+            </span>
+          </button>
         </div>
-        <ModeButton mode={mode} onMode={onMode} />
         <div className="nav-status-group">
           <StatusPill status={status} />
           <SaveStatus

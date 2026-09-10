@@ -8,7 +8,8 @@
      pixelplay.css companion-pixel canvas for buttons/pickers
      panels.css    side-panel chrome, sections, sliders, pickers, meters
      workshop.css  insert cell, prompt fields, generated-maps strip
-     library.css   material swatches, hover previews, drag grip/markers
+     library.css   material swatches, selection, drag grip/markers
+     room.css      flat room, material cabinet, daylight modal
 */
 
 @import "./styles/tokens.css";
@@ -18,3 +19,4 @@
 @import "./styles/panels.css";
 @import "./styles/workshop.css";
 @import "./styles/library.css";
+@import "./styles/room.css";

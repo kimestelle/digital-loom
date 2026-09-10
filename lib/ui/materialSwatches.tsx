@@ -7,8 +7,8 @@
 //   <SampleGrid>   read-only, built-in bundles. Click to wear; drag a swatch
 //                  body out to clone it into the library.
 //   <LibraryGrid>  the user's materials. Grip (⠿) drags reorder, body drags
-//                  clone, hover arms a two-stage delete; the grid itself is
-//                  the drop target for clone drags from either grid.
+//                  clone, and delete requires a second confirming press. The
+//                  grid is the drop target for clone drags from either grid.
 //
 // Drag state must be shared between the grids (a drag starts on a sample and
 // ends on the library), so the page owns it via useSwatchDrag() and threads it
@@ -65,22 +65,14 @@ export function useSwatchDrag(): SwatchDrag {
 function SwatchFace({
   item,
   active,
-  away,
   drag,
   onSelect,
-  onRegister,
-  onHoverIn,
-  onHoverOut,
   onRename,
 }: {
   item: SwatchItem;
   active: boolean;
-  away: boolean;
   drag: SwatchDrag;
   onSelect: (id: string) => void;
-  onRegister: (id: string, image: HTMLImageElement | null) => void;
-  onHoverIn: (id: string) => void;
-  onHoverOut: (id: string) => void;
   onRename?: (id: string, name: string) => void;
 }) {
   // Double-click opens an inline rename field over the label ribbon.
@@ -116,21 +108,15 @@ function SwatchFace({
           }
         }}
         aria-keyshortcuts={onRename ? "F2" : undefined}
+        aria-label={item.label}
+        aria-pressed={active}
         title={
           item.title ??
           (onRename ? `${item.label} — double-click to rename` : item.label)
         }
       >
         {item.thumb ? (
-          <MaterialThumbnail
-            id={item.id}
-            src={item.thumb}
-            alt=""
-            away={away}
-            onRegister={onRegister}
-            onHoverIn={onHoverIn}
-            onHoverOut={onHoverOut}
-          />
+          <MaterialThumbnail src={item.thumb} alt="" />
         ) : (
           <span className="swatch-blank" />
         )}
@@ -165,13 +151,8 @@ function SwatchFace({
 export interface SampleGridProps {
   items: SwatchItem[];
   activeId: string | null;
-  awayId: string | null;
-  meshOwnerId: string | null;
   drag: SwatchDrag;
   onSelect: (id: string) => void;
-  onRegister: (id: string, image: HTMLImageElement | null) => void;
-  onHoverIn: (id: string) => void;
-  onHoverOut: (id: string) => void;
   /** Explicit alternative to drag-to-library, available to touch and keyboard. */
   onClone: (id: string) => void;
   onRename?: (id: string, name: string) => void;
@@ -180,13 +161,8 @@ export interface SampleGridProps {
 export const SampleGrid = memo(function SampleGrid({
   items,
   activeId,
-  awayId,
-  meshOwnerId,
   drag,
   onSelect,
-  onRegister,
-  onHoverIn,
-  onHoverOut,
   onClone,
   onRename,
 }: SampleGridProps) {
@@ -203,12 +179,8 @@ export const SampleGrid = memo(function SampleGrid({
             <SwatchFace
               item={{ ...item, title: `${item.label} — drag into library to clone` }}
               active={activeId === item.id}
-              away={awayId === item.id || meshOwnerId === item.id}
               drag={drag}
               onSelect={onSelect}
-              onRegister={onRegister}
-              onHoverIn={onHoverIn}
-              onHoverOut={onHoverOut}
               onRename={onRename}
             />
             <button
@@ -232,13 +204,8 @@ export const SampleGrid = memo(function SampleGrid({
 export interface LibraryGridProps {
   items: SwatchItem[];
   activeId: string | null;
-  awayId: string | null;
-  meshOwnerId: string | null;
   drag: SwatchDrag;
   onSelect: (id: string) => void;
-  onRegister: (id: string, image: HTMLImageElement | null) => void;
-  onHoverIn: (id: string) => void;
-  onHoverOut: (id: string) => void;
   /** A body-drag (from either grid) was dropped here — make a copy. */
   onClone: (id: string) => void;
   /** A grip-drag landed on another swatch — move dragId before beforeId. */
@@ -251,13 +218,8 @@ export interface LibraryGridProps {
 export const LibraryGrid = memo(function LibraryGrid({
   items,
   activeId,
-  awayId,
-  meshOwnerId,
   drag,
   onSelect,
-  onRegister,
-  onHoverIn,
-  onHoverOut,
   onClone,
   onReorder,
   onDelete,
@@ -348,12 +310,8 @@ export const LibraryGrid = memo(function LibraryGrid({
               <SwatchFace
                 item={item}
                 active={activeId === item.id}
-                away={awayId === item.id || meshOwnerId === item.id}
                 drag={drag}
                 onSelect={onSelect}
-                onRegister={onRegister}
-                onHoverIn={onHoverIn}
-                onHoverOut={onHoverOut}
                 onRename={onRename}
               />
               {items.length > 1 ? (

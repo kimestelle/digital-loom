@@ -66,7 +66,7 @@
 
   /* The interface's ONE motion curve — every discrete state transition
      (fades, slides, panel/tab expand-contract, the cloth transitions, the
-     pixel-dissolve reveal) eases through this same curve so the whole app
+     material opacity handoff) eases through this same curve so the whole app
      reads as one coherent hand moving it. JS-driven motion (clothScene,
      materialTransfer) mirrors these exact 4 numbers via lib/ui/motion.ts —
      keep both in sync if this changes. (Continuous target-seeking motion,

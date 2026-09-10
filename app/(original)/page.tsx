@@ -12,9 +12,9 @@ import ClothScene, {
   type ClothProbe,
   type ClothSceneHandle,
   type ClothStats,
-} from "@/lib/ui/clothScene";
-import { STAMP_MASK_URI } from "@/lib/ui/stampMask";
-import { fabricFromPkg } from "@/lib/ui/fabricViewer";
+} from "@/lib/original/ui/clothScene";
+import { STAMP_MASK_URI } from "@/lib/original/ui/stampMask";
+import { fabricFromPkg } from "@/lib/original/ui/fabricViewer";
 import {
   FABRICS,
   type FabricId,
@@ -73,25 +73,25 @@ import {
   NavBar,
   type PipelineStatus,
   type StageMode,
-} from "@/lib/ui/navBar";
+} from "@/lib/original/ui/navBar";
 import {
   MapsStrip,
   type ExportState,
-} from "@/lib/ui/mapsStrip";
+} from "@/lib/original/ui/mapsStrip";
 import type { MapVariationSource } from "@/lib/ui/mapEditorModal";
-import { PixelPlay } from "@/lib/ui/pixelPlay";
+import { PixelPlay } from "@/lib/original/ui/pixelPlay";
 import { InsertPanel } from "@/lib/ui/insertPanel";
 import { getCachedMap, warmMapCache } from "@/lib/export/mapCache";
 import {
   LibraryGrid,
   SampleGrid,
   useSwatchDrag,
-} from "@/lib/ui/materialSwatches";
+} from "@/lib/original/ui/materialSwatches";
 import {
   MaterialTransferLayer,
   useMaterialTransfer,
   type MaterialTransferController,
-} from "@/lib/ui/materialTransfer";
+} from "@/lib/original/ui/materialTransfer";
 import type { SaveStatusKind } from "@/lib/ui/saveStatus";
 import {
   adoptServerPreset,

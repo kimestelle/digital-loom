@@ -6,7 +6,7 @@
 // also the copy-paste reference for anyone embedding the viewer.
 
 import { useEffect, useState } from "react";
-import FabricViewer from "@/lib/ui/fabricViewer";
+import FabricViewer from "@/lib/original/ui/fabricViewer";
 import { MAP_ORDER, type MapName, type MaterialPackage } from "@/lib/core/materialPackage";
 
 const PREGEN_MANIFEST = "/pregen/silk-sample/manifest.json";

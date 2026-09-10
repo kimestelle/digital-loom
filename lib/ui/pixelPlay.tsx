@@ -2,7 +2,7 @@
 
 // ─── pixelPlay.tsx ────────────────────────────────────────────────────────────
 // A drop-in companion pixel for the gray buttons and pickers — kin to the
-// header's mode orb. One dye-colored pixel lives on each host surface:
+// header's mode orb. One dye- or ink-colored pixel lives on each host surface:
 //
 //   · idle, it orbits the selected option (any child with data-active or
 //     data-pressed; the whole host if nothing is selected),
@@ -10,10 +10,9 @@
 //   · every few seconds — and whenever the selection changes — it bursts
 //     into a cross of four pixels with an empty center, then re-forms.
 //
-// Each pixel holds ONE color at rest (seeded from its section's data-dye) and
-// mirrors it onto the host's --cat, so category-tinted text (the tuning tab
-// labels) reads the exact same color. Only a hover enter/exit pop re-dyes it
-// to a random other vat, cross-fading pixel and text together.
+// Dye pixels hold one color at rest (seeded from their section's data-dye) and
+// mirror it onto the host's --cat, so category-tinted text reads the exact
+// same color. The optional ink tone stays neutral and never writes --cat.
 //
 // Deliberately cheap: a plain 2D canvas per host, all instances driven by one
 // shared 30fps rAF ticker, a dozen fillRects per frame, no WebGL. Positions
@@ -27,11 +26,15 @@
 
 import { useEffect, useRef } from "react";
 
+export type PixelPlayTone = "dye" | "ink";
+
 export interface PixelPlayProps {
   /** CSS px per pixel-cell. */
   pixel?: number;
   /** "under": behind the host's content. "over": above it (container hosts). */
   layer?: "under" | "over";
+  /** "dye" follows its section palette; "ink" stays fixed and neutral. */
+  tone?: PixelPlayTone;
   className?: string;
 }
 
@@ -47,6 +50,7 @@ const DYES: ReadonlyArray<readonly [number, number, number]> = [
   [152, 172, 116], // mugwort
 ];
 const DYE_NAMES = ["indigo", "madder", "gardenia", "persimmon", "mugwort"] as const;
+const INK: readonly [number, number, number] = [48, 51, 47];
 
 const TRAIL = 10;
 const BURST_S = 0.55; // seconds
@@ -81,6 +85,7 @@ interface Sub {
   color: [number, number, number];
   colorTarget: [number, number, number];
   targetIdx: number;
+  tone: PixelPlayTone;
   /** True while the color is mid-fade — gates the per-frame --cat write. */
   colorDirty: boolean;
   anchor: Anchor;
@@ -88,21 +93,66 @@ interface Sub {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+export interface PixelPlayLocalBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Resolve layout coordinates without inheriting an ancestor's 3D transform. */
+export function resolvePixelPlayLocalBox(
+  host: HTMLElement,
+  element: HTMLElement,
+): PixelPlayLocalBox | null {
+  if (element === host) {
+    return {
+      left: 0,
+      top: 0,
+      width: host.clientWidth,
+      height: host.clientHeight,
+    };
+  }
+
+  let left = 0;
+  let top = 0;
+  let current: HTMLElement | null = element;
+  while (current && current !== host) {
+    left += current.offsetLeft;
+    top += current.offsetTop;
+    current =
+      current.offsetParent instanceof HTMLElement
+        ? current.offsetParent
+        : null;
+  }
+  if (current !== host) return null;
+  return {
+    left,
+    top,
+    width: element.offsetWidth,
+    height: element.offsetHeight,
+  };
+}
+
 function computeAnchor(s: Sub) {
-  const hr = s.host.getBoundingClientRect();
-  if (hr.width < 1 || hr.height < 1) return;
-  const sel = s.host.querySelector('[data-active="true"], [data-pressed="true"]');
+  const hostWidth = s.host.clientWidth;
+  const hostHeight = s.host.clientHeight;
+  if (hostWidth < 1 || hostHeight < 1) return;
+  const sel = s.host.querySelector<HTMLElement>(
+    '[data-active="true"], [data-pressed="true"]',
+  );
   // data-pressed lives on the host button itself, not a descendant.
   const el =
     sel ??
     (s.host.getAttribute("data-pressed") === "true" ? s.host : null);
   if (el) {
-    const r = el.getBoundingClientRect();
+    const box = resolvePixelPlayLocalBox(s.host, el);
+    if (!box) return;
     s.anchor = {
-      cx: (r.left + r.width / 2 - hr.left) / hr.width,
-      cy: (r.top + r.height / 2 - hr.top) / hr.height,
-      rx: r.width / 2 / hr.width,
-      ry: r.height / 2 / hr.height,
+      cx: (box.left + box.width / 2) / hostWidth,
+      cy: (box.top + box.height / 2) / hostHeight,
+      rx: box.width / 2 / hostWidth,
+      ry: box.height / 2 / hostHeight,
     };
   } else {
     s.anchor = { cx: 0.5, cy: 0.5, rx: 0.5, ry: 0.5 };
@@ -204,6 +254,7 @@ class PixelEngine {
   /** Retarget the pixel to a random dye other than its current one; the tick
    *  loop eases toward it, so the pixel and its --cat-tinted text cross-fade. */
   private recolor(s: Sub) {
+    if (s.tone === "ink") return;
     let idx = Math.floor(Math.random() * (DYES.length - 1));
     if (idx >= s.targetIdx) idx++; // uniform over the four other vats
     s.targetIdx = idx;
@@ -225,26 +276,27 @@ class PixelEngine {
       if (s.w < 2 || s.h < 2) continue; // collapsed/hidden host
       s.t += dt;
 
-      // Ease the live color toward its target and mirror it onto the host's
-      // --cat while it's still moving, so category text tracks the pixel
-      // without a style write every idle frame.
-      let moving = false;
-      for (let i = 0; i < 3; i++) {
-        const d = s.colorTarget[i] - s.color[i];
-        if (Math.abs(d) > 0.4) {
-          s.color[i] += d * ck;
-          moving = true;
-        } else {
-          s.color[i] = s.colorTarget[i];
+      // Dye pixels cross-fade their category text with the live pixel. Ink is
+      // deliberately fixed, so neutral dossier controls incur no style writes.
+      if (s.tone === "dye") {
+        let moving = false;
+        for (let i = 0; i < 3; i++) {
+          const d = s.colorTarget[i] - s.color[i];
+          if (Math.abs(d) > 0.4) {
+            s.color[i] += d * ck;
+            moving = true;
+          } else {
+            s.color[i] = s.colorTarget[i];
+          }
         }
-      }
-      if (moving) s.colorDirty = true;
-      if (s.colorDirty) {
-        const cr = Math.round(s.color[0]);
-        const cg = Math.round(s.color[1]);
-        const cb = Math.round(s.color[2]);
-        s.host.style.setProperty("--cat", `rgb(${cr}, ${cg}, ${cb})`);
-        if (!moving) s.colorDirty = false; // final write done; go quiet
+        if (moving) s.colorDirty = true;
+        if (s.colorDirty) {
+          const cr = Math.round(s.color[0]);
+          const cg = Math.round(s.color[1]);
+          const cb = Math.round(s.color[2]);
+          s.host.style.setProperty("--cat", `rgb(${cr}, ${cg}, ${cb})`);
+          if (!moving) s.colorDirty = false; // final write done; go quiet
+        }
       }
 
       const cellX = (s.pixel * s.dpr) / s.w;
@@ -290,7 +342,11 @@ let engine: PixelEngine | null = null;
 let seedCounter = 0;
 
 /** Wire a target canvas into the shared ticker. Returns a detach fn. */
-function attach(el: HTMLCanvasElement, pixel: number): (() => void) | undefined {
+function attach(
+  el: HTMLCanvasElement,
+  pixel: number,
+  tone: PixelPlayTone,
+): (() => void) | undefined {
   const ctx = el.getContext("2d");
   const host = el.parentElement;
   if (!ctx || !host) return undefined;
@@ -301,8 +357,14 @@ function attach(el: HTMLCanvasElement, pixel: number): (() => void) | undefined 
   // and its text start on the category color; -1 → indigo.
   const dyeName = host.closest("[data-dye]")?.getAttribute("data-dye") ?? "";
   const seedIdx = Math.max(0, (DYE_NAMES as readonly string[]).indexOf(dyeName));
-  const seed = [...DYES[seedIdx]] as [number, number, number];
-  host.style.setProperty("--cat", `rgb(${seed[0]}, ${seed[1]}, ${seed[2]})`);
+  const seed = [...(tone === "ink" ? INK : DYES[seedIdx])] as [
+    number,
+    number,
+    number,
+  ];
+  if (tone === "dye") {
+    host.style.setProperty("--cat", `rgb(${seed[0]}, ${seed[1]}, ${seed[2]})`);
+  }
 
   const sub: Sub = {
     ctx,
@@ -324,15 +386,18 @@ function attach(el: HTMLCanvasElement, pixel: number): (() => void) | undefined 
     color: [...seed] as [number, number, number],
     colorTarget: seed,
     targetIdx: seedIdx,
+    tone,
     colorDirty: false,
     anchor: { cx: 0.5, cy: 0.5, rx: 0.5, ry: 0.5 },
   };
 
   const measure = () => {
     sub.dpr = Math.min(2, window.devicePixelRatio || 1);
-    const r = host.getBoundingClientRect();
-    const w = Math.round(r.width * sub.dpr);
-    const h = Math.round(r.height * sub.dpr);
+    // Use the host's untransformed layout box. A cabinet face may be mounted
+    // while rotated away; its projected bounding rect changes during the flip
+    // without a ResizeObserver notification, while its client box is stable.
+    const w = Math.round(host.clientWidth * sub.dpr);
+    const h = Math.round(host.clientHeight * sub.dpr);
     if (w !== sub.w || h !== sub.h) {
       sub.w = w;
       sub.h = h;
@@ -359,6 +424,8 @@ function attach(el: HTMLCanvasElement, pixel: number): (() => void) | undefined 
   });
 
   const toUnit = (e: PointerEvent) => {
+    // Pointer coordinates are client-space, so this path intentionally keeps
+    // the visible projected rect even though backing-store sizing does not.
     const r = host.getBoundingClientRect();
     if (r.width > 0 && r.height > 0) {
       sub.mouse.x = clamp((e.clientX - r.left) / r.width, 0, 1);
@@ -404,14 +471,19 @@ function attach(el: HTMLCanvasElement, pixel: number): (() => void) | undefined 
 
 // ── component ────────────────────────────────────────────────────────────────
 
-export function PixelPlay({ pixel = 5, layer = "under", className }: PixelPlayProps) {
+export function PixelPlay({
+  pixel = 5,
+  layer = "under",
+  tone = "dye",
+  className,
+}: PixelPlayProps) {
   const ref = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    return attach(el, pixel);
-  }, [pixel]);
+    return attach(el, pixel, tone);
+  }, [pixel, tone]);
 
   const cls = [
     "pixel-play",

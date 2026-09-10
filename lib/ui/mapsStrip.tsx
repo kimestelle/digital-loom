@@ -1,7 +1,6 @@
 "use client";
 
 import { memo, useEffect, useState } from "react";
-import PreviewBox from "@/lib/ui/previewBox";
 import { SectionLabel } from "@/lib/ui/panelPrimitives";
 import {
   MapEditorModal,
@@ -82,7 +81,16 @@ export const MapsStrip = memo(function MapsStrip({
                   }}
                 >
                   <span className="preview-chip-thumb">
-                    <PreviewBox src={map.url} alt={map.name} size="small" />
+                    {/* The map stays where it is. The full editor opens on
+                        activation; hover no longer creates a viewport
+                        dissolve or a second preview canvas. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={map.url}
+                      alt=""
+                      loading="lazy"
+                      draggable={false}
+                    />
                   </span>
                   <span className="preview-chip-label">{map.name}</span>
                 </button>
@@ -105,8 +113,8 @@ export const MapsStrip = memo(function MapsStrip({
                   : "export material ⤓"}
           </button>
           <p className="export-note">
-            zips the available maps with material.json; ORM/GLB are included
-            when they can be built, and omissions are listed in the README
+            Maps + material.json; ORM/GLB when available. Missing outputs
+            are listed in the README.
           </p>
         </>
       )}

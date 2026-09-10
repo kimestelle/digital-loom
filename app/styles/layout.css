@@ -70,52 +70,141 @@
 }
 
 
+:root {
+  --room-controls-left: clamp(18px, 4.296875vw, 55px);
+  --room-controls-top: clamp(20px, 4.6875dvh, 39px);
+  --room-logo-size: 64px;
+  --room-controls-width: 216px;
+  --room-controls-start: calc(var(--room-controls-top) + var(--room-logo-size) + 8px);
+}
+
 .nav-bar {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   z-index: 30;
-  /* No hard border-bottom — the gradient below IS the edge, dissolving
-     into the stage. A solid hairline sitting right where the tint fades to
-     transparent would read as a mismatched hard cutoff against a soft fade. */
-  /* Overrides .glass's flat background with a curved fade — .glass's own
-     30% tint at the very top edge (where the brand/controls actually sit),
-     easing (not linearly ramping) down to fully transparent, so the bar
-     dissolves into the stage rather than cutting off hard. Stops are
-     spaced like an ease-out curve (most of the falloff happens in the
-     second half) rather than three even steps. */
-  background: linear-gradient(
-    to bottom,
-    color-mix(in oklab, var(--bg) 30%, transparent) 0%,
-    color-mix(in oklab, var(--bg) 20%, transparent) 25%,
-    color-mix(in oklab, var(--bg) 8%, transparent) 55%,
-    transparent 100%
-  );
+  color: #211d1a;
+  background: transparent;
+  pointer-events: none;
 }
 
 .nav-bar-inner {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 24px 28px;
-  display: flex;
+  margin: 0;
+  padding: var(--room-controls-top) 35px 0 var(--room-controls-left);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 24px;
   position: relative;
   z-index: 2;
+  pointer-events: none;
 }
 
 .nav-brand {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  justify-self: start;
+  margin-left: 0;
 }
 
-.nav-brand-name {
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.012em;
+.nav-logo-button {
+  appearance: none;
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  width: var(--room-logo-size);
+  height: var(--room-logo-size);
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
+  transition: background var(--d-fast) var(--ease-motion);
+}
+
+.nav-logo-mark {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  width: var(--room-logo-size);
+  height: var(--room-logo-size);
+  background: linear-gradient(
+    145deg,
+    rgba(42, 39, 35, 0.78),
+    rgba(7, 7, 7, 0.9)
+  );
+  backdrop-filter: blur(11px) saturate(76%);
+  -webkit-backdrop-filter: blur(11px) saturate(76%);
+  mask-image: url("/loom-mark.svg?v=2");
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  -webkit-mask-image: url("/loom-mark.svg?v=2");
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  pointer-events: none;
+}
+
+.nav-logo-mark::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url("/2d-textures/sandpaper.png") center / 104px 150px repeat;
+  mix-blend-mode: screen;
+  opacity: 0.08;
+}
+
+.nav-logo-pixel-home {
+  /* Keep the shared living pixel within the mark's uninterrupted center,
+     away from the three cutouts and the rounded outer lobes. */
+  position: absolute;
+  z-index: 1;
+  left: 30%;
+  top: 38%;
+  width: 40%;
+  height: 34%;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.nav-logo-pixel {
+  /* One pale companion against the dark mark; leave the shared dye engine
+     and every other control's palette untouched. */
+  filter: brightness(0) invert(1);
+}
+
+.nav-environment-guide {
+  position: absolute;
+  top: 0;
+  left: var(--room-controls-left);
+  height: 100dvh;
+  width: 1px;
+  overflow: visible;
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform 340ms var(--ease-motion);
+  pointer-events: none;
+}
+
+.nav-bar[data-controls-open="true"] .nav-environment-guide {
+  transform: scaleY(1);
+}
+
+.nav-logo-button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -4px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .nav-logo-button:hover {
+    background: rgba(48, 40, 34, 0.07);
+  }
 }
 
 .nav-status-group {
@@ -124,6 +213,21 @@
   justify-content: flex-end;
   gap: 14px;
   min-width: 0;
+  justify-self: end;
+  pointer-events: auto;
+  position: fixed;
+  top: 10px;
+  right: 35px;
+}
+
+.nav-bar .status-pill,
+.nav-bar .save-status {
+  color: rgba(33, 29, 26, 0.64);
+}
+
+.nav-bar .status-pill[data-tone="loading"],
+.nav-bar .save-status[data-status="dirty"] {
+  color: #211d1a;
 }
 
 .app-main {
@@ -265,6 +369,28 @@
    which editor fills it; the other is hidden. No per-panel collapse (the tabs
    are the navigation). */
 @media (max-width: 820px) {
+  :root {
+    --room-controls-left: 18px;
+    --room-controls-top: max(8px, env(safe-area-inset-top, 0px));
+    --room-logo-size: 48px;
+    --room-controls-width: min(224px, calc(100vw - 36px));
+  }
+
+  .nav-bar-inner {
+    padding: var(--room-controls-top) 18px 0 var(--room-controls-left);
+    gap: 12px;
+  }
+
+  .nav-brand {
+    margin-left: 0;
+  }
+
+  .nav-logo-button,
+  .nav-logo-mark {
+    width: var(--room-logo-size);
+    height: var(--room-logo-size);
+  }
+
   /* Tab strip: workshop · my swatches · tuning. Docked flush to the bottom
      edge, full width, with the active sheet sitting directly on top of it
      (zero gap, matching width, same tone) — together they read as one
@@ -402,10 +528,6 @@
     max-width: 116px;
   }
 
-  .mode-orb {
-    position: absolute;
-    left: 50%;
-  }
 }
 
 /* The mobile dock must never leak onto desktop (unstyled, it floats as a
@@ -567,6 +689,12 @@
   .glass { background: color-mix(in oklab, var(--bg) 96%, transparent); }
   .glass::before { display: none; }
   .lightbox-scrim { background: rgba(6, 6, 8, 0.94); }
+  .nav-logo-mark {
+    background: #171513;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .nav-logo-mark::before { display: none; }
 }
 
 @media (prefers-contrast: more) {
@@ -575,4 +703,21 @@
     --line-strong: rgba(255, 255, 255, 0.35);
     --fg-mute: rgba(232, 230, 225, 0.82);
   }
+  .nav-logo-mark {
+    background: #000;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    filter: none;
+  }
+  .nav-logo-mark::before { display: none; }
+}
+
+@media (forced-colors: active) {
+  .nav-logo-mark {
+    background: CanvasText;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    filter: none;
+  }
+  .nav-logo-mark::before { display: none; }
 }

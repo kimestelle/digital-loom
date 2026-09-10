@@ -1,5 +1,5 @@
 /* ─── pixelplay.css ───────────────────────────────────────────────────
-   PixelPlay plumbing: the companion-pixel canvas that lives on the gray
+   PixelPlay plumbing: the companion-pixel canvas that lives on stateful
    buttons and segmented pickers, plus the host rules that seat it. */
 
 /* The canvas fills the host, clipped to its radius. Default layer paints at
@@ -21,7 +21,7 @@
   z-index: 1;
 }
 
-/* Pixel-play hosts — the gray-background buttons and selectors. */
+/* Pixel-play hosts — buttons and discrete selectors with real state. */
 .btn-ghost,
 .tx-mode-picker,
 .weave-picker {
