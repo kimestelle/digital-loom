@@ -18,6 +18,9 @@ import {
   ROOM_LIGHT_MAX_FRAME_DELTA_SECONDS,
   advanceDaylight,
   advanceDaylightInto,
+  applyRoomFloorProjectionCssVariables,
+  applyRoomLightCompositeCssVariables,
+  applyRoomLightCssVariables,
   clampRoomLightFrameDelta,
   createRoomLightController,
   shouldPublishRoomLightCss,
@@ -519,7 +522,7 @@ describe("room light resolver", () => {
     expect(variables["--room-ambient-sky"]).toBeUndefined();
   });
 
-  it("keeps autonomous CSS writes on the transform and opacity contract", () => {
+  it("keeps autonomous CSS writes on the spatial and opacity contract", () => {
     const variables = new Map<string, string>();
     writeRoomLightCompositeCssVariables(
       {
@@ -555,6 +558,63 @@ describe("room light resolver", () => {
     expect(variables.has("--room-transmitted-color")).toBe(false);
     expect(variables.has("--room-wall-top")).toBe(false);
     expect(variables.has("--room-floor-near")).toBe(false);
+  });
+});
+
+describe("room light CSS publication", () => {
+  const fixture = () => {
+    const css = new Map<string, string>();
+    const setProperty = vi.fn((name: string, value: string) => css.set(name, value));
+    const root = { style: { setProperty }, dataset: {} } as unknown as HTMLElement;
+    return { root, css, setProperty };
+  };
+
+  it("skips unchanged drift values and keeps the exact next snapshot on each root", () => {
+    const first = fixture();
+    const light = resolveRoomLight(0.4);
+    applyRoomLightCssVariables(first.root, light);
+    first.setProperty.mockClear();
+    applyRoomLightCompositeCssVariables(first.root, light);
+    expect(first.setProperty).not.toHaveBeenCalled();
+
+    const next = resolveRoomLight(0.400133333333);
+    applyRoomLightCompositeCssVariables(first.root, next);
+    expect(first.setProperty).toHaveBeenCalled();
+    expect(first.setProperty.mock.calls.map(([name]) => name)).not.toContain("--room-night-opacity");
+    const expected = new Map<string, string>();
+    writeRoomLightCompositeCssVariables({ setProperty: (name, value) => expected.set(name, value) }, next);
+    for (const [name, value] of expected) expect(first.css.get(name)).toBe(value);
+
+    const second = fixture();
+    applyRoomLightCompositeCssVariables(second.root, next);
+    expect(second.setProperty).toHaveBeenCalledTimes(expected.size);
+    expect(second.css).toEqual(expected);
+  });
+
+  it("explicit application repairs externally changed styles and resets the drift cache", () => {
+    const { root, css, setProperty } = fixture();
+    const light = resolveRoomLight(0.4);
+    applyRoomLightCssVariables(root, light);
+    css.set("--room-window-x", "0%");
+    setProperty.mockClear();
+    applyRoomLightCssVariables(root, light);
+    expect(css.get("--room-window-x")).toBe(roomLightCssVariables(light)["--room-window-x"]);
+    expect(setProperty).toHaveBeenCalled();
+    setProperty.mockClear();
+    applyRoomLightCompositeCssVariables(root, light);
+    expect(setProperty).not.toHaveBeenCalled();
+  });
+
+  it("skips fixed floor values without reducing the existing coordinate precision", () => {
+    const { root, setProperty } = fixture();
+    const projection = { x: 1.2345, y: 2, angle: 15, length: 512, width: 256,
+      scaleX: 1, scaleY: 1, visible: 1 as const };
+    applyRoomFloorProjectionCssVariables(root, projection);
+    setProperty.mockClear();
+    applyRoomFloorProjectionCssVariables(root, projection);
+    expect(setProperty).not.toHaveBeenCalled();
+    applyRoomFloorProjectionCssVariables(root, { ...projection, x: 1.2346 });
+    expect(setProperty.mock.calls).toEqual([["--room-projection-x", "1.2346px"]]);
   });
 });
 
@@ -809,8 +869,15 @@ describe("room light drift", () => {
     expect(cssWriteCount).toBeGreaterThan(mountedCssWrites);
     expect(writtenCssNames).toContain("--room-window-x");
     expect(writtenCssNames).toContain("--room-window-y");
-    expect(writtenCssNames).toContain("--room-night-opacity");
-    expect(writtenCssNames).toContain("--room-twilight-opacity");
+    expect(writtenCssNames).not.toContain("--room-night-opacity");
+    expect(writtenCssNames).not.toContain("--room-twilight-opacity");
+    expect(writtenCssNames).not.toContain("--room-bake-softness");
+    expect(writtenCssNames).not.toContain("--room-bake-weight");
+    expect(writtenCssNames).not.toContain("--room-bake-mix-0");
+    expect(writtenCssNames).not.toContain("--room-bake-1-width");
+    expect(writtenCssNames).not.toContain("--room-wall-bake-1-height");
+    expect(writtenCssNames).toContain("--room-bake-mix-1");
+    expect(writtenCssNames).toContain("--room-bake-mix-2");
     expect(writtenCssNames).not.toContain("--room-window-color");
     expect(writtenCssNames).not.toContain("--room-dapple-color");
     expect(writtenCssNames).not.toContain("--room-transmitted-color");

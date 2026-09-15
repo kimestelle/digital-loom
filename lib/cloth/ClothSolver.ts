@@ -157,6 +157,16 @@ export interface ClothConfig {
   /** Relaxation iterations per simulation step. 4–8 is typical. More yields
    *  better convergence but is linearly more expensive. */
   iterations: number;
+  /** Opt-in for the room: ordinary Euclidean length for finite Float32
+   * positions. The original viewer retains Math.hypot's exact rounding. */
+  fastConstraintDistances?: boolean;
+}
+
+export function finitePositionDistance(dx: number, dy: number, dz: number): number {
+  const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  // Squared differences of finite Float32 positions fit safely in a double.
+  // Preserve hypot's treatment of nonfinite input, including Infinity + NaN.
+  return Number.isFinite(length) ? length : Math.hypot(dx, dy, dz);
 }
 
 export const DEFAULT_CONFIG: ClothConfig = {
@@ -188,6 +198,7 @@ export class ClothSolver {
   readonly porosity: Float32Array;
 
   private constraints: Constraint[] = [];
+  private readonly fastConstraintDistances: boolean;
   private cfg: ClothConfig;
   private fabric: ResolvedFabric;
 
@@ -202,6 +213,7 @@ export class ClothSolver {
 
   constructor(cfg: ClothConfig, fabric: ResolvedFabric) {
     this.cfg = { ...cfg };
+    this.fastConstraintDistances = cfg.fastConstraintDistances === true;
     this.fabric = fabric;
     this.cols = cfg.cols;
     this.rows = cfg.rows;
@@ -908,6 +920,7 @@ export class ClothSolver {
   // accidental extra dose of stiffness.
   private projectConstraints(dtSq: number): void {
     const cs = this.constraints;
+    const fastDistance = this.fastConstraintDistances;
     for (let n = 0; n < cs.length; n++) {
       const con = cs[n];
       const a = con.a, b = con.b;
@@ -919,7 +932,9 @@ export class ClothSolver {
       let dx = this.pos[bx] - this.pos[ax];
       let dy = this.pos[bx + 1] - this.pos[ax + 1];
       let dz = this.pos[bx + 2] - this.pos[ax + 2];
-      const len = Math.hypot(dx, dy, dz) || 1e-6;
+      const len = (fastDistance
+        ? finitePositionDistance(dx, dy, dz)
+        : Math.hypot(dx, dy, dz)) || 1e-6;
 
       const alphaTilde = this.complianceFor(con.type) / dtSq;
       const C = len - con.restLength;

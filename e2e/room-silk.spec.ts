@@ -155,6 +155,7 @@ test("room silk keeps coverage opaque, retains backlighting through openness edi
   const scene = page.locator(".cloth-scene");
   const canvas = scene.locator("canvas").first();
   await expect(scene).toHaveAttribute("data-cloth-launch", "ready", { timeout: 90_000 });
+  await expect(scene).toHaveAttribute("data-cloth-compositing", "opaque");
   await expect.poll(() => [...fixture.loadedMaps].sort()).toEqual([...MAPS].sort());
   await expect(canvas).toBeVisible();
   await expect(page.getByRole("button", { name: "red silk", exact: true })).toHaveAttribute("aria-pressed", "true");
@@ -170,14 +171,24 @@ test("room silk keeps coverage opaque, retains backlighting through openness edi
   // before render/export rather than silently rewriting the shared preset.
   expect(fixture.seed.knobs.alphaFromDensity).toBe(0.048);
 
+  // Preview enlargement is device-local, not a silent edit to the material.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator(".stage")).toHaveAttribute("data-pattern-magnification", "1.5");
+  const mobileMaterial = await exportCurrentMaterial(page);
+  expect(mobileMaterial.authored.knobs).toEqual(baseline.authored.knobs);
+  await page.setViewportSize({ width: 960, height: 720 });
+  await expect(page.locator(".stage")).toHaveAttribute("data-pattern-magnification", "1");
+
   const openArea = page.locator('aside[aria-label="material dossier"]')
     .getByRole("slider", { name: /^open area/ });
   await expect(openArea).toHaveValue("0");
   await openArea.focus();
   await openArea.press("ArrowRight");
   await expect.poll(async () => Number(await openArea.inputValue())).toBeCloseTo(1, 10);
+  await expect(scene).toHaveAttribute("data-cloth-compositing", "blended");
   await openArea.press("Home");
   await expect(openArea).toHaveValue("0");
+  await expect(scene).toHaveAttribute("data-cloth-compositing", "opaque");
   const shelf = page.locator(".material-edit-shelf");
   // Undo history can keep the shelf open even when the current value equals
   // its baseline. Clean state is its status and disabled save, not geometry.

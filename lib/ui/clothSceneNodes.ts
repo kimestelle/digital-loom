@@ -396,7 +396,10 @@ export function createClothMaterial({ roomAmbient = false } = {}) {
           .r.toVar();
         const sunShade = float(1.0).toVar();
         If(
-          u.u_pomScale.greaterThan(0.0).and(u.u_pomShadow.greaterThan(0.0)),
+          u.u_pomScale.greaterThan(0.0).and(u.u_pomShadow.greaterThan(0.0))
+            // At night every term using this march is multiplied by zero.
+            // Keep the view trace and ambient weave; skip only dead sun work.
+            .and(dot(u.u_lightColor.rgb, vec3(1.0)).greaterThan(0.0)),
           () => {
             const lightTS = TBNt.mul(L.negate()).normalize();
             const shade = pomSelfShadow(
@@ -688,12 +691,16 @@ export function createClothMaterial({ roomAmbient = false } = {}) {
         // Exponential fog blend — same formula FogExp2 uses, fed by uniforms
         // so the cloth dissolves into the atmosphere with the rest of the
         // scene (scene fog itself is off for this material).
-        const fogDelta = cameraPosition.sub(positionWorld);
-        const distSq = dot(fogDelta, fogDelta);
-        const fogAmt = exp(
-          u.u_fogDensity.mul(u.u_fogDensity).mul(distSq).negate(),
-        ).oneMinus();
-        color.assign(mix(color, u.u_fogColor.rgb, clamp(fogAmt, 0.0, 1.0)));
+        // The room has a composited backdrop and always zero fog density.
+        // Omit its distance/exponential work when constructing that shader.
+        if (!roomAmbient) {
+          const fogDelta = cameraPosition.sub(positionWorld);
+          const distSq = dot(fogDelta, fogDelta);
+          const fogAmt = exp(
+            u.u_fogDensity.mul(u.u_fogDensity).mul(distSq).negate(),
+          ).oneMinus();
+          color.assign(mix(color, u.u_fogColor.rgb, clamp(fogAmt, 0.0, 1.0)));
+        }
 
         // Metal reads as opaque — lift alpha toward solid as metalness rises
         // so sheer fabric doesn't stay see-through where it's meant to be

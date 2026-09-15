@@ -682,12 +682,11 @@ type RoomLightCssVariableDefinition = readonly [
   value: (light: ResolvedRoomLight) => string,
 ];
 
-// These variables only feed transform or opacity on bounded, composited room
-// overlays. The autonomous controller is deliberately limited to this list so
-// slow daylight drift cannot trigger gradient repaints. `--room-beam-angle` is
-// already converted to CSS's right/down coordinate system. The definition list
-// is module-static so applying a drift frame creates no intermediate object or
-// Object.entries array.
+// These spatial/opacity cues move bounded room overlays without changing their
+// gradient colors. Window x/y position the angled overlay through top/left;
+// they are layout inputs, not compositor-only transforms. `--room-beam-angle`
+// already uses CSS's right/down coordinate system. This module-static list
+// avoids an intermediate object or Object.entries array on each drift frame.
 const ROOM_LIGHT_COMPOSITE_CSS_VARIABLES: readonly RoomLightCssVariableDefinition[] = [
   ["--room-night-opacity", (light) => concise(light.atmosphere.night)],
   [
@@ -722,10 +721,10 @@ const ROOM_LIGHT_COMPOSITE_CSS_VARIABLES: readonly RoomLightCssVariableDefinitio
   ],
 ];
 
-// Direct manipulation is allowed to update this bounded paint value
+// Direct manipulation is allowed to update these bounded paint values
 // immediately. It is intentionally excluded from autonomous drift because it
-// changes a radial-gradient paint rather than only compositing. Window x/y are
-// safe above because the room shell consumes them exclusively as transforms.
+// changes gradient colors. Spatial inputs above preserve the authored paints,
+// though positioning and changing receiver crop dimensions still need layout.
 const ROOM_LIGHT_PAINT_CSS_VARIABLES: readonly RoomLightCssVariableDefinition[] = [
   ["--room-window-color", (light) => cssRgb(light.window.tint)],
   ["--room-dapple-color", (light) => cssRgb(light.dapple.tint)],
@@ -744,8 +743,8 @@ const writeDefinitions = (
 };
 
 /**
- * Publish only values consumed by transform or opacity. This is the safe path
- * for automatic drift: it avoids gradient-position and color repaints.
+ * Publish spatial/opacity cues during automatic drift while leaving gradient
+ * colors on the last explicit state. Not every spatial input is composited.
  */
 export function writeRoomLightCompositeCssVariables(
   target: RoomLightCssVariableTarget,

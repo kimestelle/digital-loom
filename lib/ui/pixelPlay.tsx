@@ -25,6 +25,7 @@
 // hosts like the weave picker whose tiles carry their own backgrounds.
 
 import { useEffect, useRef } from "react";
+import { PixelPlayActivity } from "./pixelPlayActivity";
 
 export type PixelPlayTone = "dye" | "ink";
 
@@ -339,10 +340,11 @@ class PixelEngine {
 }
 
 let engine: PixelEngine | null = null;
+const activity = new PixelPlayActivity();
 let seedCounter = 0;
 
 /** Wire a target canvas into the shared ticker. Returns a detach fn. */
-function attach(
+export function attachPixelPlay(
   el: HTMLCanvasElement,
   pixel: number,
   tone: PixelPlayTone,
@@ -391,7 +393,15 @@ function attach(
     anchor: { cx: 0.5, cy: 0.5, rx: 0.5, ry: 0.5 },
   };
 
+  let visible = false;
+  let disposed = false;
+  const syncActivity = () => {
+    if (visible && sub.w >= 2 && sub.h >= 2) eng.add(sub);
+    else eng.remove(sub);
+  };
+
   const measure = () => {
+    if (disposed) return;
     sub.dpr = Math.min(2, window.devicePixelRatio || 1);
     // Use the host's untransformed layout box. A cabinet face may be mounted
     // while rotated away; its projected bounding rect changes during the flip
@@ -407,6 +417,7 @@ function attach(
       }
     }
     computeAnchor(sub);
+    syncActivity();
   };
   measure();
   const ro = new ResizeObserver(measure);
@@ -457,8 +468,17 @@ function attach(
   host.addEventListener("pointerleave", onLeave);
   host.addEventListener("pointerdown", onDown);
 
-  eng.add(sub);
+  const stopActivity = activity.observe(host, active => {
+    visible = active;
+    // A clipped/moved control may never receive pointerleave. Keep its pixel
+    // state and last bitmap, but release a pointer that no longer targets it.
+    if (!active) sub.hover = false;
+    syncActivity();
+  });
   return () => {
+    disposed = true;
+    visible = false;
+    stopActivity();
     ro.disconnect();
     mo.disconnect();
     host.removeEventListener("pointerenter", onEnter);
@@ -482,7 +502,7 @@ export function PixelPlay({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    return attach(el, pixel, tone);
+    return attachPixelPlay(el, pixel, tone);
   }, [pixel, tone]);
 
   const cls = [

@@ -11,6 +11,7 @@ import {
   type MaterialLightProfile,
   type ResolvedRoomLight,
   type RoomLightSettings,
+  type RoomLightCssVariableTarget,
   clamp01,
   resolveRoomLight,
   resolveRoomLightInto,
@@ -53,32 +54,54 @@ const ROOM_FLOOR_PROJECTION_CSS_VARIABLES = {
 const conciseProjectionValue = (value: number): string =>
   String(Math.round((Number.isFinite(value) ? value : 0) * 10_000) / 10_000);
 
+const roomLightCssTargets = new WeakMap<HTMLElement, RoomLightCssVariableTarget>();
+
+/** Cache published strings on the actual root, never across room instances.
+ * No style/layout reads are needed during drift. Explicit full applications
+ * reset this cache so applyNow also repairs externally changed inline styles. */
+function roomLightCssTarget(root: HTMLElement): RoomLightCssVariableTarget {
+  let target = roomLightCssTargets.get(root);
+  if (!target) {
+    const values = new Map<string, string>();
+    target = {
+      setProperty(name, value) {
+        if (values.get(name) === value) return;
+        root.style.setProperty(name, value);
+        values.set(name, value);
+      },
+    };
+    roomLightCssTargets.set(root, target);
+  }
+  return target;
+}
+
 /** Publish only compositor inputs for the fixed-size floor receiver. */
 export function applyRoomFloorProjectionCssVariables(
   root: HTMLElement,
   projection: ResolvedRoomFloorProjection,
 ): void {
-  root.style.setProperty(
+  const target = roomLightCssTarget(root);
+  target.setProperty(
     ROOM_FLOOR_PROJECTION_CSS_VARIABLES.x,
     `${conciseProjectionValue(projection.x)}px`,
   );
-  root.style.setProperty(
+  target.setProperty(
     ROOM_FLOOR_PROJECTION_CSS_VARIABLES.y,
     `${conciseProjectionValue(projection.y)}px`,
   );
-  root.style.setProperty(
+  target.setProperty(
     ROOM_FLOOR_PROJECTION_CSS_VARIABLES.angle,
     `${conciseProjectionValue(projection.angle)}deg`,
   );
-  root.style.setProperty(
+  target.setProperty(
     ROOM_FLOOR_PROJECTION_CSS_VARIABLES.scaleX,
     conciseProjectionValue(projection.scaleX),
   );
-  root.style.setProperty(
+  target.setProperty(
     ROOM_FLOOR_PROJECTION_CSS_VARIABLES.scaleY,
     conciseProjectionValue(projection.scaleY),
   );
-  root.style.setProperty(
+  target.setProperty(
     ROOM_FLOOR_PROJECTION_CSS_VARIABLES.visible,
     String(projection.visible),
   );
@@ -202,22 +225,23 @@ export function applyRoomLightCssVariables(
   root: HTMLElement,
   light: ResolvedRoomLight,
 ): void {
-  writeRoomLightCssVariables(root.style, light);
+  roomLightCssTargets.delete(root);
+  writeRoomLightCssVariables(roomLightCssTarget(root), light);
   const pathPosition = String(light.pathPosition);
   root.dataset.lightPosition = pathPosition;
   root.dataset.roomLightPosition = pathPosition;
 }
 
 /**
- * Automatic drift only updates transform/opacity-linked variables. Paint
- * values and data attributes remain on the last explicit state until the user
- * moves the daylight control or the material changes.
+ * Automatic drift updates spatial/opacity cues; window x/y still position the
+ * angled overlay through top/left. Gradient colors and data attributes remain
+ * on the last explicit state until the user changes the light or material.
  */
 export function applyRoomLightCompositeCssVariables(
   root: HTMLElement,
   light: ResolvedRoomLight,
 ): void {
-  writeRoomLightCompositeCssVariables(root.style, light);
+  writeRoomLightCompositeCssVariables(roomLightCssTarget(root), light);
 }
 
 interface SaveDataConnection {
@@ -594,14 +618,15 @@ class BrowserRoomLightController implements RoomLightControllerRuntime {
     light: ResolvedRoomLight,
   ): void {
     const layout = this.floorProjectionLayout;
+    const target = roomLightCssTarget(root);
     const interval = resolveRoomSunlightInterval(ROOM_SUNLIGHT_FRAMES, light.pathPosition);
-    root.style.setProperty("--room-bake-weight", interval && layout ? "1" : "0");
+    target.setProperty("--room-bake-weight", interval && layout ? "1" : "0");
     // The old and incoming fields are both registered to the *current* rays.
     // Only small optical differences dissolve; the window grid keeps moving.
     ROOM_SUNLIGHT_FRAMES.forEach((bake, index) => {
       const weight = interval?.lowerIndex === index ? interval.lowerWeight
         : interval?.upperIndex === index ? interval.upperWeight : 0;
-      root.style.setProperty(`--room-bake-mix-${index}`, String(weight));
+      target.setProperty(`--room-bake-mix-${index}`, String(weight));
       if (weight === 0) return;
       for (const receiver of ["floor", "right-wall"] as const) {
         const projection = layout ? resolveRoomSunlightProjection(bake, light, layout, receiver, {
@@ -609,11 +634,13 @@ class BrowserRoomLightController implements RoomLightControllerRuntime {
         }) : null;
         const prefix = receiver === "floor" ? `--room-bake-${index}` : `--room-wall-bake-${index}`;
         const crop = projection?.sourceBounds;
-        root.style.setProperty(`${prefix}-transform`, projection?.transform ?? "scale(0)");
-        root.style.setProperty(`${prefix}-width`, `${crop?.width ?? bake.width}px`);
-        root.style.setProperty(`${prefix}-height`, `${crop?.height ?? bake.height}px`);
-        root.style.setProperty(`${prefix}-left`, `${-(crop?.x ?? 0)}px`);
-        root.style.setProperty(`${prefix}-top`, `${-(crop?.y ?? 0)}px`);
+        // Exact changing crop dimensions remain layout inputs. Skip only
+        // unchanged strings, including fixed dimensions and hidden receivers.
+        target.setProperty(`${prefix}-transform`, projection?.transform ?? "scale(0)");
+        target.setProperty(`${prefix}-width`, `${crop?.width ?? bake.width}px`);
+        target.setProperty(`${prefix}-height`, `${crop?.height ?? bake.height}px`);
+        target.setProperty(`${prefix}-left`, `${-(crop?.x ?? 0)}px`);
+        target.setProperty(`${prefix}-top`, `${-(crop?.y ?? 0)}px`);
       }
     });
     // React only replaces the pair at a keyframe boundary, never on a drift
@@ -627,7 +654,7 @@ class BrowserRoomLightController implements RoomLightControllerRuntime {
     }
     // Authored only, not solar-phase driven: changing time must not re-raster
     // a blur every tick. Keep the existing edge-softness control meaningful.
-    root.style.setProperty("--room-bake-softness", `${this.settingsRef.current.dappleSoftness * 2}px`);
+    target.setProperty("--room-bake-softness", `${this.settingsRef.current.dappleSoftness * 2}px`);
     if (layout) {
       resolveRoomFloorProjectionInto(this.floorProjection, light, layout);
     } else {

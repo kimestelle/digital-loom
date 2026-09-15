@@ -84,6 +84,7 @@ import {
 } from "@/lib/ui/mapsStrip";
 import type { MapVariationSource } from "@/lib/ui/mapEditorModal";
 import { PixelPlay } from "@/lib/ui/pixelPlay";
+import { PerformanceMeters, type PerformanceMetersHandle } from "@/lib/ui/performanceMeters";
 import { InsertPanel } from "@/lib/ui/insertPanel";
 import { RoomFrame } from "@/lib/ui/roomFrame";
 import {
@@ -99,6 +100,7 @@ import {
 } from "@/lib/ui/materialEditRecovery";
 import { readRoomMaterialEditRecovery } from "@/lib/ui/roomMaterialEditRecovery";
 import { useRoomLightController } from "@/lib/ui/useRoomLightController";
+import { ROOM_NARROW_MEDIA, roomPreviewTileScale } from "@/lib/ui/roomPatternScale";
 import {
   DEFAULT_ROOM_LIGHT_SETTINGS,
   restoreRoomLightSettings,
@@ -388,9 +390,14 @@ export default function Home() {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const clothSceneRef = useRef<ClothSceneHandle | null>(null);
   const [stageSize, setStageSize] = useState({ w: 900, h: 700 });
-  const [perfStats, setPerfStats] = useState<ClothStats | null>(null);
-  // Hysteresis bookkeeping for auto-quality (timestamps, ms).
-  const autoQualRef = useRef({ lowSince: 0, highSince: 0, lastStep: 0 });
+  const [narrowPreview, setNarrowPreview] = useState(false);
+  const perfMetersRef = useRef<PerformanceMetersHandle | null>(null);
+  const reportPerfStats = useCallback((stats: ClothStats) => {
+    perfMetersRef.current?.update(stats);
+  }, []);
+  const applyAutoQuality = useCallback((quality: Knobs["quality"]) => {
+    setKnobs((k) => ({ ...k, quality }));
+  }, []);
 
   // Live mirrors of fast-changing state, so callbacks that only *read* these
   // at call time (clone, export) don't have to list them as deps — that keeps
@@ -877,6 +884,8 @@ export default function Home() {
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
+    const narrow = window.matchMedia(ROOM_NARROW_MEDIA);
+    const measurePatternPreview = () => setNarrowPreview(narrow.matches);
     const measure = () => {
       const rect = stage.getBoundingClientRect();
       // Keep it a wide 4:3-ish stage that snaps to the container size.
@@ -885,9 +894,14 @@ export default function Home() {
       setStageSize({ w, h });
     };
     measure();
+    measurePatternPreview();
+    narrow.addEventListener("change", measurePatternPreview);
     const ro = new ResizeObserver(measure);
     ro.observe(stage);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      narrow.removeEventListener("change", measurePatternPreview);
+    };
   }, []);
 
   // ── run a fresh extraction ─────────────────────────────────────────────
@@ -1259,36 +1273,6 @@ export default function Home() {
     knobs.meshRes,
     knobs.mouseForce,
   ]);
-
-  // ── auto quality: step frag-res to hold frame rate (rendering only) ─────
-  useEffect(() => {
-    if (!knobs.autoQuality || !perfStats) return;
-    const order = ["lo", "mid", "hi"] as const;
-    const idx = order.indexOf(knobs.quality);
-    const now = Date.now();
-    const st = autoQualRef.current;
-    const canStep = now - st.lastStep > 10_000; // ≤ one step / 10s
-    if (perfStats.fps < 45) {
-      st.highSince = 0;
-      if (!st.lowSince) st.lowSince = now;
-      else if (now - st.lowSince > 3_000 && canStep && idx > 0) {
-        setKnobs((k) => ({ ...k, quality: order[idx - 1] }));
-        st.lastStep = now;
-        st.lowSince = 0;
-      }
-    } else if (perfStats.fps > 58) {
-      st.lowSince = 0;
-      if (!st.highSince) st.highSince = now;
-      else if (now - st.highSince > 10_000 && canStep && idx < 2) {
-        setKnobs((k) => ({ ...k, quality: order[idx + 1] }));
-        st.lastStep = now;
-        st.highSince = 0;
-      }
-    } else {
-      st.lowSince = 0;
-      st.highSince = 0;
-    }
-  }, [perfStats, knobs.autoQuality, knobs.quality]);
 
   // Monotonic request id so a slow async lookup from an earlier click can't
   // land after a later one and swap in the wrong material.
@@ -3000,7 +2984,7 @@ export default function Home() {
       <RoomFrame
         ref={roomRootRef}
         stage={
-      <div className="stage" ref={stageRef}>
+      <div className="stage" ref={stageRef} data-pattern-magnification={narrowPreview ? "1.5" : "1"}>
         {/* One persistent scene. `mode` cross-fades the cloth and the object
             in place — no teardown, no remount. */}
         <ClothScene
@@ -3011,7 +2995,7 @@ export default function Home() {
           mode={mode}
           pkg={pkg}
           objectModelUrl={OBJECT_MODEL_URL}
-          objectTileScale={presentedKnobs.tileScale * 5}
+          objectTileScale={roomPreviewTileScale(presentedKnobs.tileScale, narrowPreview) * 5}
           wireframe={knobs.wireframe}
           pinMode={knobs.pinMode}
           openness={opennessCurved}
@@ -3039,7 +3023,7 @@ export default function Home() {
           edgeFray={presentedKnobs.edgeFray}
           edgeSharpness={presentedKnobs.edgeSharpness}
           edgeDetail={presentedKnobs.edgeDetail}
-          tileScale={presentedKnobs.tileScale}
+          tileScale={roomPreviewTileScale(presentedKnobs.tileScale, narrowPreview)}
           txHeight={presentedKnobs.txHeight}
           txAlbedo={presentedKnobs.txAlbedo}
           txRoughness={presentedKnobs.txRoughness}
@@ -3059,7 +3043,7 @@ export default function Home() {
           materialTransitionKey={materialSwap.transitionKey}
           materialExpectedAlbedoURL={materialSwap.expectedAlbedoURL}
           onMaterialReady={materialSwap.materialReady}
-          onStats={setPerfStats}
+          onStats={reportPerfStats}
         />
         {mode === "cloth" && (knobs.pomDebug !== 0 || knobs.wireframe) ? (
           <div className="stage-badge">
@@ -3522,7 +3506,9 @@ export default function Home() {
               />
               <Slider
                 label="pattern scale"
-                hint="texture repeats on a logarithmic scale, so fine and coarse changes get equal room"
+                hint={narrowPreview
+                  ? "saved texture repeats; this small-screen preview shows the pattern 1.5× larger"
+                  : "texture repeats on a logarithmic scale, so fine and coarse changes get equal room"}
                 value={tileScaleToSlider(instrumentState.tileScale)}
                 min={0}
                 max={1}
@@ -3703,7 +3689,9 @@ export default function Home() {
               />
               <Slider
                 label="tile ×"
-                hint="how many times the fabric pattern repeats across the sheet"
+                hint={narrowPreview
+                  ? "saved repeats; the small-screen preview magnifies the pattern 1.5×"
+                  : "how many times the fabric pattern repeats across the sheet"}
                 value={knobs.tileScale}
                 min={0.5}
                 max={16}
@@ -3933,39 +3921,12 @@ export default function Home() {
             hidden={tuningView !== "scene"}
           >
             <SectionLabel hint="live cost of this device drawing the scene">performance</SectionLabel>
-            {/* Live meters (2 Hz) — this device, not the material. */}
-            <div className="perf-meters" role="status" aria-live="off">
-              <span className="perf-meter">
-                <span className="perf-meter-val" data-warn={!!perfStats && perfStats.fps < 40}>
-                  {perfStats ? Math.round(perfStats.fps) : "—"}
-                </span>
-                <span className="perf-meter-unit">fps</span>
-              </span>
-                <span className="perf-meter">
-                  <span className="perf-meter-val">
-                    {perfStats ? perfStats.simMs.toFixed(1) : "—"}
-                  </span>
-                  <span className="perf-meter-unit">sim ms</span>
-                </span>
-                <span className="perf-meter">
-                  <span className="perf-meter-val">
-                    {perfStats?.gpuMs ? perfStats.gpuMs.toFixed(1) : "—"}
-                  </span>
-                  <span className="perf-meter-unit">gpu ms</span>
-                </span>
-              <span className="perf-meter">
-                <span className="perf-meter-val">
-                  {perfStats ? `${Math.round(perfStats.tris / 1000)}k` : "—"}
-                </span>
-                <span className="perf-meter-unit">tris</span>
-              </span>
-              <span className="perf-meter">
-                <span className="perf-meter-val">
-                  {perfStats ? perfStats.calls : "—"}
-                </span>
-                <span className="perf-meter-unit">calls</span>
-              </span>
-            </div>
+            <PerformanceMeters
+              ref={perfMetersRef}
+              autoQuality={knobs.autoQuality}
+              quality={knobs.quality}
+              onQualityChange={applyAutoQuality}
+            />
 
             <button
               type="button"

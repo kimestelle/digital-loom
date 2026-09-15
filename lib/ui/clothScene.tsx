@@ -41,6 +41,7 @@ import {
   seedClothLaunchDrape,
 } from "@/lib/ui/clothLaunchShimmer";
 import { easeMotion } from "@/lib/ui/motion";
+import { clothNeedsBlending } from "@/lib/ui/clothCompositing";
 import type { ResolvedRoomLight } from "@/lib/ui/roomLight";
 import { createRoomWindow3d } from "@/lib/ui/roomWindow3d";
 import {
@@ -1119,7 +1120,10 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       birth: number,
     ): ClothUnit => {
       const spacing = SHEET_SIZE / (cols - 1);
-      const cfg: ClothConfig = { ...DEFAULT_CONFIG, cols, rows, spacing };
+      const cfg: ClothConfig = {
+        ...DEFAULT_CONFIG, cols, rows, spacing,
+        fastConstraintDistances: roomEnvironment,
+      };
       cfg.originX = -SHEET_SIZE / 2;
       cfg.originY = -((rows - 1) * spacing) / 2;
       const solver = new ClothSolver(cfg, fabricRef.current);
@@ -2933,6 +2937,25 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       u.u_iridescence.value = p.iridescence ?? 0;
       u.u_sheen.value = fabricRef.current.sheen;
 
+      // A covered sheet does not need Three's separate transparent front/back
+      // submissions. Use normal opaque depth rendering once the reveal has
+      // settled; preserve double-sided blending for sheer cloth and ALL fades.
+      // This changes neither fragment resolution nor the POM/lighting shader.
+      if (roomEnvironment) {
+        const needsBlending = clothNeedsBlending(
+          u.u_alphaFromDensity.value, u.u_alphaBoost.value, u.u_fade.value,
+          u.u_materialReveal.value, u.u_launchProgress.value,
+        );
+        if (clothMat.transparent !== needsBlending) {
+          clothMat.transparent = needsBlending;
+          clothMat.needsUpdate = true;
+        }
+        const compositing = needsBlending ? "blended" : "opaque";
+        if (container.dataset.clothCompositing !== compositing) {
+          container.dataset.clothCompositing = compositing;
+        }
+      }
+
       // Skybox mode is just a shader uniform on the sky mesh — lighting is
       // driven by the DirectionalLight/HemisphereLight/cloth uniforms and
       // stays exactly the same across modes.
@@ -3151,6 +3174,9 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
           renderer.dispose();
           return;
         }
+        container.dataset.rendererBackend =
+          "isWebGPUBackend" in renderer.backend && renderer.backend.isWebGPUBackend
+            ? "webgpu" : "webgl2";
         resize();
         syncTextures();
         launchWaitStartedAt = performance.now();

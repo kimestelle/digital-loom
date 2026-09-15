@@ -23,12 +23,19 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: /touch\.spec\.ts/,
+      // The hi-resolution iPhone contract runs in WebKit below. Keep the
+      // existing Chromium journeys at their own software-renderer budgets.
+      testIgnore: /(?:touch|room-performance)\.spec\.ts/,
     },
     {
       name: "mobile-chromium",
       use: { ...devices["Pixel 5"] },
       testMatch: /touch\.spec\.ts/,
+    },
+    {
+      name: "mobile-webkit",
+      use: { ...devices["iPhone 13"] },
+      testMatch: /room-performance\.spec\.ts/,
     },
   ],
   webServer: configuredBaseURL

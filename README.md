@@ -97,9 +97,13 @@ npm run lint      # Next.js, React, and TypeScript lint rules
 npm run typecheck # TypeScript without emitting files
 npm test          # Vitest suite
 npm run build     # production build
-npm run test:e2e  # desktop + touch Playwright journeys
+npm run test:e2e  # desktop, touch + WebKit rendering checks
 npm start         # serve the production build
 ```
+
+Install test browsers with `npx playwright install chromium webkit` first.
+See [performance checks](docs/performance.md) for reproducible solver benchmarks
+and the distinction between desktop WebKit checks and actual iPhone performance.
 
 ## Architecture
 
