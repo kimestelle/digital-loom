@@ -2,11 +2,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test } from "playwright/test";
 
-// Contract checks, not a phone FPS benchmark. Exercise real maps/shaders at hi
-// fragment resolution, with a small simulation so software CI can compile.
+// Contract checks with real maps/shaders, not a phone FPS benchmark.
 test.use({ trace: "off" });
 
-test("keeps hi pixels, responsive pattern scale, coverage switching and mobile controls", async ({ page, isMobile }, testInfo) => {
+test("caps mobile rendering without overwriting preferences and keeps touch controls", async ({ page, isMobile }, testInfo) => {
   test.setTimeout(240_000);
   const seed = JSON.parse(await readFile(join(process.cwd(),
     "fabrics/presets/71871d958aa681541baf9159cbf98bc4.json"), "utf8"));
@@ -38,8 +37,8 @@ test("keeps hi pixels, responsive pattern scale, coverage switching and mobile c
   });
   await page.addInitScript(() => {
     localStorage.setItem("loom.perf", JSON.stringify({
-      quality: "hi", meshRes: "lo", iterations: 1, selfCollide: "off",
-      anisotropy: 2, autoQuality: false,
+      quality: "hi", meshRes: "hi", iterations: 6, selfCollide: "full",
+      anisotropy: 8, autoQuality: true,
     }));
     localStorage.setItem("loom.room.v1", JSON.stringify({ autoDrift: false }));
   });
@@ -52,12 +51,12 @@ test("keeps hi pixels, responsive pattern scale, coverage switching and mobile c
   testInfo.annotations.push({ type: "renderer", description: (await scene.getAttribute("data-renderer-backend")) ?? "unknown" });
   await expect(page.locator(".stage")).toHaveAttribute("data-pattern-magnification", "1.5");
   const canvas = scene.locator("canvas").first();
-  // Headless Chromium may compile the hi POM shader through software GL after
-  // the first frame has published its coverage flag. Allow that one-time work.
+  await expect(scene).toHaveAttribute("data-mesh-cols", "32");
+  await expect(scene).toHaveAttribute("data-mesh-rows", "32");
   await expect.poll(() => canvas.evaluate(element => {
     const canvas = element as HTMLCanvasElement;
     return canvas.width / canvas.getBoundingClientRect().width;
-  }), { timeout: 90_000 }).toBe(2);
+  }), { timeout: 90_000 }).toBeCloseTo(0.5, 2);
 
   await activate("show material dossier");
   const area = page.getByRole("slider", { name: /^open area/ });
@@ -83,5 +82,15 @@ test("keeps hi pixels, responsive pattern scale, coverage switching and mobile c
   await page.setViewportSize({ width: 960, height: 720 });
   await expect(page.locator(".stage")).toHaveAttribute("data-pattern-magnification", "1");
   await expect(scene).toHaveAttribute("data-cloth-compositing", "opaque");
+  // A landscape phone remains capped even beyond the narrow layout breakpoint.
+  await expect(scene).toHaveAttribute("data-mesh-cols", "32");
+  await expect.poll(() => canvas.evaluate(element => {
+    const canvas = element as HTMLCanvasElement;
+    return canvas.width / canvas.getBoundingClientRect().width;
+  })).toBeCloseTo(0.5, 2);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("loom.perf")!))).toMatchObject({
+    quality: "hi", meshRes: "hi", iterations: 6, selfCollide: "full",
+    anisotropy: 8, autoQuality: true,
+  });
   expect(errors).toEqual([]);
 });

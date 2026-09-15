@@ -101,6 +101,7 @@ import {
 import { readRoomMaterialEditRecovery } from "@/lib/ui/roomMaterialEditRecovery";
 import { useRoomLightController } from "@/lib/ui/useRoomLightController";
 import { ROOM_NARROW_MEDIA, roomPreviewTileScale } from "@/lib/ui/roomPatternScale";
+import { ROOM_MOBILE_PERFORMANCE_MEDIA, roomPerformance } from "@/lib/ui/roomPerformance";
 import {
   DEFAULT_ROOM_LIGHT_SETTINGS,
   restoreRoomLightSettings,
@@ -391,6 +392,8 @@ export default function Home() {
   const clothSceneRef = useRef<ClothSceneHandle | null>(null);
   const [stageSize, setStageSize] = useState({ w: 900, h: 700 });
   const [narrowPreview, setNarrowPreview] = useState(false);
+  const [mobilePerformance, setMobilePerformance] = useState<boolean | null>(null);
+  const previewPerformance = roomPerformance(knobs, mobilePerformance === true);
   const perfMetersRef = useRef<PerformanceMetersHandle | null>(null);
   const reportPerfStats = useCallback((stats: ClothStats) => {
     perfMetersRef.current?.update(stats);
@@ -885,6 +888,8 @@ export default function Home() {
     const stage = stageRef.current;
     if (!stage) return;
     const narrow = window.matchMedia(ROOM_NARROW_MEDIA);
+    const mobile = window.matchMedia(ROOM_MOBILE_PERFORMANCE_MEDIA);
+    const measurePerformance = () => setMobilePerformance(mobile.matches);
     const measurePatternPreview = () => setNarrowPreview(narrow.matches);
     const measure = () => {
       const rect = stage.getBoundingClientRect();
@@ -895,12 +900,15 @@ export default function Home() {
     };
     measure();
     measurePatternPreview();
+    measurePerformance();
+    mobile.addEventListener("change", measurePerformance);
     narrow.addEventListener("change", measurePatternPreview);
     const ro = new ResizeObserver(measure);
     ro.observe(stage);
     return () => {
       ro.disconnect();
       narrow.removeEventListener("change", measurePatternPreview);
+      mobile.removeEventListener("change", measurePerformance);
     };
   }, []);
 
@@ -2987,7 +2995,7 @@ export default function Home() {
       <div className="stage" ref={stageRef} data-pattern-magnification={narrowPreview ? "1.5" : "1"}>
         {/* One persistent scene. `mode` cross-fades the cloth and the object
             in place — no teardown, no remount. */}
-        <ClothScene
+        {mobilePerformance !== null && <ClothScene
           ref={clothSceneRef}
           fabric={fabric}
           width={stageSize.w}
@@ -3016,8 +3024,8 @@ export default function Home() {
           stretchDebug={knobs.stretchDebug}
           albedoAmount={presentedKnobs.albedoAmount}
           pomScale={presentedKnobs.pomScale}
-          pomMinSteps={knobs.pomMinSteps}
-          pomMaxSteps={knobs.pomMaxSteps}
+          pomMinSteps={previewPerformance.pomMinSteps}
+          pomMaxSteps={previewPerformance.pomMaxSteps}
           pomDebug={knobs.pomDebug}
           edgeInset={presentedKnobs.edgeInset}
           edgeFray={presentedKnobs.edgeFray}
@@ -3028,15 +3036,16 @@ export default function Home() {
           txAlbedo={presentedKnobs.txAlbedo}
           txRoughness={presentedKnobs.txRoughness}
           transmissionContrast={presentedKnobs.transmissionContrast}
-          pixelScale={QUALITY_PRESETS[knobs.quality].pixelScale}
-          meshCols={MESH_PRESETS[knobs.meshRes].cols}
-          meshRows={MESH_PRESETS[knobs.meshRes].rows}
+          pixelScale={QUALITY_PRESETS[previewPerformance.quality].pixelScale}
+          antialias={mobilePerformance ? false : undefined}
+          meshCols={MESH_PRESETS[previewPerformance.meshRes].cols}
+          meshRows={MESH_PRESETS[previewPerformance.meshRes].rows}
           breeze={knobs.breeze}
           skyMode={knobs.skyMode === "sky" ? 0 : 1}
           mouseForce={knobs.mouseForce}
-          iterations={knobs.iterations}
-          selfCollide={knobs.selfCollide}
-          anisotropy={knobs.anisotropy}
+          iterations={previewPerformance.iterations}
+          selfCollide={previewPerformance.selfCollide}
+          anisotropy={previewPerformance.anisotropy}
           environment="room"
           roomLightRef={roomLight.resolvedRef}
           materialRevealRef={materialSwap.opacityRef}
@@ -3044,7 +3053,7 @@ export default function Home() {
           materialExpectedAlbedoURL={materialSwap.expectedAlbedoURL}
           onMaterialReady={materialSwap.materialReady}
           onStats={reportPerfStats}
-        />
+        />}
         {mode === "cloth" && (knobs.pomDebug !== 0 || knobs.wireframe) ? (
           <div className="stage-badge">
             {[
@@ -3321,6 +3330,7 @@ export default function Home() {
             hidden={tuningView !== "scene"}
           >
             <SectionLabel hint="how sharply the scene is drawn; higher is crisper but works the GPU harder">frag res</SectionLabel>
+            {mobilePerformance && <p className="room-performance-note">Mobile preview uses low resolution and a 32 × 32 mesh. Saved materials and desktop preferences stay unchanged.</p>}
             <div className="tx-mode-picker tx-mode-picker-wide" role="tablist">
               <PixelPlay tone="ink" layer="over" />
               {(
@@ -3334,9 +3344,10 @@ export default function Home() {
                   key={opt.v}
                   type="button"
                   role="tab"
-                  aria-selected={knobs.quality === opt.v}
+                  disabled={mobilePerformance === true}
+                  aria-selected={previewPerformance.quality === opt.v}
                   className="tx-mode-tab"
-                  data-active={knobs.quality === opt.v}
+                  data-active={previewPerformance.quality === opt.v}
                   onClick={() => {
                     const preset = QUALITY_PRESETS[opt.v];
                     setKnobs((k) => ({
@@ -3372,9 +3383,10 @@ export default function Home() {
                   key={opt.v}
                   type="button"
                   role="tab"
-                  aria-selected={knobs.meshRes === opt.v}
+                  disabled={mobilePerformance === true}
+                  aria-selected={previewPerformance.meshRes === opt.v}
                   className="tx-mode-tab"
-                  data-active={knobs.meshRes === opt.v}
+                  data-active={previewPerformance.meshRes === opt.v}
                   onClick={() =>
                     setKnobs((k) => ({ ...k, meshRes: opt.v }))
                   }
@@ -3397,17 +3409,17 @@ export default function Home() {
               <IntSlider
                 label="pom min"
                 hint="guaranteed relief samples even when the offset is small on screen"
-                value={knobs.pomMinSteps}
+                value={previewPerformance.pomMinSteps}
                 min={2}
-                max={32}
+                max={mobilePerformance ? 6 : 32}
                 onChange={(v) => setKnobs((k) => ({ ...k, pomMinSteps: v }))}
               />
               <IntSlider
                 label="pom max"
                 hint="ceiling for grazing angles and close-up relief"
-                value={knobs.pomMaxSteps}
+                value={previewPerformance.pomMaxSteps}
                 min={8}
-                max={64}
+                max={mobilePerformance ? 16 : 64}
                 onChange={(v) => setKnobs((k) => ({ ...k, pomMaxSteps: v }))}
               />
             </div>
@@ -3923,30 +3935,31 @@ export default function Home() {
             <SectionLabel hint="live cost of this device drawing the scene">performance</SectionLabel>
             <PerformanceMeters
               ref={perfMetersRef}
-              autoQuality={knobs.autoQuality}
-              quality={knobs.quality}
+              autoQuality={mobilePerformance === false && previewPerformance.autoQuality}
+              quality={previewPerformance.quality}
               onQualityChange={applyAutoQuality}
             />
 
             <button
               type="button"
               className="btn btn-ghost btn-toggle perf-auto"
-              data-pressed={knobs.autoQuality}
+              disabled={mobilePerformance !== false}
+              data-pressed={previewPerformance.autoQuality}
               onClick={() =>
                 setKnobs((k) => ({ ...k, autoQuality: !k.autoQuality }))
               }
               title="auto-lower frag res when the frame rate sags (rendering only — never the sim)"
             >
-              auto quality {knobs.autoQuality ? "on" : "off"}
+              auto quality {previewPerformance.autoQuality ? "on" : "off"}
             </button>
 
             <div className="knob-stack">
               <IntSlider
                 label="iterations"
                 hint="solver passes per frame — more keeps the cloth taut and stable, fewer is faster"
-                value={knobs.iterations}
+                value={previewPerformance.iterations}
                 min={2}
-                max={8}
+                max={mobilePerformance ? 3 : 8}
                 onChange={(v) => setKnobs((k) => ({ ...k, iterations: v }))}
               />
             </div>
@@ -3965,9 +3978,10 @@ export default function Home() {
                   key={opt.v}
                   type="button"
                   role="tab"
-                  aria-selected={knobs.selfCollide === opt.v}
+                  disabled={mobilePerformance === true && opt.v === "full"}
+                  aria-selected={previewPerformance.selfCollide === opt.v}
                   className="tx-mode-tab"
-                  data-active={knobs.selfCollide === opt.v}
+                  data-active={previewPerformance.selfCollide === opt.v}
                   onClick={() =>
                     setKnobs((k) => ({ ...k, selfCollide: opt.v }))
                   }
@@ -3985,9 +3999,10 @@ export default function Home() {
                   key={v}
                   type="button"
                   role="tab"
-                  aria-selected={knobs.anisotropy === v}
+                  disabled={mobilePerformance === true}
+                  aria-selected={previewPerformance.anisotropy === v}
                   className="tx-mode-tab"
-                  data-active={knobs.anisotropy === v}
+                  data-active={previewPerformance.anisotropy === v}
                   onClick={() => setKnobs((k) => ({ ...k, anisotropy: v }))}
                 >
                   {v}×

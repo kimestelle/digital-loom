@@ -148,6 +148,8 @@ interface Props {
   txRoughness?: number;
   transmissionContrast?: number;
   pixelScale?: number;
+  /** Mount-time override for constrained devices. Otherwise follows pixel scale. */
+  antialias?: boolean;
   breeze?: number;
   meshCols?: number;
   meshRows?: number;
@@ -278,7 +280,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       // what kills older GPUs. Only request MSAA at lower pixel scales,
       // where edges would otherwise stair-step. (Construction-time only;
       // runtime quality flips keep whichever choice the mount made.)
-      antialias: pixelScale < 1.5,
+      antialias: propsRef.current.antialias ?? pixelScale < 1.5,
       alpha: roomEnvironment,
       powerPreference: "high-performance",
       forceWebGL: FORCE_WEBGL,
@@ -3279,6 +3281,8 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     <div
       ref={mountRef}
       className="cloth-scene"
+      data-mesh-cols={props.meshCols}
+      data-mesh-rows={props.meshRows}
       style={{
         display: "block",
         width: width ? `${width}px` : "100%",

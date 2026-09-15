@@ -7,6 +7,26 @@ The pattern controls explain the distinction.
 
 ## Costs and retained changes
 
+### Mobile preview budget
+
+Narrow screens (≤820px) and coarse hoverless devices now use half-resolution
+rendering (0.5 backing pixels per CSS pixel), a 32×32 mesh, at most three solver
+iterations, half-rate self-collision (or off if already selected), 2× anisotropy,
+and at most 6–16 POM steps. MSAA is disabled when mounting on mobile. The scene
+waits for device detection before mounting, avoiding an initial desktop-sized
+renderer and mesh. Landscape phones retain the same cap.
+
+Compared with the desktop defaults, this is 1/16 the backing pixels and 1,024
+instead of 2,304 particles, with half as many solver passes. These are workload
+reductions, not measured FPS gains. Fine folds and edge sharpness are reduced.
+Touch forces, authored material maps, saved swatches and exports are unchanged.
+The cap is derived, never saved over desktop preferences. Auto quality cannot
+raise it or overwrite those preferences. Controls show the effective budget.
+Desktop-sized mouse devices regain their saved settings; MSAA remains a
+mount-time choice. `/sky` keeps its original defaults.
+
+### Earlier optimizations
+
 - The default 48×48 solver has 2,304 particles and 13,346 constraints. Six
   iterations mean about 80,000 distance projections per tick. Room instances
   use square-root distances for finite Float32 positions; `/sky` retains
@@ -30,7 +50,8 @@ The pattern controls explain the distinction.
   use their existing precision and cadence. Bloom, textures and light transitions
   are unchanged; the sunlight system already uses adjacent baked frames.
 
-Fragment resolution, POM quality, touch response and bloom were not reduced.
+The earlier optimizations below did not reduce fragment resolution or POM
+quality. The mobile budget above now does; touch response and bloom remain.
 
 ## Cached room background
 
@@ -96,16 +117,14 @@ node scripts/benchmark-cloth-solver-browser.mjs webkit 1054e3d
 PLAYWRIGHT_BASE_URL=http://localhost:3003 npx playwright test e2e/room-performance.spec.ts --project=mobile-webkit
 ```
 
-The WebKit UI test uses an iPhone viewport, real material maps, 2× fragment
-resolution and native taps. Its smaller simulation isolates rendering contracts;
-it is not a full-load performance benchmark. `data-renderer-backend` on
+The WebKit UI test uses an iPhone viewport, real material maps, the mobile
+budget and native taps. It verifies that stored high settings remain intact,
+and the low budget survives landscape resize. It is not a phone FPS benchmark.
+`data-renderer-backend` on
 `.cloth-scene` records whether the actual renderer chose WebGPU or WebGL2.
 
-The hi-resolution contract runs only in the WebKit project. An additional
-headless Chromium run did not complete within four minutes on this host; it is
-not a passing result. Existing Chromium desktop/touch journeys retain their
-own rendering budgets. The native WebGPU preview was checked separately, but
-that does not substitute for a passing automated high-resolution Chromium run.
+The mobile-budget contract runs in the WebKit project. Existing Chromium
+desktop/touch journeys retain their own rendering budgets.
 
 ## Next measurement
 

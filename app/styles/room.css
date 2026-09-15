@@ -908,6 +908,13 @@
   color: var(--fg-mute);
 }
 
+.room-performance-note {
+  margin: 0;
+  color: var(--fg-mute);
+  font-size: var(--room-type-detail);
+  line-height: 1.5;
+}
+
 .cabinet-pane--material .preview-strip {
   grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
   gap: var(--room-space-2);

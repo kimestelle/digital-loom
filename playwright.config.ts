@@ -23,7 +23,7 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      // The hi-resolution iPhone contract runs in WebKit below. Keep the
+      // The mobile-budget iPhone contract runs in WebKit below. Keep the
       // existing Chromium journeys at their own software-renderer budgets.
       testIgnore: /(?:touch|room-performance)\.spec\.ts/,
     },
