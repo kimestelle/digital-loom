@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { attachPixelPlay } from "./pixelPlay";
+import { attachPixelPlay, PIXEL_PLAY_STATIC_MEDIA } from "./pixelPlay";
 import { PixelPlayActivity } from "./pixelPlayActivity";
 
 class ActivityElement {
@@ -40,6 +40,9 @@ let mutations: FakeMutationObserver[];
 let cleanups: (() => void)[];
 let frames: Map<number, FrameRequestCallback>;
 let nextFrame: number;
+let media: { matches: boolean; addEventListener: ReturnType<typeof vi.fn>; removeEventListener: ReturnType<typeof vi.fn> };
+let mediaListeners: Set<() => void>;
+let resizes: FakeResizeObserver[];
 
 class FakeIntersectionObserver {
   observed = new Set<Element>();
@@ -65,6 +68,7 @@ class FakeMutationObserver {
 }
 
 class FakeResizeObserver {
+  constructor(readonly callback: () => void) { resizes.push(this); }
   observe = vi.fn();
   disconnect = vi.fn();
 }
@@ -75,8 +79,15 @@ beforeEach(() => {
   cleanups = [];
   frames = new Map();
   nextFrame = 1;
+  resizes = [];
+  mediaListeners = new Set();
+  media = {
+    matches: false,
+    addEventListener: vi.fn((_event: string, listener: () => void) => mediaListeners.add(listener)),
+    removeEventListener: vi.fn((_event: string, listener: () => void) => mediaListeners.delete(listener)),
+  };
   vi.stubGlobal("document", { documentElement: new ActivityElement() });
-  vi.stubGlobal("window", { devicePixelRatio: 2, matchMedia: () => ({ matches: false }) });
+  vi.stubGlobal("window", { devicePixelRatio: 2, matchMedia: vi.fn(() => media) });
   vi.stubGlobal("HTMLElement", ActivityElement);
   vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
   vi.stubGlobal("MutationObserver", FakeMutationObserver);
@@ -203,6 +214,77 @@ describe("PixelPlay activity", () => {
 });
 
 describe("PixelPlay animation suspension", () => {
+  it("draws a visible static selection on mobile without scheduling animation frames", () => {
+    media.matches = true;
+    const host = new ActivityElement();
+    const { context } = attach(host);
+    intersections[0].emit(host, true);
+    expect(window.matchMedia).toHaveBeenCalledWith(PIXEL_PLAY_STATIC_MEDIA);
+    expect(context.fillRect).toHaveBeenCalledOnce();
+    expect(context.fillStyle).toContain("0.95");
+    expect(frames.size).toBe(0);
+    animate(64);
+    animate(10_000);
+    expect(context.clearRect).toHaveBeenCalledOnce();
+
+    const selection = new ActivityElement();
+    Object.assign(selection, { offsetLeft: 100, offsetTop: 0, offsetWidth: 40, offsetHeight: 32, offsetParent: host });
+    host.querySelector.mockReturnValue(selection as never);
+    mutations.find(observer => observer.options?.attributeFilter?.includes("data-pressed"))!.emit(host);
+    expect(context.fillRect).toHaveBeenCalledTimes(2);
+    expect(context.fillRect.mock.calls[1][0]).toBeGreaterThan(context.fillRect.mock.calls[0][0]);
+    resizes[0].callback();
+    expect(context.fillRect).toHaveBeenCalledTimes(3);
+    expect(frames.size).toBe(0);
+  });
+
+  it("does no pointer layout reads on mobile and keeps hidden selection changes asleep", () => {
+    media.matches = true;
+    const host = new ActivityElement();
+    const { context } = attach(host);
+    intersections[0].emit(host, true);
+    for (const [, listener] of host.addEventListener.mock.calls) listener({ clientX: 10, clientY: 10 });
+    expect(host.getBoundingClientRect).not.toHaveBeenCalled();
+    expect(context.clearRect).toHaveBeenCalledOnce();
+    intersections[0].emit(host, false);
+    mutations.find(observer => observer.options?.attributeFilter?.includes("data-pressed"))!.emit(host);
+    expect(context.clearRect).toHaveBeenCalledOnce();
+    intersections[0].emit(host, true);
+    expect(context.clearRect).toHaveBeenCalledTimes(2);
+    expect(frames.size).toBe(0);
+  });
+
+  it("shares one media listener, switches modes live, and tears down the last subscriber", () => {
+    const firstHost = new ActivityElement();
+    const secondHost = new ActivityElement();
+    const first = attach(firstHost);
+    attach(secondHost);
+    intersections[0].emit(firstHost, true);
+    intersections[0].emit(secondHost, true);
+    expect(mediaListeners.size).toBe(1);
+    expect(media.addEventListener).toHaveBeenCalledOnce();
+    expect(frames.size).toBe(1);
+    animate(64);
+
+    media.matches = true;
+    for (const listener of mediaListeners) listener();
+    expect(frames.size).toBe(0);
+    const staticDraws = first.context.clearRect.mock.calls.length;
+    animate(5_000);
+    expect(first.context.clearRect).toHaveBeenCalledTimes(staticDraws);
+
+    media.matches = false;
+    for (const listener of mediaListeners) listener();
+    expect(frames.size).toBe(1);
+    animate(5_032);
+    expect(first.context.clearRect.mock.calls.length).toBeGreaterThan(staticDraws);
+    cleanups.shift()!();
+    expect(mediaListeners.size).toBe(1);
+    cleanups.shift()!();
+    expect(mediaListeners.size).toBe(0);
+    expect(frames.size).toBe(0);
+  });
+
   it("retains the last bitmap, stops the last ticker, and resumes without remounting the canvas", () => {
     const host = new ActivityElement();
     const { context, canvas } = attach(host);

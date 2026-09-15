@@ -1,6 +1,7 @@
 import { forwardRef, type CSSProperties, type ReactNode } from "react";
 import { RoomSunlightImage } from "./roomSunlightImage";
 import { RoomWindowLight, DEFAULT_ROOM_SUNLIGHT_BLOOM } from "./roomWindowLight";
+import { RoomSurfaceCache } from "./roomSurfaceCache";
 
 export interface RoomFrameProps {
   /** The single persistent Three canvas and its specimen interaction layer. */
@@ -120,6 +121,8 @@ export const RoomFrame = forwardRef<HTMLElement, RoomFrameProps>(function RoomFr
           />
         </svg>
 
+        <RoomSurfaceCache paletteRevision={JSON.stringify(style ?? {})} />
+
         <div className="room-frame__sunlight-shade" />
 
         <div
@@ -135,10 +138,10 @@ export const RoomFrame = forwardRef<HTMLElement, RoomFrameProps>(function RoomFr
           <RoomWindowLight vectorFrame={stage == null} bloom={sunlightBloom} />
         </div>
         <div className="room-frame__wall-light">
-          {sunlight === "baked" ? <RoomSunlightImage bloom={sunlightBloom} receiver="right-wall" /> : null}
+          {sunlight === "baked" ? <RoomSunlightImage bloom={sunlightBloom} tone={sunlightTone} receiver="right-wall" /> : null}
         </div>
         <div className="room-frame__ground-light">
-          {sunlight === "baked" ? <RoomSunlightImage bloom={sunlightBloom} /> : null}
+          {sunlight === "baked" ? <RoomSunlightImage bloom={sunlightBloom} tone={sunlightTone} /> : null}
           <div className="room-frame__floor-projection">
             <div className="room-frame__dapple">
               <div className="room-frame__dapple-mask room-frame__dapple-mask--soft" />

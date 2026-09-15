@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "settings": {
+    "bloom": 1,
+    "softness": 1,
+    "edgeBlurPx": 4,
+    "workingPaddingPx": 128,
+    "outputCrop": "source-bounds"
+  },
+  "renderer": {
+    "engine": "chromium",
+    "version": "149.0.7827.55",
+    "deviceScaleFactor": 1
+  },
+  "filterSha256": "3a2b6443fd8aa1b8c846dcd1b45456c1439a3140ef49dd587114260f1f256aaf",
+  "frames": [
+    {
+      "originalImage": "/2d-textures/room-sunlight-dawn.png",
+      "image": "/2d-textures/room-sunlight-display-dawn.png",
+      "pathPosition": 0.25,
+      "width": 1024,
+      "height": 512,
+      "offsetX": 0,
+      "offsetY": 0,
+      "checks": {
+        "originalPngSha256": "92774dc0867e25e52250eba1691d6a5069ede44b428e0eafd70cbece2c0d51bc",
+        "pngSha256": "39f696ceb6c567501cf34c8d74d4fa1d2871e21e83775ed00fcd8d32280af00b",
+        "bytes": 314910,
+        "validation": [
+          {
+            "scale": 1,
+            "meanAbsoluteByteError": 0,
+            "rootMeanSquareByteError": 0,
+            "maximumByteError": 0,
+            "pixelsOverOneByteFraction": 0
+          },
+          {
+            "scale": 0.6,
+            "meanAbsoluteByteError": 0.27064,
+            "rootMeanSquareByteError": 0.54099,
+            "maximumByteError": 3.62745,
+            "pixelsOverOneByteFraction": 0.09839
+          },
+          {
+            "scale": 0.35,
+            "meanAbsoluteByteError": 0.53578,
+            "rootMeanSquareByteError": 0.93754,
+            "maximumByteError": 6.16078,
+            "pixelsOverOneByteFraction": 0.22729
+          }
+        ]
+      }
+    },
+    {
+      "originalImage": "/2d-textures/room-sunlight-morning.png",
+      "image": "/2d-textures/room-sunlight-display-morning.png",
+      "pathPosition": 0.375,
+      "width": 1024,
+      "height": 512,
+      "offsetX": 0,
+      "offsetY": 0,
+      "checks": {
+        "originalPngSha256": "ddcf9fce0bf1adec30bc7ba4046706f15aad7decca9d9167b0966878a3970c11",
+        "pngSha256": "6a9cdf819012594cab390d2ae073b689ccaf36586f9966ff3f5b370c2181c8a0",
+        "bytes": 290697,
+        "validation": [
+          {
+            "scale": 1,
+            "meanAbsoluteByteError": 0,
+            "rootMeanSquareByteError": 0,
+            "maximumByteError": 0,
+            "pixelsOverOneByteFraction": 0
+          },
+          {
+            "scale": 0.6,
+            "meanAbsoluteByteError": 0.277,
+            "rootMeanSquareByteError": 0.54423,
+            "maximumByteError": 3.44314,
+            "pixelsOverOneByteFraction": 0.09435
+          },
+          {
+            "scale": 0.35,
+            "meanAbsoluteByteError": 0.54498,
+            "rootMeanSquareByteError": 0.93206,
+            "maximumByteError": 6.61569,
+            "pixelsOverOneByteFraction": 0.22526
+          }
+        ]
+      }
+    },
+    {
+      "originalImage": "/2d-textures/room-sunlight-noon.png",
+      "image": "/2d-textures/room-sunlight-display-noon.png",
+      "pathPosition": 0.5,
+      "width": 1024,
+      "height": 512,
+      "offsetX": 0,
+      "offsetY": 0,
+      "checks": {
+        "originalPngSha256": "06013279b9a7dbaa1464d0f102519720a14ddb81720cf23c7e3a5d01b2896dad",
+        "pngSha256": "1b6cc8573c45d98927a3d7e2cd221904ac006654ec02fc003118070605ffe0be",
+        "bytes": 302090,
+        "validation": [
+          {
+            "scale": 1,
+            "meanAbsoluteByteError": 0,
+            "rootMeanSquareByteError": 0,
+            "maximumByteError": 0,
+            "pixelsOverOneByteFraction": 0
+          },
+          {
+            "scale": 0.6,
+            "meanAbsoluteByteError": 0.27403,
+            "rootMeanSquareByteError": 0.54437,
+            "maximumByteError": 3.67059,
+            "pixelsOverOneByteFraction": 0.09704
+          },
+          {
+            "scale": 0.35,
+            "meanAbsoluteByteError": 0.53168,
+            "rootMeanSquareByteError": 0.92606,
+            "maximumByteError": 5.54902,
+            "pixelsOverOneByteFraction": 0.22147
+          }
+        ]
+      }
+    },
+    {
+      "originalImage": "/2d-textures/room-sunlight-afternoon.png",
+      "image": "/2d-textures/room-sunlight-display-afternoon.png",
+      "pathPosition": 0.625,
+      "width": 1024,
+      "height": 512,
+      "offsetX": 0,
+      "offsetY": 0,
+      "checks": {
+        "originalPngSha256": "74d6bed9e5026da198286a040edf5779e5c6e81e97c491c98646a0bcb193f02b",
+        "pngSha256": "7b8ecb4c11d085f295a6b8240bd27d8efb5147bcdc52c0b2600c4d9af5d2af06",
+        "bytes": 300575,
+        "validation": [
+          {
+            "scale": 1,
+            "meanAbsoluteByteError": 0,
+            "rootMeanSquareByteError": 0,
+            "maximumByteError": 0,
+            "pixelsOverOneByteFraction": 0
+          },
+          {
+            "scale": 0.6,
+            "meanAbsoluteByteError": 0.29812,
+            "rootMeanSquareByteError": 0.5717,
+            "maximumByteError": 4.43922,
+            "pixelsOverOneByteFraction": 0.10871
+          },
+          {
+            "scale": 0.35,
+            "meanAbsoluteByteError": 0.50979,
+            "rootMeanSquareByteError": 0.89065,
+            "maximumByteError": 5.60392,
+            "pixelsOverOneByteFraction": 0.21145
+          }
+        ]
+      }
+    },
+    {
+      "originalImage": "/2d-textures/room-sunlight-dusk.png",
+      "image": "/2d-textures/room-sunlight-display-dusk.png",
+      "pathPosition": 0.75,
+      "width": 1024,
+      "height": 512,
+      "offsetX": 0,
+      "offsetY": 0,
+      "checks": {
+        "originalPngSha256": "0485a09314952639c8ba463734a6cadaab94b90ff7dc88e21e2cc9bdfb9d55bf",
+        "pngSha256": "f1f36f85266a325fc5f7c549b4b33d1fc2a951b14efd675dd0d1413c78eccbcc",
+        "bytes": 296821,
+        "validation": [
+          {
+            "scale": 1,
+            "meanAbsoluteByteError": 0,
+            "rootMeanSquareByteError": 0,
+            "maximumByteError": 0,
+            "pixelsOverOneByteFraction": 0
+          },
+          {
+            "scale": 0.6,
+            "meanAbsoluteByteError": 0.31752,
+            "rootMeanSquareByteError": 0.59761,
+            "maximumByteError": 3.72157,
+            "pixelsOverOneByteFraction": 0.10953
+          },
+          {
+            "scale": 0.35,
+            "meanAbsoluteByteError": 0.51135,
+            "rootMeanSquareByteError": 0.89002,
+            "maximumByteError": 5.56863,
+            "pixelsOverOneByteFraction": 0.20825
+          }
+        ]
+      }
+    }
+  ]
+}

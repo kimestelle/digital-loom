@@ -30,6 +30,7 @@ import { resolveRoomSunlightProjection } from "./roomSunlightProjection";
 import { ROOM_SUNLIGHT_FRAMES, ROOM_SUNLIGHT_INTERVAL_EVENT } from "./roomSunlightAtlas";
 import { resolveRoomSunlightInterval } from "./roomSunlightTimeline";
 import { resolveRoomWindowGeometry } from "./roomWindowGeometry";
+import { ROOM_SURFACE_INVALIDATE_EVENT } from "./roomSurfaceSnapshot";
 
 export const DEFAULT_ROOM_LIGHT_DRIFT_RATE =
   DEFAULT_ROOM_LIGHT_SETTINGS.driftRate;
@@ -230,6 +231,9 @@ export function applyRoomLightCssVariables(
   const pathPosition = String(light.pathPosition);
   root.dataset.lightPosition = pathPosition;
   root.dataset.roomLightPosition = pathPosition;
+  // Palette changes rebuild the mobile substrate; autonomous daylight drift
+  // does not call this path and only composites the already-painted layers.
+  if (typeof root.dispatchEvent === "function") root.dispatchEvent(new Event(ROOM_SURFACE_INVALIDATE_EVENT));
 }
 
 /**
@@ -655,6 +659,8 @@ class BrowserRoomLightController implements RoomLightControllerRuntime {
     // Authored only, not solar-phase driven: changing time must not re-raster
     // a blur every tick. Keep the existing edge-softness control meaningful.
     target.setProperty("--room-bake-softness", `${this.settingsRef.current.dappleSoftness * 2}px`);
+    const softness = String(this.settingsRef.current.dappleSoftness);
+    if (root.dataset.roomSunlightSoftness !== softness) root.dataset.roomSunlightSoftness = softness;
     if (layout) {
       resolveRoomFloorProjectionInto(this.floorProjection, light, layout);
     } else {

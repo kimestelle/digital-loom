@@ -26,6 +26,11 @@
 
 import { useEffect, useRef } from "react";
 import { PixelPlayActivity } from "./pixelPlayActivity";
+import { ROOM_NARROW_MEDIA } from "./roomPatternScale";
+
+// Include landscape phones, not just the narrow room layout. Selection still
+// paints on change; mobile/reduced-motion hosts need no continuous ticker.
+export const PIXEL_PLAY_STATIC_MEDIA = `${ROOM_NARROW_MEDIA}, (hover: none) and (pointer: coarse), (prefers-reduced-motion: reduce)`;
 
 export type PixelPlayTone = "dye" | "ink";
 
@@ -221,28 +226,66 @@ class PixelEngine {
   private subs = new Set<Sub>();
   private raf = 0;
   private lastRender = 0;
-  private reduced =
-    typeof window.matchMedia === "function"
-      ? window.matchMedia("(prefers-reduced-motion: reduce)")
-      : null;
+  private media: MediaQueryList | null = null;
+  private staticMode = false;
+
+  get animated() { return !this.staticMode; }
 
   add(sub: Sub) {
+    if (this.subs.size === 0) {
+      this.media = typeof window.matchMedia === "function"
+        ? window.matchMedia(PIXEL_PLAY_STATIC_MEDIA) : null;
+      this.staticMode = this.media?.matches ?? false;
+      this.media?.addEventListener("change", this.onMotionChange);
+    }
     this.subs.add(sub);
-    if (!this.raf) {
+    if (this.staticMode) this.paintSelection(sub);
+    else this.start();
+  }
+
+  private start() {
+    if (!this.raf && this.subs.size > 0) {
       this.lastRender = 0;
       this.raf = requestAnimationFrame(this.tick);
     }
   }
 
+  private onMotionChange = () => {
+    this.staticMode = this.media?.matches ?? false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    for (const sub of this.subs) {
+      sub.hover = false;
+      this.paintSelection(sub);
+      sub.nextBurst = sub.t + 3 + Math.random() * 4;
+    }
+    if (!this.staticMode) this.start();
+  };
+
+  private paintSelection(s: Sub) {
+    s.pos.x = s.anchor.cx;
+    s.pos.y = s.anchor.cy;
+    s.trail.length = 0;
+    s.burst = null;
+    s.born = s.t - 1; // A static marker must not wait for a fade-in frame.
+    render(s);
+  }
+
   remove(sub: Sub) {
     this.subs.delete(sub);
-    if (this.subs.size === 0 && this.raf) {
-      cancelAnimationFrame(this.raf);
+    if (this.subs.size === 0) {
+      if (this.raf) cancelAnimationFrame(this.raf);
       this.raf = 0;
+      this.media?.removeEventListener("change", this.onMotionChange);
+      this.media = null;
     }
   }
 
   burstAt(s: Sub, x: number, y: number, respawn = false, recolor = false) {
+    if (this.staticMode) {
+      if (this.subs.has(s)) this.paintSelection(s);
+      return;
+    }
     // Debounce so a click + the resulting selection change pop one star.
     // Respawn (exit) and recolor (enter/exit) pops always land.
     if (!respawn && !recolor && s.burst && s.t - s.burst.t0 < 0.3) return;
@@ -304,13 +347,7 @@ class PixelEngine {
       const cellY = (s.pixel * s.dpr) / s.h;
       const a = s.anchor;
 
-      if (this.reduced?.matches) {
-        // Reduced motion: the pixel simply marks the selection (or pointer).
-        s.pos.x = s.hover ? s.mouse.x : a.cx;
-        s.pos.y = s.hover ? s.mouse.y : a.cy;
-        s.trail.length = 0;
-        s.burst = null;
-      } else if (s.burst?.respawn) {
+      if (s.burst?.respawn) {
         // Between lives: frozen where it popped while the shards fly.
         s.trail.length = 0;
       } else {
@@ -444,22 +481,26 @@ export function attachPixelPlay(
     }
   };
   const onEnter = (e: PointerEvent) => {
+    if (!eng.animated) return;
     sub.hover = true;
     toUnit(e);
     // Pop where it idled and re-dye — both pixel and text fade to a new color.
     eng.burstAt(sub, sub.pos.x, sub.pos.y, false, true);
   };
   const onMove = (e: PointerEvent) => {
+    if (!eng.animated) return;
     sub.hover = true;
     toUnit(e);
   };
   const onLeave = () => {
+    if (!eng.animated) return;
     sub.hover = false;
     // The pixel dies right where it stands the instant feedback cuts off,
     // re-dyes, then respawns at its anchor in the new color.
     eng.burstAt(sub, sub.pos.x, sub.pos.y, true, true);
   };
   const onDown = (e: PointerEvent) => {
+    if (!eng.animated) return;
     toUnit(e);
     eng.burstAt(sub, sub.mouse.x, sub.mouse.y);
   };

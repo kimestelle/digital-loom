@@ -35,7 +35,7 @@ export default defineConfig({
     {
       name: "mobile-webkit",
       use: { ...devices["iPhone 13"] },
-      testMatch: /room-performance\.spec\.ts/,
+      testMatch: /(?:room-performance|room-background|sunlight)\.spec\.ts/,
     },
   ],
   webServer: configuredBaseURL

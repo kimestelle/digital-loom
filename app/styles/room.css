@@ -87,6 +87,22 @@
   overflow: hidden;
 }
 
+/* The phone substrate is one viewport-sized bitmap. Keep the source SVG's
+   layout box intact: the projection controller measures that same geometry. */
+.room-frame__surface-cache {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: none;
+  pointer-events: none;
+}
+.room-frame[data-room-surface-cached="true"] .room-frame__planes {
+  visibility: hidden;
+}
+.room-frame[data-room-surface-cached="true"] .room-frame__surface-cache {
+  display: block;
+}
+
 /* Static atmosphere plates: the controller changes only their opacity, not
    the room textures or gradients. The specimen uses the same cycle snapshot. */
 .room-frame__architecture::before,
@@ -308,7 +324,8 @@
 }
 
 /* The frame comes from the same twelve quads as the depth-tested Three form.
-   These local filters repaint on resize/tuning only, never on a solar tick. */
+   Window bloom is cached to a visible-region bitmap after geometry changes;
+   the SVG filter remains only as a loading/failure fallback. */
 .room-frame__window-vector {
   position: absolute;
   z-index: 3;

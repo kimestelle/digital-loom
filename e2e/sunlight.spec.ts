@@ -191,12 +191,16 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
         height: element.naturalHeight,
       }))).toEqual({ complete: true, width: 1024, height: 512 });
       expect(await wallImage.getAttribute("src")).toBe(await image.getAttribute("src"));
+      await expect(image).toHaveAttribute("data-sunlight-display", "baked");
+      await expect(image).toHaveAttribute("src", /room-sunlight-display-morning\.png\?/);
+      await expect(image).toHaveCSS("filter", "none");
       const floorFilterId = await root.locator(".room-frame__ground-light filter").getAttribute("id");
       const wallFilterId = await wallLight.locator("filter").getAttribute("id");
       expect(floorFilterId).toBeTruthy();
       expect(wallFilterId).toBeTruthy();
       expect(wallFilterId).not.toBe(floorFilterId);
-      expect(await wallImage.evaluate(element => getComputedStyle(element).filter)).toContain(`#${wallFilterId}`);
+      await expect(wallImage).toHaveAttribute("data-sunlight-display", "baked");
+      await expect(wallImage).toHaveCSS("filter", "none");
 
       const geometry = await root.evaluate(element => {
         const rect = (selector: string) => {
@@ -220,7 +224,9 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
           wallClip: clipPoints(".room-frame__wall-light"),
         };
       });
-      expect(geometry.room).toEqual(viewport);
+      // WebKit resolves dvh through fractional layout units on mobile.
+      expect(geometry.room.width).toBeCloseTo(viewport.width, 1);
+      expect(geometry.room.height).toBeCloseTo(viewport.height, 1);
       expect(geometry.planes.height).toBeCloseTo(viewport.height * (viewport.width === 390 ? 0.8 : 1), 1);
       expect(geometry.aperture.height).toBeCloseTo(viewport.height * 0.49886899, 1);
       expect(geometry.aperture.width).toBeCloseTo(viewport.height * 1.05769231, 1);
@@ -249,7 +255,9 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
       expect((await lightState(root)).receiverOpacity).toBeGreaterThan(0);
       expect((await lightState(root)).wallReceiverOpacity).toBeGreaterThan(0);
       expect((await lightState(root)).windowBloomOpacity).toBeGreaterThan(0);
-      await expect(page.locator("canvas")).toHaveCount(0);
+      // The only canvas allowed here is the new cached 2D room substrate.
+      // The study must not instantiate the cloth/WebGL renderer.
+      await expect(page.locator("canvas:not(.room-frame__surface-cache)")).toHaveCount(0);
       await expectWindowGeometry(root, viewport);
 
       // Resize both across the mobile breakpoint and to a wider desktop. The
@@ -283,7 +291,7 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
       expect(errors).toEqual([]);
     });
 
-    test("compares reference exposure without changing the bake or room geometry", async ({ page }) => {
+    test("switches baked and adjustable exposure without changing the optical projection", async ({ page }) => {
       await page.goto(FIXTURE, { timeout: 30_000 });
       const root = page.locator(".room-frame");
       const image = root.locator('.room-frame__sunlight-bake[data-sunlight-frame="1"]');
@@ -297,13 +305,18 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
       await expect.poll(async () => (await lightState(root)).active).toBe(1);
       await expect(root).toHaveAttribute("data-room-sunlight-tone", "sunlit");
       await expect(contrast).toHaveAttribute("aria-pressed", "true");
-      await expect(image).toHaveCSS("filter", /^url\(.+room-sunlight-exposure-.+\) blur\(4px\)$/);
+      await expect(image).toHaveAttribute("data-sunlight-display", "baked");
+      await expect(image).toHaveCSS("filter", "none");
       const exposureFilter = await image.evaluate(element => getComputedStyle(element).filter);
       const plate = await image.evaluate((element: HTMLImageElement) => ({
         source: element.currentSrc,
         transform: getComputedStyle(element).transform,
         bounds: element.getBoundingClientRect().toJSON(),
       }));
+      const projection = await image.evaluate(element => {
+        const crop = element.closest(".room-frame__sunlight-plate")!;
+        return { transform: getComputedStyle(crop).transform, bounds: crop.getBoundingClientRect().toJSON() };
+      });
       const reference = await lightState(root);
       expect(reference.receiverOpacity).toBeCloseTo(Math.min(0.92, reference.dappleAmount * 1.5), 5);
       expect(reference.shadeOpacity).toBeGreaterThan(0);
@@ -319,11 +332,15 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
       await expect.poll(async () => Number(await bloom.inputValue())).toBeCloseTo(0.5, 1);
       await bloom.press("Home");
       await expect(bloom).toHaveValue("0");
+      await expect(image).toHaveAttribute("data-sunlight-display", "live");
+      await expect(image).toHaveAttribute("src", /\/room-sunlight-morning\.png\?/);
+      await expect(image).toHaveCSS("filter", /^url\(.+room-sunlight-exposure-.+\) blur\(4px\)$/);
       await expect(nearBloom).toHaveAttribute("slope", "0");
       await expect(wideBloom).toHaveAttribute("slope", "0");
       await expect.poll(async () => (await lightState(root)).windowBloomOpacity).toBe(0);
       await bloom.press("End");
       await expect(bloom).toHaveValue("1");
+      await expect(image).toHaveAttribute("data-sunlight-display", "baked");
       await expect(nearBloom).toHaveAttribute("slope", "1.1");
       await expect(wideBloom).toHaveAttribute("slope", "1.25");
       await expect(directAlpha).toHaveAttribute("slope", "2.85");
@@ -339,19 +356,25 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
       await expect(root).toHaveAttribute("data-room-sunlight-tone", "neutral");
       await expect(contrast).toHaveAttribute("aria-pressed", "false");
       await expect(bloom).toBeDisabled();
+      await expect(image).toHaveAttribute("data-sunlight-display", "live");
+      await expect(image).toHaveAttribute("src", /\/room-sunlight-morning\.png\?/);
       await expect(image).toHaveCSS("filter", "blur(2px)");
       const neutral = await lightState(root);
       expect(neutral.receiverOpacity).toBeCloseTo(neutral.dappleAmount, 5);
       expect(neutral.shadeOpacity).toBe(0);
       expect(neutral.windowBloomOpacity).toBe(0);
-      expect(await image.evaluate((element: HTMLImageElement) => ({
-        source: element.currentSrc,
-        transform: getComputedStyle(element).transform,
-        bounds: element.getBoundingClientRect().toJSON(),
-      }))).toEqual(plate);
+      // Display derivatives retain the optical source extent. Switching to
+      // adjustable optics must not move the crop or room-space projection.
+      expect(await image.evaluate(element => {
+        const crop = element.closest(".room-frame__sunlight-plate")!;
+        return { transform: getComputedStyle(crop).transform, bounds: crop.getBoundingClientRect().toJSON() };
+      })).toEqual(projection);
+      expect(await image.evaluate((element: HTMLImageElement) => ({ width: element.naturalWidth, height: element.naturalHeight })))
+        .toEqual({ width: 1024, height: 512 });
 
       await contrast.click();
       await expect(bloom).toBeEnabled();
+      await expect(image).toHaveAttribute("data-sunlight-display", "baked");
       await expect(image).toHaveCSS("filter", exposureFilter);
       const strength = page.getByRole("slider", { name: "light patch strength", exact: true });
       await strength.press("End");
@@ -362,7 +385,7 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
       await page.getByRole("slider", { name: "time of day", exact: true }).press("ArrowRight");
       await expect(image).toHaveCSS("filter", exposureFilter);
       await expect(directAlpha).toHaveAttribute("slope", "2.85");
-      await expect(page.locator("canvas")).toHaveCount(0);
+      await expect(page.locator("canvas:not(.room-frame__surface-cache)")).toHaveCount(0);
     });
 
     test("uses distinct daylight frames, fades only the active interval, and turns off at night", async ({ page }) => {
@@ -387,7 +410,8 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
         expect((await lightState(root)).windowNightOpacity).toBe(index === 0 || index === 4 ? 0.72 : 0);
         expect((await lightState(root)).windowNightPaint).toBe(windowNightPaint);
         // Bloom / softness are display controls, unchanged by interval swaps.
-        await expect(root.locator(".room-frame__sunlight-bake")).toHaveCSS("filter", /^url\(.+\) blur\(4px\)$/);
+        await expect(root.locator(".room-frame__sunlight-bake")).toHaveAttribute("data-sunlight-display", "baked");
+        await expect(root.locator(".room-frame__sunlight-bake")).toHaveCSS("filter", "none");
         const transforms = await root.locator(".room-frame__sunlight-plate").evaluateAll(plates =>
           plates.map(plate => Array.from(new DOMMatrixReadOnly(getComputedStyle(plate).transform).toFloat64Array())));
         expect(transforms.every(matrix => matrix.every(Number.isFinite))).toBe(true);
@@ -436,13 +460,16 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
       await expect.poll(async () => (await lightState(root)).active).toBe(1);
       const image = root.locator(".room-frame__sunlight-bake");
       const softness = page.getByRole("slider", { name: "edge softness", exact: true });
-      await expect(image).toHaveCSS("filter", /^url\(.+\) blur\(4px\)$/);
+      await expect(image).toHaveCSS("filter", "none");
       await softness.press("Home");
       await expect(softness).toHaveValue("0");
+      await expect(image).toHaveAttribute("data-sunlight-display", "live");
+      await expect(image).toHaveAttribute("src", /\/room-sunlight-morning\.png\?/);
       await expect(image).toHaveCSS("filter", /^url\(.+\) blur\(0px\)$/);
       await softness.press("End");
       await expect(softness).toHaveValue("1");
-      await expect(image).toHaveCSS("filter", /^url\(.+\) blur\(4px\)$/);
+      await expect(image).toHaveAttribute("data-sunlight-display", "baked");
+      await expect(image).toHaveCSS("filter", "none");
       const strength = page.getByRole("slider", { name: "light patch strength", exact: true });
       await strength.press("Home");
       await expect(strength).toHaveValue("0");
@@ -469,7 +496,34 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
       expect(failed).toMatchObject({ active: 0, receiverOpacity: 0, wallReceiverOpacity: 0, shadeOpacity: 0, windowBloomOpacity: 0 });
       expect(failed.fallbackOpacity).toBeGreaterThan(0);
       expect(failed.fallbackOpacity).toBeCloseTo(failed.dappleAmount, 5);
-      await expect(page.locator("canvas")).toHaveCount(0);
+      await expect(page.locator("canvas:not(.room-frame__surface-cache)")).toHaveCount(0);
+    });
+
+    test("falls back to live optics when only the display derivative fails", async ({ page }) => {
+      let failedDisplays = 0;
+      await page.route(/\/room-sunlight-display-[^/?]+\.png(?:\?|$)/, async route => {
+        failedDisplays++;
+        await route.abort();
+      });
+      await page.goto(FIXTURE, { timeout: 30_000 });
+      const root = page.locator(".room-frame");
+      await expect.poll(() => failedDisplays).toBeGreaterThan(0);
+      await expect(root).toHaveAttribute("data-room-sunlight-ready", "true");
+      await expect(root).toHaveAttribute("data-room-sunlight-wall-ready", "true");
+      for (const receiver of [FLOOR_RECEIVER, WALL_RECEIVER]) {
+        const image = root.locator(`${receiver} img`);
+        await expect(image).toHaveAttribute("data-sunlight-display", "live");
+        await expect(image).toHaveAttribute("src", /\/room-sunlight-morning\.png\?/);
+        await expect(image).toHaveCSS("filter", /^url\(.+\) blur\(4px\)$/);
+        expect(await image.evaluate((element: HTMLImageElement) => ({ width: element.naturalWidth, height: element.naturalHeight })))
+          .toEqual({ width: 1024, height: 512 });
+      }
+      await expectFrames(root, [1], [1]);
+      const state = await lightState(root);
+      expect(state.active).toBe(1);
+      expect(state.fallbackOpacity).toBe(0);
+      expect(state.receiverOpacity).toBeGreaterThan(0);
+      expect(state.wallReceiverOpacity).toBeGreaterThan(0);
     });
 
     test("holds a decoded neighbor during a partial failure and falls back only without a valid plate", async ({ page }) => {
@@ -554,7 +608,7 @@ for (const viewport of [{ width: 1280, height: 832 }, { width: 390, height: 844 
         await expect(root).toHaveAttribute("data-room-sunlight-ready", "true");
         await expect(root).toHaveAttribute("data-room-sunlight-wall-ready", "true");
         await expect.poll(async () => (await lightState(root)).active).toBe(1);
-        await expect(page.locator("canvas")).toHaveCount(0);
+        await expect(page.locator("canvas:not(.room-frame__surface-cache)")).toHaveCount(0);
       } finally {
         release();
         await Promise.all(pending);

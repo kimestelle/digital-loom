@@ -1,6 +1,7 @@
 "use client";
 
-import { useId, type CSSProperties } from "react";
+import { useEffect, useId, useRef, type CSSProperties } from "react";
+import { attachRoomWindowBloomCache, ROOM_WINDOW_BLOOM } from "./roomWindowBloomCache";
 
 export const DEFAULT_ROOM_SUNLIGHT_BLOOM = 1;
 
@@ -15,16 +16,20 @@ export function RoomWindowLight({ vectorFrame = false, bloom = DEFAULT_ROOM_SUNL
   bloom?: number;
 }) {
   const id = `room-window-scatter-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
-  return <svg className="room-frame__window-vector" data-room-window-vector=""
+  const ref = useRef<SVGSVGElement>(null);
+  useEffect(() => {
+    if (ref.current) return attachRoomWindowBloomCache(ref.current);
+  }, []);
+  return <svg ref={ref} className="room-frame__window-vector" data-room-window-vector=""
     data-frame-renderer={vectorFrame ? "vector" : "stage"}
     style={{ "--room-window-bloom": clampRoomSunlightBloom(bloom) } as CSSProperties}
     aria-hidden="true" focusable="false" preserveAspectRatio="none">
     <defs>
       <filter id={id} x="-15%" y="-30%" width="130%" height="160%" colorInterpolationFilters="sRGB">
-        <feGaussianBlur in="SourceGraphic" stdDeviation="18" result="wide" />
-        <feComponentTransfer in="wide" result="wide-bloom"><feFuncA type="linear" slope="0.3" /></feComponentTransfer>
-        <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="near" />
-        <feComponentTransfer in="near" result="near-bloom"><feFuncA type="linear" slope="0.55" /></feComponentTransfer>
+        <feGaussianBlur in="SourceGraphic" stdDeviation={ROOM_WINDOW_BLOOM.wideRadius} result="wide" />
+        <feComponentTransfer in="wide" result="wide-bloom"><feFuncA type="linear" slope={ROOM_WINDOW_BLOOM.wideAlpha} /></feComponentTransfer>
+        <feGaussianBlur in="SourceGraphic" stdDeviation={ROOM_WINDOW_BLOOM.nearRadius} result="near" />
+        <feComponentTransfer in="near" result="near-bloom"><feFuncA type="linear" slope={ROOM_WINDOW_BLOOM.nearAlpha} /></feComponentTransfer>
         <feMerge><feMergeNode in="wide-bloom" /><feMergeNode in="near-bloom" /></feMerge>
       </filter>
     </defs>
@@ -34,8 +39,11 @@ export function RoomWindowLight({ vectorFrame = false, bloom = DEFAULT_ROOM_SUNL
     </g> : null}
     {/* Deliberately no sharp source in this filter: its spill can sit beneath
         the cloth without recreating a second visible window frame. */}
-    <g className="room-frame__window-bloom" filter={`url(#${id})`} fill="#fff">
-      <path data-window-path="aperture" />
+    <g className="room-frame__window-bloom">
+      <g data-window-bloom-source="" filter={`url(#${id})`} fill="#fff">
+        <path data-window-path="aperture" />
+      </g>
+      <image data-window-bloom-cache="" preserveAspectRatio="none" style={{ display: "none" }} />
     </g>
   </svg>;
 }
