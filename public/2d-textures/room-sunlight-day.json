@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "frames": [
+    {
+      "pathPosition": 0.25,
+      "image": "/2d-textures/room-sunlight-dawn.png",
+      "width": 1024,
+      "height": 512,
+      "bounds": {
+        "minX": 1.090935,
+        "minY": 0.89683,
+        "maxX": 6.747978,
+        "maxY": 3.0336
+      },
+      "aperture": {
+        "width": 3.2,
+        "bottom": 1,
+        "top": 2.65,
+        "panes": 5,
+        "horizontalBarHeight": 1.891,
+        "outerFrameWidth": 0.025,
+        "verticalBarWidth": 0.022,
+        "horizontalBarWidth": 0.026,
+        "frameDepth": 0.018
+      },
+      "direction": {
+        "x": 0.6541451991257947,
+        "y": 0.5542401395808532,
+        "z": -0.5146959550434325
+      },
+      "checks": {
+        "pngSha256": "92774dc0867e25e52250eba1691d6a5069ede44b428e0eafd70cbece2c0d51bc"
+      }
+    },
+    {
+      "pathPosition": 0.375,
+      "image": "/2d-textures/room-sunlight-morning.png",
+      "width": 1024,
+      "height": 512,
+      "bounds": {
+        "minX": 0.868026,
+        "minY": 0.808004,
+        "maxX": 6.157269,
+        "maxY": 2.798212
+      },
+      "aperture": {
+        "width": 3.2,
+        "bottom": 1,
+        "top": 2.65,
+        "panes": 5,
+        "horizontalBarHeight": 1.891,
+        "outerFrameWidth": 0.025,
+        "verticalBarWidth": 0.022,
+        "horizontalBarWidth": 0.026,
+        "frameDepth": 0.018
+      },
+      "direction": {
+        "x": 0.597701042991324,
+        "y": 0.5634700661612481,
+        "z": -0.5703112726812632
+      },
+      "checks": {
+        "pngSha256": "ddcf9fce0bf1adec30bc7ba4046706f15aad7decca9d9167b0966878a3970c11"
+      }
+    },
+    {
+      "pathPosition": 0.5,
+      "image": "/2d-textures/room-sunlight-noon.png",
+      "width": 1024,
+      "height": 512,
+      "bounds": {
+        "minX": 0.748302,
+        "minY": 0.801132,
+        "maxX": 5.84,
+        "maxY": 2.78
+      },
+      "aperture": {
+        "width": 3.2,
+        "bottom": 1,
+        "top": 2.65,
+        "panes": 5,
+        "horizontalBarHeight": 1.891,
+        "outerFrameWidth": 0.025,
+        "verticalBarWidth": 0.022,
+        "horizontalBarWidth": 0.026,
+        "frameDepth": 0.018
+      },
+      "direction": {
+        "x": 0.552368441235532,
+        "y": 0.5838040435822694,
+        "z": -0.5950310444203901
+      },
+      "checks": {
+        "pngSha256": "06013279b9a7dbaa1464d0f102519720a14ddb81720cf23c7e3a5d01b2896dad"
+      }
+    },
+    {
+      "pathPosition": 0.625,
+      "image": "/2d-textures/room-sunlight-afternoon.png",
+      "width": 1024,
+      "height": 512,
+      "bounds": {
+        "minX": 0.644434,
+        "minY": 0.808004,
+        "maxX": 5.564751,
+        "maxY": 2.798212
+      },
+      "aperture": {
+        "width": 3.2,
+        "bottom": 1,
+        "top": 2.65,
+        "panes": 5,
+        "horizontalBarHeight": 1.891,
+        "outerFrameWidth": 0.025,
+        "verticalBarWidth": 0.022,
+        "horizontalBarWidth": 0.026,
+        "frameDepth": 0.018
+      },
+      "direction": {
+        "x": 0.5058884556560057,
+        "y": 0.6062580791918137,
+        "z": -0.6136187838133984
+      },
+      "checks": {
+        "pngSha256": "74d6bed9e5026da198286a040edf5779e5c6e81e97c491c98646a0bcb193f02b"
+      }
+    },
+    {
+      "pathPosition": 0.75,
+      "image": "/2d-textures/room-sunlight-dusk.png",
+      "width": 1024,
+      "height": 512,
+      "bounds": {
+        "minX": 0.626474,
+        "minY": 0.89683,
+        "maxX": 5.517156,
+        "maxY": 3.0336
+      },
+      "aperture": {
+        "width": 3.2,
+        "bottom": 1,
+        "top": 2.65,
+        "panes": 5,
+        "horizontalBarHeight": 1.891,
+        "outerFrameWidth": 0.025,
+        "verticalBarWidth": 0.022,
+        "horizontalBarWidth": 0.026,
+        "frameDepth": 0.018
+      },
+      "direction": {
+        "x": 0.4811050918621397,
+        "y": 0.6423872295101765,
+        "z": -0.5965538851994528
+      },
+      "checks": {
+        "pngSha256": "0485a09314952639c8ba463734a6cadaab94b90ff7dc88e21e2cc9bdfb9d55bf"
+      }
+    }
+  ]
+}

@@ -3,6 +3,8 @@
    Order matters (later files may override earlier ones):
 
      tokens.css    design tokens: fonts, color/size variables, reset
+     authoring-tokens.css compatibility theme for retained dark authoring overlays
+     room-tokens.css room chrome, surfaces, type, spacing, motion roles
      layout.css    app shell, header, stage, mode toggle, status pill, mobile
      buttons.css   shared button styles
      pixelplay.css companion-pixel canvas for buttons/pickers
@@ -10,9 +12,12 @@
      workshop.css  insert cell, prompt fields, generated-maps strip
      library.css   material swatches, selection, drag grip/markers
      room.css      flat room, material cabinet, daylight modal
+     room-controls.css shared room control primitives
 */
 
 @import "./styles/tokens.css";
+@import "./styles/authoring-tokens.css";
+@import "./styles/room-tokens.css";
 @import "./styles/layout.css";
 @import "./styles/buttons.css";
 @import "./styles/pixelplay.css";
@@ -20,3 +25,5 @@
 @import "./styles/workshop.css";
 @import "./styles/library.css";
 @import "./styles/room.css";
+@import "./styles/room-controls.css";
+@import "./styles/material-edit-shelf.css";

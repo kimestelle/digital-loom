@@ -13,8 +13,12 @@ npm install
 npm run dev
 ```
 
-The preserved original opens at [http://localhost:3000](http://localhost:3000).
-The new room interface opens at [http://localhost:3000/room](http://localhost:3000/room).
+The room interface opens at [http://localhost:3000](http://localhost:3000).
+The preserved original sky interface opens at [http://localhost:3000/sky](http://localhost:3000/sky).
+Existing `/room` links redirect to `/`, retaining query parameters.
+The isolated [component workbench](http://localhost:3000/room/components) lets you
+inspect the real UI, edit per-specimen token drafts, reset states, and export CSS.
+It does not load the cloth renderer, call extraction, or write to your materials.
 They have separate root layouts, styles, and renderer entry points; crossing
 between them loads a new document. Their material library and APIs remain shared.
 The embeddable viewer demo
@@ -34,7 +38,7 @@ Users can also paste their own fal key in the swatch archive's add-material
 disclosure (stored in localStorage, sent per request) — it overrides the server
 key.
 
-## Room workflow (`/room`)
+## Room workflow (`/`)
 
 The studio opens on the committed red-silk reference specimen. The white-glass
 swatch archive selects, duplicates, imports, and reorders sources; the square
@@ -99,9 +103,9 @@ npm start         # serve the production build
 
 ## Architecture
 
-- `app/(room)/room/page.tsx` owns the room's material library, autosave, and tuning UI.
+- `app/(room)/page.tsx` owns the room's material library, autosave, and tuning UI at `/`.
 - `app/(original)/` and `lib/original/ui/` preserve the original interface and renderer
-  from `ae7cf659752dc83088cd1d7c5130e1ace6396885` at `/`.
+  from `ae7cf659752dc83088cd1d7c5130e1ace6396885` at `/sky`.
 - `app/api/` exposes Patina extraction, cache, sample, and preset routes.
 - `lib/cloth/` contains the fabric model and typed-array XPBD cloth solver.
 - `lib/ui/clothScene.tsx` connects the solver to Three.js and the custom shaders.
@@ -115,6 +119,11 @@ npm start         # serve the production build
 - `lib/core/loomMaterial.ts` defines the strict, versioned authored-material contract.
 - `lib/export/` creates and reopens material/collection ZIPs; ORM and GLB are
   reported as optional derived artifacts when the browser cannot build them.
+
+The [room design system](docs/design-system.md) documents the shared UI tokens,
+control variants, stylesheet order, and accessibility rules. Room tokens and
+primitives live in `app/styles/room-tokens.css` and `room-controls.css`; retained
+dark authoring overlays use a separate compatibility theme.
 
 The material flow is:
 

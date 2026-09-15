@@ -40,6 +40,10 @@ import {
   paramSig,
 } from "@/lib/ui/knobs";
 import type { MaterialPreset } from "@/lib/presets/types";
+import {
+  roomMaterialPreset,
+  roomOpennessCoverageFields,
+} from "@/lib/ui/roomMaterialPreset";
 import { WeaveDiagram } from "@/lib/ui/weaveDiagram";
 import {
   IntSlider,
@@ -87,6 +91,13 @@ import {
   type MaterialCabinetFace,
 } from "@/lib/ui/materialCabinet";
 import { RoomLightModal } from "@/lib/ui/roomLightModal";
+import { MaterialEditShelf } from "@/lib/ui/materialEditShelf";
+import { MaterialLeaveDialog } from "@/lib/ui/materialLeaveDialog";
+import {
+  materialEditRecoveryKey,
+  serializeMaterialEditRecovery,
+} from "@/lib/ui/materialEditRecovery";
+import { readRoomMaterialEditRecovery } from "@/lib/ui/roomMaterialEditRecovery";
 import { useRoomLightController } from "@/lib/ui/useRoomLightController";
 import {
   DEFAULT_ROOM_LIGHT_SETTINGS,
@@ -237,6 +248,7 @@ function TuningViewPicker({
 const PREGEN_MANIFEST = "/pregen/silk-sample/manifest.json";
 const PREGEN_BASE = "/pregen/silk-sample";
 const ROOM_LIGHT_STORAGE_KEY = "loom.room.v1";
+const LAST_EDITED_MATERIAL_KEY = "loom.room.last-edited-material.v1";
 // Content hash of the pregen silk-sample bundle — the boot material and the
 // maps behind the curated "red silk" preset.
 const PREGEN_HASH = "71871d958aa681541baf9159cbf98bc4";
@@ -245,24 +257,6 @@ function axisWord(value: number, low: string, middle: string, high: string): str
   if (value < 0.34) return low;
   if (value > 0.66) return high;
   return middle;
-}
-
-/** Keep the deprecated transparency trio coherent after the modern openness
- * control moves. Imported presets may retain independently authored legacy
- * values until the user explicitly changes openness. */
-function opennessCompatibilityFields(
-  openness: number,
-): Pick<
-  FabricKnobs,
-  "translucency" | "densityAmount" | "alphaFromDensity"
-> {
-  const raw = Math.min(1, Math.max(0, openness));
-  const effective = Math.pow(raw, 3);
-  return {
-    translucency: effective,
-    densityAmount: 1 - 0.5 * effective,
-    alphaFromDensity: 0.1 * effective,
-  };
 }
 
 /** A selectable swatch — a built-in sample, a cached extraction, a curated
@@ -322,6 +316,13 @@ export default function Home() {
     inferConstruction(fabricKnobsOf(DEFAULT_KNOBS)),
   );
   const [keepingDraft, setKeepingDraft] = useState(false);
+  const [savedSwatchName, setSavedSwatchName] = useState<string | null>(null);
+  const [viewingSavedSwatch, setViewingSavedSwatch] = useState(false);
+  const [recoveryWarning, setRecoveryWarning] = useState<string | null>(null);
+  const [leaveAction, setLeaveAction] = useState<string | null>(null);
+  const leaveResolverRef = useRef<((proceed: boolean) => void) | null>(null);
+  const recoveryCheckedRef = useRef<string | null>(null);
+  const resumedMaterialRef = useRef(false);
   const [pendingMaterialId, setPendingMaterialId] = useState<string | null>(null);
   const [tuningView, setTuningView] = useState<TuningView>("fabric");
   const tuningScrollRef = useRef<HTMLElement | null>(null);
@@ -428,7 +429,7 @@ export default function Home() {
       setSaveStatus("saving");
     } else {
       setSaveMessage(null);
-      setSaveStatus("saved");
+      setSaveStatus(isMaterialDraftDirty(materialDraftRef.current) ? "dirty" : "saved");
     }
   }, []);
 
@@ -533,12 +534,21 @@ export default function Home() {
     setMaterialDraft(next);
   }, []);
 
-  const confirmDiscardWorkingDraft = useCallback((action: string): boolean => {
-    if (!isMaterialDraftDirty(materialDraftRef.current)) return true;
-    return window.confirm(
-      `Discard this unkept material draft and ${action}?`,
-    );
+  const confirmDiscardWorkingDraft = useCallback((action: string): Promise<boolean> => {
+    if (!isMaterialDraftDirty(materialDraftRef.current)) return Promise.resolve(true);
+    if (leaveResolverRef.current) return Promise.resolve(false);
+    setLeaveAction(action);
+    return new Promise(resolve => { leaveResolverRef.current = resolve; });
   }, []);
+
+  const resolveLeave = useCallback((proceed: boolean) => {
+    const resolve = leaveResolverRef.current;
+    leaveResolverRef.current = null;
+    setLeaveAction(null);
+    resolve?.(proceed);
+  }, []);
+
+  useEffect(() => () => { leaveResolverRef.current?.(false); }, []);
 
   const replaceLiveFabric = useCallback((nextFabric: FabricKnobs) => {
     const next: Knobs = { ...knobsRef.current, ...nextFabric };
@@ -550,6 +560,8 @@ export default function Home() {
    * imported, estimated, or explicitly kept. */
   const loadMaterialDraft = useCallback(
     (nextFabric: FabricKnobs) => {
+      recoveryCheckedRef.current = null;
+      setSavedSwatchName(null);
       const nextConstruction = inferConstruction(nextFabric);
       const nextDraft = materialDraftReducer(materialDraftRef.current, {
         type: "keep",
@@ -601,7 +613,7 @@ export default function Home() {
       const opennessFields =
         patch.openness === undefined
           ? null
-          : opennessCompatibilityFields(patch.openness);
+          : roomOpennessCoverageFields(patch.openness);
       replaceLiveFabric({
         ...fabricKnobsOf(knobsRef.current),
         ...opennessFields,
@@ -621,7 +633,7 @@ export default function Home() {
           ? result.knobs
           : {
               ...result.knobs,
-              ...opennessCompatibilityFields(result.knobs.openness),
+              ...roomOpennessCoverageFields(result.knobs.openness),
             },
       );
     },
@@ -629,6 +641,7 @@ export default function Home() {
   );
 
   const commitFabricGesture = useCallback(() => {
+    setSavedSwatchName(null);
     const currentFabric = fabricKnobsOf(knobsRef.current);
     const nextConstruction = inferConstruction(currentFabric);
     const previous = materialDraftRef.current;
@@ -685,6 +698,17 @@ export default function Home() {
     },
     [markSaveDirty, replaceLiveFabric, setMaterialDraftNow, updateSaveIndicator],
   );
+
+  const clearMaterialRecovery = useCallback((id = activeIdRef.current, hash = activePkgHashRef.current) => {
+    if (!id || !hash) return;
+    try {
+      localStorage.removeItem(materialEditRecoveryKey(id, hash));
+      const last = JSON.parse(localStorage.getItem(LAST_EDITED_MATERIAL_KEY) ?? "null");
+      if (last?.id === id) localStorage.removeItem(LAST_EDITED_MATERIAL_KEY);
+    } catch {
+      setRecoveryWarning("Recovery storage unavailable. Save your swatch before leaving.");
+    }
+  }, []);
 
   const setDraftComparison = useCallback(
     (selection: "baseline" | "current") => {
@@ -996,9 +1020,9 @@ export default function Home() {
     setStatus((s) => (s.kind === "error" ? { kind: "idle" } : s));
   }, []);
 
-  const submit = useCallback(() => {
+  const submit = useCallback(async () => {
     if (!stagedFile || status.kind === "loading" || pendingMaterialId !== null) return;
-    if (!confirmDiscardWorkingDraft("extract a new material")) return;
+    if (!(await confirmDiscardWorkingDraft("extract a new material"))) return;
     void runBaseline(stagedFile.file, stagedFile.name);
   }, [
     confirmDiscardWorkingDraft,
@@ -1062,7 +1086,9 @@ export default function Home() {
     for (const preset of localBySlug.values()) {
       if (!bySlug.get(preset.slug)?.builtIn) bySlug.set(preset.slug, preset);
     }
-    setPresets([...bySlug.values()]);
+    // Room-specific baseline optics belong in actual authoring state so
+    // drafts/copies/exports agree, without rewriting the original's seed.
+    setPresets([...bySlug.values()].map(roomMaterialPreset));
     setPresetsLoaded(true);
   }, []);
 
@@ -1494,8 +1520,8 @@ export default function Home() {
   );
 
   // ── bootstrap save: persist an untouched material's initial estimate ─────
-  // Once editing begins, the canonical source is protected: a working draft
-  // stays local to the session until the user explicitly keeps a variation.
+  // Once editing begins, the canonical source is protected. Recovery storage
+  // is separate; only an explicit save creates a new archive swatch.
   // The debounce remains for a newly extracted material's first auto-estimate.
   useEffect(() => {
     if (!activeId) return;
@@ -1605,6 +1631,80 @@ export default function Home() {
     knobs,
     pkg,
   ]);
+
+  // Recovery is not an archive save: keep only bounded parameter history, and
+  // restore it only against the exact saved source that just finished loading.
+  useEffect(() => {
+    if (!bootedRef.current || !activeId || !pkg || pendingMaterialId !== null ||
+      autosaveBaseline.id !== activeId) return;
+    if (!autosaveBaseline.sig) {
+      if (isMaterialDraftDirty(materialDraft)) {
+        let cancelled = false;
+        queueMicrotask(() => {
+          if (!cancelled) setRecoveryWarning("This new material is not recoverable yet. Save your swatch before leaving.");
+        });
+        return () => { cancelled = true; };
+      }
+      return;
+    }
+    const hash = activePkgHashRef.current ?? pkg.id;
+    const key = materialEditRecoveryKey(activeId, hash);
+    const source = {
+      materialId: activeId, pkgHash: hash, fabricId,
+      metalness: resolveMetalnessAmount(metalnessInput, Boolean(pkg.maps.metalness)),
+      knobs: materialDraft.baseline,
+    };
+    let cancelled = false;
+    try {
+      if (recoveryCheckedRef.current !== key) {
+        const recovered = readRoomMaterialEditRecovery(
+          localStorage.getItem(key),
+          source,
+          vaultPresetsRef.current.find((preset) => preset.slug === activeId),
+        );
+        if (recovered && !isMaterialDraftDirty(materialDraft)) {
+          const intent = materialIntentRef.current;
+          queueMicrotask(() => {
+            if (cancelled || activeIdRef.current !== activeId || activePkgHashRef.current !== hash ||
+              materialIntentRef.current !== intent || materialDraftRef.current !== materialDraft ||
+              fabricGestureActiveRef.current) return;
+            recoveryCheckedRef.current = key;
+            const nextConstruction = inferConstruction(recovered.current);
+            constructionRef.current = nextConstruction;
+            setConstruction(nextConstruction);
+            instrumentBaselineRef.current = createMaterialInstrumentBaseline(recovered.current, nextConstruction);
+            setMaterialDraftNow(recovered);
+            replaceLiveFabric(recovered.current);
+            markSaveDirty();
+          });
+          return () => { cancelled = true; };
+        }
+        recoveryCheckedRef.current = key;
+      }
+      if (isMaterialDraftDirty(materialDraft)) {
+        const json = serializeMaterialEditRecovery(source, materialDraft);
+        if (!json) throw new Error("Invalid recovery record");
+        localStorage.setItem(key, json);
+        localStorage.setItem(LAST_EDITED_MATERIAL_KEY, JSON.stringify({ id: activeId, pkgHash: hash }));
+      } else {
+        localStorage.removeItem(key);
+        const last = JSON.parse(localStorage.getItem(LAST_EDITED_MATERIAL_KEY) ?? "null");
+        if (last?.id === activeId) localStorage.removeItem(LAST_EDITED_MATERIAL_KEY);
+      }
+      queueMicrotask(() => { if (!cancelled) setRecoveryWarning(null); });
+    } catch {
+      queueMicrotask(() => { if (!cancelled) setRecoveryWarning("Recovery storage unavailable. Save your swatch before leaving."); });
+    }
+    return () => { cancelled = true; };
+  }, [activeId, autosaveBaseline, fabricId, materialDraft, metalnessInput, pkg,
+    pendingMaterialId, setMaterialDraftNow, replaceLiveFabric, markSaveDirty]);
+
+  useEffect(() => {
+    if (!recoveryWarning || !isMaterialDraftDirty(materialDraft)) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [materialDraft, recoveryWarning]);
 
   // Remove a library material: its params file, plus the cache run behind it
   // when it's a user extraction. Clones drop their own file only; built-in
@@ -2361,7 +2461,7 @@ export default function Home() {
    * shared; only the authored parameters and library row are new. */
   const keepDraftAsVariation = useCallback(async () => {
     if (keepingDraft || !activeId || !pkg || !isMaterialDraftDirty(materialDraftRef.current)) {
-      return;
+      return false;
     }
     const source =
       sampleItems.find((item) => item.id === activeId) ??
@@ -2383,7 +2483,12 @@ export default function Home() {
       currentMetalness,
       currentFabric,
     );
-    const name = `${source?.label ?? labelForId(activeId)} variation`;
+    const baseName = source?.label ?? labelForId(activeId);
+    let suffix = 2;
+    let name = `${baseName} ${suffix}`;
+    while ([...sampleItems, ...libraryItems].some(item => item.label === name)) {
+      name = `${baseName} ${++suffix}`;
+    }
     const nextOrder = libraryOrderRef.current.filter((id) => id !== slug);
     const sourceIndex = nextOrder.indexOf(activeId);
     if (sourceIndex === -1) nextOrder.push(slug);
@@ -2428,19 +2533,23 @@ export default function Home() {
         liveMetalness,
         fabricKnobsOf(knobsRef.current),
       );
-      if (
+      const adopted =
         durableSaved &&
         activeIdRef.current === sourceId &&
         activePkgHashRef.current === pkgHash &&
-        liveSignature === sourceSignature
-      ) {
+        liveSignature === sourceSignature;
+      if (adopted) {
+        clearMaterialRecovery(sourceId, pkgHash);
         ++materialIntentRef.current;
         activeIdRef.current = slug;
         activePkgHashRef.current = pkgHash;
         setActiveId(slug);
         setAutosaveBaseline({ id: slug, sig: sourceSignature });
         loadMaterialDraft(currentFabric);
+        setSavedSwatchName(name);
+        updateSaveIndicator();
       }
+      return adopted;
     } finally {
       setKeepingDraft(false);
     }
@@ -2458,14 +2567,16 @@ export default function Home() {
     reserveDurableSave,
     runDurableSave,
     sampleItems,
+    updateSaveIndicator,
+    clearMaterialRecovery,
   ]);
 
   const deleteById = useCallback(
-    (id: string) => {
+    async (id: string) => {
       if (pendingMaterialId !== null) return;
       if (
         id === activeIdRef.current &&
-        !confirmDiscardWorkingDraft("delete this material")
+        !(await confirmDiscardWorkingDraft("delete this material"))
       ) {
         return;
       }
@@ -2658,7 +2769,7 @@ export default function Home() {
   const importMaterialZip = useCallback(
     async (file: File) => {
       if (collectionBusy || pendingMaterialId !== null) return;
-      if (!confirmDiscardWorkingDraft("open another material")) return;
+      if (!(await confirmDiscardWorkingDraft("open another material"))) return;
       const intent = ++materialIntentRef.current;
       pendingMaterialSelectionRef.current = null;
       setPendingMaterialId("importing");
@@ -2804,27 +2915,73 @@ export default function Home() {
   });
   const selectTransferredMaterial = materialSwap.select;
   const selectMaterialWithDraftGuard = useCallback(
-    (id: string) => {
-      if (id === activeId) return;
-      if (!confirmDiscardWorkingDraft("switch swatches")) return;
+    async (id: string) => {
+      if (id === activeId || pendingMaterialId !== null) return;
+      if (!(await confirmDiscardWorkingDraft("switch swatches"))) return;
       const intent = ++materialIntentRef.current;
       pendingMaterialSelectionRef.current = { id, intent };
       setPendingMaterialId(id);
       selectTransferredMaterial(id);
     },
-    [activeId, confirmDiscardWorkingDraft, selectTransferredMaterial],
+    [activeId, pendingMaterialId, confirmDiscardWorkingDraft, selectTransferredMaterial],
   );
   useEffect(() => {
     materialSwapRef.current = materialSwap.swap;
   }, [materialSwap.swap]);
 
+  // Reopen the last edited source on refresh; its validated history is applied
+  // by the recovery effect only after that source has hydrated.
+  useEffect(() => {
+    if (resumedMaterialRef.current || !bootedRef.current || !presetsLoaded || !activeId ||
+      autosaveBaseline.id !== activeId || !autosaveBaseline.sig) return;
+    if (materialIntentRef.current > 0) { resumedMaterialRef.current = true; return; }
+    try {
+      const last = JSON.parse(localStorage.getItem(LAST_EDITED_MATERIAL_KEY) ?? "null");
+      if (!last || typeof last.id !== "string" || typeof last.pkgHash !== "string") {
+        resumedMaterialRef.current = true;
+        return;
+      }
+      if (last.id === activeId) { resumedMaterialRef.current = true; return; }
+      const item = [...sampleItems, ...libraryItems].find(item => item.id === last.id && item.pkgHash === last.pkgHash);
+      if (!item) return; // local material packages may still be hydrating
+      // Never replace a gesture made while library hydration was pending.
+      if (isMaterialDraftDirty(materialDraftRef.current) || fabricGestureActiveRef.current) return;
+      let cancelled = false;
+      const intent = materialIntentRef.current;
+      queueMicrotask(() => {
+        if (cancelled || activeIdRef.current !== activeId || materialIntentRef.current !== intent ||
+          fabricGestureActiveRef.current || isMaterialDraftDirty(materialDraftRef.current) ||
+          pendingMaterialSelectionRef.current) return;
+        resumedMaterialRef.current = true;
+        void selectMaterialWithDraftGuard(item.id);
+      });
+      return () => { cancelled = true; };
+    } catch { resumedMaterialRef.current = true; }
+  }, [activeId, autosaveBaseline, presetsLoaded, sampleItems, libraryItems, selectMaterialWithDraftGuard]);
+
+  const focusMaterialName = () => {
+    const target = cabinetFace === "material"
+      ? ".cabinet-material-header h2" : ".material-cabinet__flip";
+    document.querySelector<HTMLElement>(target)?.focus({ preventScroll: true });
+  };
+
   return (
     <div className="app">
+      <MaterialLeaveDialog action={leaveAction} busy={keepingDraft}
+        error={saveStatus === "error" ? saveMessage : null}
+        onCancel={() => resolveLeave(false)}
+        onDiscard={() => {
+          clearMaterialRecovery();
+          navigateMaterialDraft({ type: "discard" });
+          resolveLeave(true);
+        }}
+        onSave={() => { void keepDraftAsVariation().then(saved => { if (saved) resolveLeave(true); }); }}
+      />
       <NavBar
         onOpenLight={lightModalOpen ? closeLightModal : openLightModal}
         lightDialogOpen={lightModalOpen}
         status={status}
-        saveStatus={saveStatus}
+        saveStatus={draftDirty && saveStatus === "saved" ? "dirty" : saveStatus}
         saveMessage={saveMessage}
         onRetrySave={() => {
           void retryFailedSaves();
@@ -2927,7 +3084,41 @@ export default function Home() {
           <MaterialCabinet
             materialFaceRef={tuningScrollRef}
             face={cabinetFace}
-            onFlip={setCabinetFace}
+            onFlip={face => { setViewingSavedSwatch(false); setCabinetFace(face); }}
+            onFaceSettled={face => {
+              if (face === "archive" && viewingSavedSwatch) {
+                setViewingSavedSwatch(false);
+                setSavedSwatchName(null);
+              }
+            }}
+            actionShelf={pkg ? <MaterialEditShelf
+              dirty={draftDirty}
+              canUndo={canUndoDraft}
+              canRedo={canRedoDraft}
+              comparingOriginal={materialDraft.comparison === "baseline"}
+              saving={keepingDraft}
+              disabled={pendingMaterialId !== null}
+              savedName={savedSwatchName}
+              dismissing={viewingSavedSwatch}
+              recoveryWarning={recoveryWarning}
+              onCompare={original => setDraftComparison(original ? "baseline" : "current")}
+              onUndo={() => navigateMaterialDraft({ type: "undo" })}
+              onRedo={() => navigateMaterialDraft({ type: "redo" })}
+              onReset={() => {
+                focusMaterialName();
+                clearMaterialRecovery();
+                navigateMaterialDraft({ type: "discard" });
+              }}
+              onSave={() => { void keepDraftAsVariation().then(saved => { if (saved) focusMaterialName(); }); }}
+              onViewArchive={() => {
+                document.querySelector<HTMLElement>(".material-cabinet__flip")?.focus({ preventScroll: true });
+                if (cabinetFace === "archive") setSavedSwatchName(null);
+                else {
+                  setViewingSavedSwatch(true);
+                  setCabinetFace("archive");
+                }
+              }}
+            /> : undefined}
             archiveFace={
               <aside
                 className="cabinet-pane cabinet-pane--archive swatch-stamped"
@@ -2941,7 +3132,7 @@ export default function Home() {
                 <header className="cabinet-pane__header">
                   <p className="cabinet-pane__kicker">swatch archive</p>
                   <p className="cabinet-pane__lede">
-                    Pick a source, keep a variation, or bring in a new cloth.
+                    Choose a swatch, save an edited copy, or bring in a new cloth.
                   </p>
                 </header>
                 <div className="cabinet-pane__scroll">
@@ -3048,7 +3239,7 @@ export default function Home() {
                 <header className="cabinet-pane__header cabinet-material-header">
                   <div>
                     <p className="cabinet-pane__kicker">material dossier</p>
-                    <h2>{activeMaterialName}</h2>
+                    <h2 tabIndex={-1}>{activeMaterialName}</h2>
                   </div>
                 </header>
                 <dl className="cabinet-material-meta">
@@ -3249,80 +3440,6 @@ export default function Home() {
               material instrument
             </SectionLabel>
 
-            {pkg && (draftDirty || canRedoDraft) ? (
-              <div
-                className="material-draft-tools"
-                data-dirty={draftDirty}
-                data-comparing={materialDraft.comparison === "baseline"}
-                inert={pendingMaterialId !== null}
-                aria-busy={pendingMaterialId !== null}
-                aria-label="material draft"
-              >
-                <span className="instrument-row-label" aria-live="polite">
-                  {draftDirty ? "draft" : "redo"}
-                </span>
-                <div
-                  className="instrument-action-row draft-strip"
-                  role="group"
-                  aria-label="working material draft"
-                >
-                  <button
-                    type="button"
-                    className="instrument-button compare-button"
-                    data-active={materialDraft.comparison === "baseline"}
-                    aria-pressed={materialDraft.comparison === "baseline"}
-                    disabled={!draftDirty}
-                    onClick={() =>
-                      setDraftComparison(
-                        materialDraft.comparison === "baseline"
-                          ? "current"
-                          : "baseline",
-                      )
-                    }
-                    title="compare source and draft appearance; use tests for motion response"
-                  >
-                    {materialDraft.comparison === "baseline"
-                      ? "show draft"
-                      : "show source"}
-                  </button>
-                  <button
-                    type="button"
-                    className="instrument-button"
-                    disabled={!canUndoDraft}
-                    onClick={() => navigateMaterialDraft({ type: "undo" })}
-                    aria-label="undo material edit"
-                  >
-                    undo
-                  </button>
-                  <button
-                    type="button"
-                    className="instrument-button instrument-redo"
-                    disabled={!canRedoDraft}
-                    onClick={() => navigateMaterialDraft({ type: "redo" })}
-                    aria-label="redo material edit"
-                  >
-                    redo
-                  </button>
-                  <button
-                    type="button"
-                    className="instrument-button"
-                    disabled={!draftDirty}
-                    onClick={() => navigateMaterialDraft({ type: "discard" })}
-                  >
-                    discard
-                  </button>
-                  <button
-                    type="button"
-                    className="instrument-button instrument-keep"
-                    disabled={!draftDirty || keepingDraft}
-                    onClick={() => void keepDraftAsVariation()}
-                  >
-                    {keepingDraft ? "keeping…" : "keep variation"}
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
             <div className="construction-control">
               <span className="instrument-control-label">construction</span>
               <div
@@ -3391,7 +3508,7 @@ export default function Home() {
             <div className="instrument-sliders">
               <Slider
                 label="open area"
-                hint="the actual transparent area reaching the renderer, rather than the old cube-root control value"
+                hint="controls background visibility through the cloth, independently of fiber backlighting"
                 value={instrumentState.opennessPercent}
                 min={0}
                 max={100}
@@ -3443,7 +3560,6 @@ export default function Home() {
           >
             <summary>
               <span>fine tune</span>
-              <span>map · solver · shader</span>
             </summary>
             <div className="fine-tune-sections">
 

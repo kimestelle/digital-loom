@@ -1,0 +1,415 @@
+## Overview
+
+- Rebuild the Figma `main-interface` as a flat editorial room around the real cloth renderer.
+- Keep the wall, floor, window, grain, architectural lines, and projected dapple in DOM/CSS.
+- Keep only the cloth, rope, pins, and material-preview object in Three.js.
+- Replace the moving 3D sky, visible sun, lens flare, and fog in the studio with one authored daylight path.
+- Open the daylight control by clicking the Digital Loom logo.
+- Use one `0..1` slider to move through low-left, high-center, and low-right daylight.
+- Pause autonomous drift while the modal is open; resume from the chosen point when it closes.
+- Let the same resolved light state drive the window, ground projection, Three lights, and cloth shader.
+- Condition the ground cue with the active fabric without claiming it is a dynamic cloth shadow.
+- Keep the cloth camera fixed to the authored room composition.
+- Replace scene zoom with a local `2×` material loupe that magnifies only the live specimen.
+- Permit slight object rotation in object mode without moving the camera or room.
+- Replace the separate workshop and tuning drawers with one pale material dossier that flips to a dark swatch archive.
+- Put one click-only punched-hole control in the cabinet's empty upper-right corner.
+- Preserve the real material pipeline, map editor, drafts, swatches, material-selection/readiness semantics, import/export, scene controls, and one persistent renderer.
+- Keep pixels where they report discrete control state: the shared `PixelPlay` selectors and the cloth/object `ModeButton`.
+- Remove the preview-only pixel system: the full-screen map dissolve, swatch flight/parking canvas, and UV-space pixel reveal used during material changes.
+- Keep the separate cloth launch shimmer; it is an authored entrance, not a hover or selection preview.
+- Use four approval gates: room composition, light causality, cabinet workflows, and show readiness.
+
+## Expected behavior
+
+- A quiet 2D room frames the live cloth on first load.
+- The background never moves as 3D geometry or follows the camera.
+- Wall and floor depth come from measured gradients, linework, grain, and overlap.
+- The room remains convincing when the renderer canvas is hidden.
+- The studio canvas is transparent over the room.
+- The studio renders no sky sphere, full sun, lens flare, 3D floor, shadow receiver, or full-stage post-processing pass.
+- The loupe may use one bounded, on-demand render target; it never copies or re-renders the complete room.
+- The reusable viewer and landing route retain their existing sky environment by default.
+- The Digital Loom logo is a native button with an accessible dialog label.
+- Clicking the logo opens one daylight modal and moves focus into it.
+- Opening the modal freezes the autonomous light at its current position.
+- Moving the slider updates the room projection and fabric lighting together.
+- Closing the modal resumes drift from the edited position without a jump.
+- Escape closes the modal and restores focus to the logo.
+- Reduced motion disables autonomous drift but leaves manual light control intact.
+- The daylight midpoint is higher, cooler, brighter, and casts a shorter projection.
+- The daylight endpoints are lower, warmer, and cast longer, softer projections.
+- Moving the source right moves the floor projection left, and vice versa.
+- The source remains behind the cloth so the material can become backlit throughout the path.
+- Fabric openness, cover, thickness, transmission contrast, and sampled albedo tint influence the transmitted ground cue.
+- The custom cloth shader remains responsible for real per-thread transmission, POM self-shadow, and material response.
+- The projected mullion cue remains an aggregate environmental indication, not a live cloth silhouette.
+- The camera remains fixed in both cloth and object modes.
+- A circular `2×` loupe follows fine-pointer hover over the specimen.
+- The loupe magnifies the real rendered cloth or object, including POM, normals, roughness, transmission, and live deformation.
+- The loupe never magnifies or displaces the DOM room, window, dapple, cabinet, or navigation.
+- Mouse and pen hover can drive the loupe while cloth hover force remains active.
+- Clicking the cloth still creates a gust; the loupe does not capture that click.
+- One-finger touch continues to manipulate cloth in cloth mode.
+- Two-finger touch positions the loupe at the contact centroid without moving the room.
+- One-finger drag rotates the preview object slightly in object mode.
+- Object rotation is bounded and pan remains unavailable.
+- The loupe performs no extra renderer pass while hidden.
+- The pale cabinet face contains active-material identity, `MAPS_`, and `PROPERTIES_`.
+- `MAPS_` reuses the existing map editor, replacement flow, variation saving, and material export.
+- Map rows use quiet static thumbnails; hover never dissolves a map into a centered full-screen preview.
+- Clicking a map thumbnail still opens the real editor, including its functional before/after canvases and variation workflow.
+- `PROPERTIES_` reuses the material instrument, draft controls, fine tuning, and fabric/scene separation.
+- The dark archive face reuses samples, the user library, clone, rename, reorder, delete, collection import/export, and add-material workflows.
+- Swatch hover remains local to the thumbnail and never creates a viewport canvas, parked preview, or material mutation.
+- Clicking or keyboard-activating a swatch performs one serialized material change through a quiet renderer fade; it does not fly the swatch or reveal the material with a pixel mask.
+- Rapid material choices remain newest-intent-wins, and the renderer waits for the selected material's declared maps before revealing it.
+- Fragment resolution, mesh resolution, alpha-source, self-collision, and anisotropy selectors retain their stateful pixel anchor and native button/ARIA state.
+- The centered cloth/object control retains its stateful pixel rendering and real mode callback.
+- Selecting a swatch does not automatically flip the cabinet.
+- Clicking the punched hole reverses the visible cabinet face.
+- The hole has a small visual aperture and a minimum `44px` interactive target.
+- Enter and Space activate the same native button even though no drag gesture is implemented.
+- Both cabinet faces remain mounted so draft, scroll, rename, selection, and editor state survive a round trip.
+- Only the active face is exposed to pointer, focus, and assistive technology.
+- Below `820px`, the cabinet rests as a bottom sheet occupying the lower third of the viewport while the live fabric remains visible in the upper two-thirds.
+- Rapid reversal interrupts the current CSS flip instead of queuing animations.
+- Reduced motion uses a direct swap or short crossfade rather than a near-zero-duration 3D transform.
+- The cloth renderer remains one persistent canvas across light edits, cabinet flips, material changes, and mode changes.
+- Room light and cabinet state remain scene/UI state and never enter material drafts, presets, `loom.material/3`, or exports.
+- Loupe position and object rotation are temporary inspection state and are not serialized with a material.
+
+## Implementation plan
+
+- Preserve the current baseline before structural work.
+  - Keep the async WebGPU initialization guard already present in `lib/ui/clothScene.tsx`.
+  - Record that fix separately from room, light, and cabinet changes.
+  - Capture current behavior and high-quality telemetry before changing the environment.
+- Add `lib/ui/roomLight.ts` as the pure source of truth.
+  - Define `DaylightPathState`, `MaterialLightProfile`, and `ResolvedRoomLight`.
+  - Clamp the authored path value to `0..1`.
+  - Map the scalar to a smooth low-left → high-center → low-right source path.
+  - Keep the source on the far side of the cloth's canonical plane.
+  - Resolve world source position and normalized light-travel direction.
+  - Resolve direct tint, direct intensity, ambient tint, and ambient intensity.
+  - Resolve window glow and dapple translation, rotation, scale, opacity, and softness mix.
+  - Make the floor projection move opposite the source.
+  - Make fabric conditioning monotonic and bounded.
+  - Keep the resolver deterministic and independent of React, Three.js, and the DOM.
+- Add `lib/ui/useRoomLightController.ts` for time and interaction.
+  - Hold the current path position, drift direction, pause state, and resolved snapshot in refs.
+  - Advance drift with clamped frame deltas so a hidden-tab return cannot jump the light.
+  - Reflect smoothly at the path endpoints.
+  - Pause when the light modal opens or the document becomes hidden.
+  - Resume from the edited point when the modal closes.
+  - Disable autonomous drift for `prefers-reduced-motion` and data-saving mode.
+  - Expose `pause`, `resume`, `setDaylight`, and `resolvedRef` without per-frame React state.
+  - Apply CSS variables to the room root from the same resolved snapshot read by the renderer.
+  - Cancel animation frames and media/visibility listeners during teardown.
+- Extract reusable map statistics from `lib/pipeline/estimateParams.ts` into `lib/pipeline/mapStats.ts`.
+  - Preserve the existing bounded `64×64` canvas sampling used by `estimateParams`.
+  - Add mean RGB to the existing luminance, contrast, dark-fraction, and saturation statistics.
+  - Cache successful results by map URL.
+  - Return a neutral fallback for load, CORS, or canvas-read failures.
+  - Guard async results so an old material cannot tint the newly active one.
+  - Sample only when the active albedo URL changes, never per frame.
+- Add `lib/ui/roomFrame.tsx` as a presentational layer shell.
+  - Render wall, floor, horizon, window, mullion projection, transmitted-light pool, grain, and foreground linework.
+  - Mark decorative room layers `aria-hidden` and `pointer-events: none`.
+  - Accept stage, cabinet, and overlay slots without duplicating the renderer.
+  - Expose stable `data-room-environment` and light-position attributes for inspection and tests.
+  - Keep the dapple bounded to a small composited layer.
+  - Crossfade between two pre-softened mask layers instead of animating blur radius.
+- Add `lib/ui/materialLoupe.ts` for the local inspection mechanism.
+  - Define `MaterialLoupeState`, the fixed `2×` scale, visual diameter, and render-target pixel budget.
+  - Convert canvas-local pointer coordinates into a clamped camera view offset.
+  - Resolve two-finger touch centroids without interfering with one-finger cloth contact.
+  - Keep all fast pointer and lens state in mutable refs rather than React state.
+  - Start with a `240px` desktop lens and a render target capped at `320×320` device pixels.
+  - Expose visual size and target size as separate constants so clarity and GPU cost can be tuned independently.
+  - Make the lens direct and cursor-locked, with no inertia or decorative trailing.
+- Add `lib/ui/materialLoupeNodes.ts` for the renderer overlay.
+  - Create one lazily allocated transparent render target shared by cloth and object inspection.
+  - Render only the active specimen layer through a cloned fixed camera with a view offset.
+  - Composite the target through a circular alpha mask and a restrained one-pixel ring.
+  - Keep the overlay inside the existing renderer and canvas.
+  - Never create a second renderer, second canvas, framebuffer readback, `toDataURL`, or full-screen copy.
+  - Skip the specimen pass and overlay pass whenever the loupe is hidden.
+- Add `app/styles/room.css` and import it from `app/globals.css`.
+  - Define the room layer order independently from existing panel styling.
+  - Expose wall tones, floor tones, horizon, window rectangle, line color, grain opacity, cabinet width, and dapple variables.
+  - Use gradients and a small static texture rather than Three geometry.
+  - Evaluate `public/2d-textures/cloth-alike.png` as low-opacity grain before adding another texture.
+  - Add a dedicated bounded mullion alpha mask only if CSS gradients cannot reproduce the approved projection.
+  - Animate only transform and opacity on the moving dapple layers.
+  - Avoid viewport-sized blur, animated background position, `backdrop-filter`, and `mix-blend-mode` in the room.
+- Recompose `app/page.tsx` around the room shell.
+  - Keep `stageRef`, `clothSceneRef`, and one persistent `ClothScene` instance.
+  - Size the stage to the specimen region rather than the full viewport on desktop.
+  - Let the existing stage `ResizeObserver` retarget the persistent renderer to that region.
+  - Add `cabinetFace: "material" | "archive"` as navigation-only state.
+  - Keep `tuningView` as the existing `fabric | scene` choice inside `PROPERTIES_`.
+  - Remove `leftCollapsed`, `rightCollapsed`, and `workshopTab` after their content has moved successfully.
+  - Replace the three-way mobile panel state only after the responsive cabinet is proven.
+  - Derive one active-material descriptor from `sampleItems`, `libraryItems`, `pkg`, and `fabricId`.
+  - Reuse that descriptor for dossier name, date, source, map count, provenance, and material export.
+  - Show unknown metadata as unavailable rather than inventing it.
+  - Feed `presentedKnobs`, `opennessCurved`, active fabric core values, and sampled albedo color into `MaterialLightProfile`.
+  - Pass `environment="room"` and the shared `resolvedRef` to `ClothScene`.
+  - Keep loupe visibility and position imperative so pointer motion does not rerender the page or cabinet.
+  - Do not make flip or light changes call draft, autosave, discard-confirmation, selection, or persistence paths.
+- Preserve stateful pixel selectors and retire the preview-only pixel machinery.
+  - Keep `lib/ui/pixelPlay.tsx`, `app/styles/pixelplay.css`, and their shared 30fps ticker for discrete selectors with real `data-active`, `data-pressed`, `aria-selected`, and `aria-pressed` state.
+  - Keep `lib/ui/modeButton.tsx` as the centered cloth/object selector, including its stateful canvas and hover acknowledgement.
+  - Do not spread pixel animation onto cabinet faces, thumbnails, or other decorative surfaces; pixel motion must continue to mean selectable state.
+  - Replace `PreviewBox` in `lib/ui/mapsStrip.tsx` with the existing static map image inside the native map button.
+  - Delete `lib/ui/previewBox.tsx` and remove `.preview-canvas`, `.preview-ghost`, and `ghost-in` from `app/styles/library.css` once no imports remain.
+  - Replace `useMaterialTransfer` and `MaterialTransferLayer` in `lib/ui/materialTransfer.tsx` with a small material-swap controller that serializes commits, lets the newest pending intent win, and exposes expected-map readiness to the renderer.
+  - Preserve the existing material-intent guard, draft-discard confirmation, and temporary authoring lock during an accepted swap.
+  - Remove source-image registration, hover-in/out queues, screen-rectangle flight geometry, parked previews, away/ghost ownership, the portal canvas, and `.material-transfer-canvas` styling.
+  - Remove `.material-thumbnail[data-away]` and `.material-thumbnail-ghost`; retain the active/focus styling on the real thumbnail button.
+  - Simplify `lib/ui/materialThumbnail.tsx`, `SampleGrid`, and `LibraryGrid` props to static thumbnail state plus actual select, clone, rename, reorder, and delete actions.
+  - Retain `STAMP_MASK_URI` in `lib/ui/stampMask.ts` if the static swatch silhouette still uses it, but delete the transfer-only mask-rasterization helper when it has no callers.
+  - Fade the renderer uniformly out, commit the selected material at zero, wait until its declared maps are ready, then fade uniformly in; keep the animated scalar in a mutable ref rather than 60fps React state.
+  - Preserve the map editor's actual editing canvases, the material instrument's transactional preview/cancel/commit behavior, and all static map/swatch thumbnails.
+  - Preserve `u_launchProgress` and the existing cloth launch shimmer unchanged.
+- Add `lib/ui/materialCabinet.tsx` as a controlled slot-based shell.
+  - Accept `face`, `onFlip`, `materialFace`, and `archiveFace`.
+  - Keep both faces mounted with identical outer geometry.
+  - Rotate one cabinet track with `transform-style: preserve-3d` and hidden backfaces.
+  - Put one stable native flip button outside the rotating face nodes.
+  - Render a punched aperture inside a `44×44px` hit area in the empty upper-right.
+  - Label the control `show swatch archive` or `show material dossier` according to its destination.
+  - Apply `inert`, `aria-hidden`, and pointer blocking to the inactive face immediately.
+  - Preserve focus on the stable flip button through every transition.
+  - Use the existing `--ease-motion` curve with an initial `420ms` flip for the approval pass.
+  - Allow a new click to reverse the current transition.
+- Assemble the pale material face in `app/page.tsx` without rewriting workflows.
+  - Add the active material's honest name, date, source, and map count.
+  - Place the existing `MapsStrip` under `MAPS_`.
+  - Place the existing material instrument, draft tools, fine tuning, and scene controls under `PROPERTIES_`.
+  - Retain the current fabric/scene picker as progressive disclosure inside `PROPERTIES_`.
+  - Remove the studio sky/black control because the studio environment is now fixed to the room.
+  - Keep the map editor portal outside cabinet clipping and transforms.
+- Assemble the dark archive face in `app/page.tsx` without rewriting workflows.
+  - Keep `SampleGrid` and `LibraryGrid` mounted at all times.
+  - Keep selection, clone, rename, reorder, and two-step delete behavior while replacing transfer-only callbacks with the smaller material-swap contract.
+  - Keep collection and single-material import/export actions intact.
+  - Move `InsertPanel` behind a compact `add material` disclosure on the archive face.
+  - Do not auto-flip after a swatch selection or map variation.
+  - Keep active and focus state local to each swatch; do not mount a material-transfer overlay anywhere in the room.
+- Add `lib/ui/roomLightModal.tsx`.
+  - Reuse the proven portal, focus trap, Escape, body-lock, and focus-restoration behavior from `MapEditorModal`.
+  - Render one native daylight-path range input and one close action.
+  - Show a restrained position readout without adding direction, elevation, warmth, or intensity sliders.
+  - Update the shared controller directly while the slider moves.
+  - Keep slider activity out of material-draft and save state.
+  - Keep the modal reachable in phone landscape.
+- Modify `lib/ui/navBar.tsx` and `app/styles/layout.css`.
+  - Add `onOpenLight`, light-dialog state, and an accessible logo-button contract to `NavBarProps`.
+  - Replace the inert brand span with a native button that opens the modal.
+  - Use a three-column header grid so `ModeButton` remains geometrically centered.
+  - Keep pipeline and save status on the right.
+  - Remove glass animation and backdrop effects that conflict with the flat room.
+- Modify `lib/ui/clothScene.tsx` at the environment boundary.
+  - Add mount-time `environment?: "sky" | "room"`, defaulting to `"sky"`.
+  - Add a mutable `roomLightRef` prop read inside the existing render loop.
+  - Construct the room renderer with `alpha: true`.
+  - Set `scene.background = null` and clear with alpha `0` in room mode.
+  - Omit `FogExp2`, sky geometry/material, and flare geometry/material in room mode.
+  - Keep all sky allocations and behavior in sky mode.
+  - Make optional environment resources dispose safely.
+  - Preserve the existing async initialization guard and one-mount effect.
+  - Refactor `updateSun` into shared `applyResolvedLight` plus sky-only atmospheric updates.
+  - Set Three's directional source position, target, tint, and intensity from `ResolvedRoomLight`.
+  - Set hemisphere colors and intensity from the room ambient result.
+  - Set `clothU.u_lightDir`, `u_lightColor`, and `u_ambientColor` from the same snapshot.
+  - Multiply cloth light color by resolved direct intensity so shader and Three lighting agree.
+  - Set the custom cloth fog density to zero in room mode.
+  - Leave `MeshPhysicalMaterial.transmission` disabled to avoid its extra scene render.
+  - Keep iridescence on cloth and object while omitting its sky halo and lens flare in room mode.
+  - Keep the existing expected-albedo and declared-map readiness boundary, but consume the new material-swap opacity ref instead of transfer-flight state.
+- Add the material loupe and fixed-camera input policy in `lib/ui/clothScene.tsx`.
+  - Keep the room camera at its canonical position, quaternion, target, and field of view in both modes.
+  - Do not construct OrbitControls for `environment="room"`.
+  - Preserve existing OrbitControls behavior for sky-mode viewers and landing consumers.
+  - Put live cloth units and the preview object on the shared loupe-render layer.
+  - Update the loupe camera view offset from fine-pointer hover without React state.
+  - Render the bounded loupe target after the main scene only while it is visible.
+  - Let mouse and pen hover update both the existing cloth field and loupe position.
+  - Preserve mouse click-gust detection and pointer capture underneath the non-interactive overlay.
+  - Keep one-finger touch and pen contact available to the cloth solver in cloth mode.
+  - Switch two-finger cloth input to a loupe-centroid gesture rather than camera orbit.
+  - Map one-finger object drag to bounded `objectGroup` yaw and pitch.
+  - Clamp object rotation to approximately `±18°` yaw and `±6°` pitch for the first approval pass.
+  - Gate cloth force work while object mode is active.
+  - Clear active pointer velocity, pluck state, touch centroid, and loupe state when modes change.
+  - Dispose the optional render target, overlay geometry, material, and cloned camera state during teardown.
+- Keep `lib/ui/clothSceneNodes.ts` materially intact while simplifying its selection transition.
+  - Reuse its existing light-direction, light-color, ambient, fog, POM self-shadow, density, and transmission uniforms.
+  - Replace the deterministic `64×64` UV hash mask driven by `u_materialReveal` with one uniform whole-specimen opacity/reveal scalar.
+  - Keep `u_launchProgress` and the cloth launch shimmer separate and unchanged.
+  - Do not add a second shadow march, dynamic floor shadow, or transmission render pass.
+  - Update comments and neutral defaults only where the environment contract changes.
+- Modify `lib/ui/fabricViewer.tsx` only to expose the environment contract.
+  - Default embeds and `/landing` to `environment="sky"`.
+  - Keep `/viewer` and existing external consumers visually unchanged unless they opt into room mode.
+- Replace responsive duplication with one responsive cabinet.
+  - Reflow the same mounted cabinet into a bottom or full-height sheet below `820px`.
+  - Do not render separate desktop and mobile copies of maps, swatches, or tuning controls.
+  - Remove the persistent three-tab mobile bar after a reachable cabinet entry/collapse pattern is approved.
+  - Preserve the specimen and core material decision at `320px` portrait and `800×390` landscape.
+- Update test and review tooling.
+  - Add `lib/ui/roomLight.test.ts` for pure light and material-conditioning invariants.
+  - Update `e2e/authoring.spec.ts` for the logo modal, cabinet semantics, workflow retention, and one-canvas invariant.
+  - Update `e2e/touch.spec.ts` for the responsive cabinet, one-finger cloth contact, two-finger loupe, and object rotation.
+  - Add deterministic static room screenshots with the live canvas masked.
+  - Replace obsolete `sky`, panel-tab, `stampfly`, `hoversame`, and `hoverclick` scenarios in `scripts/pwloop.mjs` with `room`, `light`, `loupe`, `cabinet`, `material-swap`, and `show-soak`.
+  - Add structured performance output and fail the harness on console errors or the wrong backend.
+  - Add `.github/workflows/verify.yml` for lint, typecheck, unit tests, build, low-cost E2E, and static room snapshots.
+
+## Implementation phases
+
+- Phase 0 — Preserve the baseline.
+  - Commit or otherwise isolate the current WebGPU cleanup fix.
+  - Run lint, typecheck, all `204` unit tests, build, and all `12` collected E2E tests.
+  - Warm the actual show laptop in Chrome at `1440×900`, WebGPU, `quality=hi`, `meshRes=mid`, and auto-quality off.
+  - Record settled, hover, click-gust, touch, and object-preview FPS, GPU time, solver time, calls, triangles, and screenshots.
+- Phase 1 — Build the static room and stage composition.
+  - Add the DOM room shell, measured gradients, window, linework, grain, and fixed cabinet geometry.
+  - Keep the existing opaque canvas temporarily while room proportions are tuned.
+  - Produce canvas-hidden captures at `1280×832`, `1280×800`, and `1440×900`.
+  - Approval gate 1: approve room geometry, type, cloth crop, window placement, cabinet size, texture, and contrast.
+  - Change one room variable at a time during revisions.
+- Phase 2 — Integrate transparent rendering and local inspection.
+  - Add the environment boundary to `ClothScene`.
+  - Remove sky, flare, and fog only from studio room mode.
+  - Verify cloth, rope, pins, fray, alpha, self-overlap, and the preview object over light and dark room regions.
+  - Lock the camera in both modes.
+  - Add the bounded `2×` loupe and slight object rotation.
+  - Verify the room never shifts, scales, or changes perspective during inspection.
+  - Keep landing and viewer sky behavior unchanged.
+- Phase 3 — Add the single daylight mechanism.
+  - Implement the pure resolver, controller, material-light profile, and albedo sampling.
+  - Add the logo modal and its one path slider.
+  - Drive CSS room cues and renderer lighting from the same resolved snapshot.
+  - Produce a fixed low-left, high-center, and low-right triptych with one material.
+  - Produce a fixed-light comparison across lustrous, matte, and sheer/open materials.
+  - Approval gate 2: approve causality, warmth, dapple shape, material transmission, and modal behavior.
+  - Halve the loudest light effect before approval unless it carries necessary evidence.
+- Phase 4 — Build and populate the flipping cabinet.
+  - Add the stable punched-hole button and two permanently mounted faces.
+  - Remove the full-screen map preview and material-transfer canvas before moving their source controls into the cabinet.
+  - Move maps and properties into the pale dossier.
+  - Move swatches, collection actions, and add-material flow into the dark archive.
+  - Preserve draft, map editing, selection, material readiness, scroll, rename, reorder, and import/export behavior while changing the visual selection transition to a quiet uniform fade.
+  - Capture the flip at `0ms`, `210ms`, and `420ms` in both directions.
+  - Approval gate 3: approve face hierarchy, tactile hole, thickness cue, motion, focus behavior, stateful pixel selectors, quiet material swaps, and complete workflows.
+  - Remove one decorative treatment if the flip, hole, and face contrast already explain the object.
+- Phase 5 — Resolve responsive and accessibility behavior.
+  - Reflow the same cabinet for portrait phone, landscape phone, and coarse tablet.
+  - Replace the old three-tab mobile navigation only after the new entry/collapse behavior is reachable.
+  - Test mouse, trackpad, keyboard, touch, pen, focus restoration, reduced motion, reduced transparency, and resize.
+  - Keep all critical actions at least `44×44px` for coarse pointers.
+- Phase 6 — Prove performance and release readiness.
+  - Run `room`, `light`, `cabinet`, and `show-soak` on the same show hardware and browser as the baseline.
+  - Warm for `10–15s` and sample at least `15s` per interaction state.
+  - Confirm high fragment quality never steps down during acceptance measurements.
+  - Approval gate 4: approve performance, device behavior, error-free repetition, and the final show sequence.
+  - Add CI only for deterministic checks; keep real WebGPU visual and performance approval on the show hardware.
+
+## Testing strategy
+
+- Unit-test `resolveRoomLight`.
+  - Clamp invalid and out-of-range inputs.
+  - Return finite values and a unit-length light direction.
+  - Keep the source behind the cloth at every path position.
+  - Make source and dapple horizontal motion oppose one another.
+  - Make endpoints warmer, longer, and softer than the midpoint.
+  - Make cover and thickness reduce the transmitted pool monotonically.
+  - Make openness increase it monotonically.
+  - Keep fixed input deterministic.
+- Unit-test map appearance sampling.
+  - Sample mean RGB from known pixels.
+  - Preserve the existing `estimateParams` outputs after extraction.
+  - Cache by URL.
+  - Reject stale async results.
+  - Fall back safely when an image cannot be read.
+- Extend desktop authoring E2E coverage.
+  - Logo click opens the daylight dialog.
+  - Focus enters the dialog; Escape closes it and restores the logo.
+  - The modal exposes exactly one light slider.
+  - Opening and manipulating pauses drift; closing resumes without a jump.
+  - Light edits create no draft, preset request, active-material change, or export change.
+  - Exactly one cabinet face is accessible at a time.
+  - Hidden content is `inert`, `aria-hidden`, and untabbable.
+  - Draft comparison, undo/redo, fine tuning, scroll, and active selection survive a flip round trip.
+  - Map editing and variation saving still create a new material without an orphan preset.
+  - Stateful pixel selectors preserve native semantics, accurate active/pressed state, and their real callbacks after cabinet recomposition.
+  - Map hover creates no preview portal or canvas; click still opens the real map editor.
+  - Swatch hover creates no preview canvas and does not alter the active material or renderer.
+  - Swatch selection performs one quiet atomic material swap, waits for declared maps, and does not auto-flip.
+  - Rapid swatch choices settle on the newest intent without an orphan preset, stale map reveal, or stuck opacity.
+  - No `.preview-canvas`, `.preview-ghost`, `.material-transfer-canvas`, `[data-away="true"]`, or material-thumbnail ghost exists at runtime.
+  - The separate cloth launch shimmer still runs on first load and is not coupled to material selection.
+  - Twenty rapid flips settle predictably with one canvas and no page errors.
+- Extend loupe and input E2E coverage.
+  - Cloth-mode mouse drag does not move the camera.
+  - Fine-pointer hover positions a `2×` loupe without suppressing hover force.
+  - Cloth click still triggers its existing gust while the loupe is visible.
+  - Cloth-mode one-finger touch still drives the cloth.
+  - Cloth-mode two-finger movement positions the loupe at the touch centroid.
+  - Object-mode one-finger drag rotates only within its authored bounds.
+  - The camera and DOM room remain unchanged across every inspection gesture.
+  - Returning to cloth clears stale object and loupe gesture state.
+  - Hover accumulation and click gust remain as strong as their existing tested profiles.
+- Rewrite mobile E2E assumptions around one responsive cabinet.
+  - Keep one reachable control surface and no horizontal overflow.
+  - Assert the cabinet occupies the lower third and the specimen region the upper two-thirds below `820px`.
+  - Keep logo, punched hole, close controls, and sliders at coarse-pointer target size.
+  - Verify `320px` portrait, Pixel 5, `800×390` landscape, and `1024×768` coarse tablet.
+  - Keep the map editor save action reachable in landscape.
+  - Preserve direct-touch preview, cancel, commit, and cloth-interaction recovery.
+- Add deterministic visual tests for static chrome.
+  - Wait for fonts and room texture readiness.
+  - Mask or hide the live cloth canvas.
+  - Snapshot the room and each cabinet face at fixed viewports.
+  - Snapshot reduced-motion face switching separately.
+  - Do not use cross-backend pixel snapshots for dynamic cloth.
+- Use human-reviewed WebGPU captures for material rendering.
+  - Compare low-left, high-center, and low-right light with the same material and camera.
+  - Compare lustrous, matte, and sheer/open materials at the same light position.
+  - Compare the unmagnified surface and `2×` loupe at the same pointer coordinate.
+  - Confirm the loupe shows the live rendered specimen rather than a static albedo copy.
+  - Inspect transparent fray, edge halos, self-overlap, and sorting over both wall and floor.
+  - Describe the ground cue as a window/mullion projection conditioned by material, never as a computed cloth shadow.
+- Use the existing telemetry for a fixed performance gate.
+  - Keep auto-quality off and assert `quality=hi` throughout.
+  - Require median FPS to remain within `5%` of baseline.
+  - Require p95 GPU time to remain within `10%` or `1ms` of baseline, whichever allowance is larger.
+  - Require solver time to remain within measurement noise.
+  - Require inactive-loupe Three draw calls and triangles to stay equal or decrease in room mode.
+  - Require the active loupe's median GPU cost to remain within `5%` of the same state without it.
+  - Keep the loupe target at or below `320×320` device pixels unless a measured comparison justifies more.
+  - Require one canvas and no accumulating cost after repeated light edits and `20` flips.
+  - Require map and swatch hover to add no render loop, portal canvas, or measurable GPU work beyond the retained selector acknowledgement.
+  - Report WebGL fallback separately; it cannot substitute for the show-laptop WebGPU result.
+- Run the complete release matrix.
+  - `npm run lint`
+  - `npm run typecheck`
+  - `npm test`
+  - `npm run build`
+  - `npm run test:e2e`
+  - Real Chrome/WebGPU `loupe` comparison and `show-soak` for `15` minutes.
+  - Fresh load, light adjustment, map edit/save, draft undo/redo/keep/discard, archive flip, material selection, import/export, resize, reduced motion, and rapid recovery.
+  - Manual mouse, trackpad, touch, keyboard, VoiceOver, and physical pen checks on the show hardware.
+
+## Open questions
+
+- The main interaction mechanism is resolved; remaining questions are finishing and deployment choices.
+- Use the Figma mark as the logo artwork and the complete native hit target for the light dialog.
+- The Figma experiments use Iosevka Charon, but the repository only ships Absans and Necto Mono; should the exact licensed font be supplied or should Necto Mono remain the implementation font?
+- Should a manually chosen daylight position persist locally between sessions, or should every fresh visit start from one authored show position?
+- On narrow screens, keep the cabinet as a lower-third bottom sheet and the fabric scene in the remaining upper two-thirds.
+- Which laptop, browser build, display scale, and output viewport are the canonical show-performance target if they differ from Chrome at `1440×900`?
+- Use Digital Loom's bundled `red silk` material as the fixed baseline specimen for every visual and performance comparison.

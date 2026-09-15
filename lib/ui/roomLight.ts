@@ -137,7 +137,7 @@ export const DEFAULT_ROOM_LIGHT_SETTINGS: Readonly<RoomLightSettings> =
     ambient: 0.5,
     beam: 0.5,
     dapple: 0.5,
-    dappleSoftness: 0.5,
+    dappleSoftness: 1,
     autoDrift: true,
     driftRate: 0.008333333333,
   });

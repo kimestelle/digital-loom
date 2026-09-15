@@ -5,13 +5,56 @@
 // extract pipeline reports through — the page owns the state, this renders it.
 // Styles live in app/styles/layout.css (.nav-bar / .status-*).
 
-import { memo } from "react";
+import { memo, useLayoutEffect, useRef } from "react";
 import { PixelPlay } from "@/lib/ui/pixelPlay";
 import {
   SaveStatus,
   type SaveStatusKind,
 } from "@/lib/ui/saveStatus";
 
+const WORDMARK = Array.from("digital loom");
+
+/** Each letter gathers at the mark, then travels to its natural text position.
+ * Measure only when fonts or layout change; playback is entirely CSS. */
+function LoomWordmark() {
+  const ref = useRef<HTMLSpanElement | null>(null);
+
+  useLayoutEffect(() => {
+    const wordmark = ref.current;
+    const symbol = wordmark?.parentElement?.querySelector<HTMLElement>(".nav-logo-symbol");
+    if (!wordmark || !symbol) return;
+    let disposed = false;
+    const measure = () => {
+      if (disposed) return;
+      const anchor = symbol.offsetLeft + symbol.offsetWidth / 2;
+      const origin = wordmark.offsetLeft;
+      const letters = Array.from(wordmark.children) as HTMLElement[];
+      const offsets = letters.map((letter) => anchor - origin - letter.offsetLeft);
+      letters.forEach((letter, index) => {
+        letter.style.setProperty("--logo-collapse-x", `${offsets[index]}px`);
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(wordmark);
+    observer.observe(symbol);
+    void document.fonts.ready.then(measure);
+    document.fonts.addEventListener("loadingdone", measure);
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      document.fonts.removeEventListener("loadingdone", measure);
+    };
+  }, []);
+
+  return (
+    <span ref={ref} className="nav-logo-wordmark" aria-hidden="true">
+      {WORDMARK.map((letter, index) => (
+        <span className="nav-logo-letter" key={index}>{letter}</span>
+      ))}
+    </span>
+  );
+}
 
 /** Lifecycle of the current extraction/selection, as shown in the pill. */
 export type PipelineStatus =
@@ -86,17 +129,17 @@ export const NavBar = memo(function NavBar({
             title={lightDialogOpen ? "close environment controls" : "environment controls"}
             onClick={onOpenLight}
           >
-            <span
-              className="nav-logo-mark"
-              aria-hidden="true"
-            />
-            <span
-              className="nav-logo-pixel-home"
-              data-pressed={lightDialogOpen}
-              aria-hidden="true"
-            >
-              <PixelPlay pixel={5} layer="over" className="nav-logo-pixel" />
+            <span className="nav-logo-symbol" aria-hidden="true">
+              <span className="nav-logo-mark" aria-hidden="true" />
+              <span
+                className="nav-logo-pixel-home"
+                data-pressed={lightDialogOpen}
+                aria-hidden="true"
+              >
+                <PixelPlay pixel={3} layer="over" className="nav-logo-pixel" />
+              </span>
             </span>
+            <LoomWordmark />
           </button>
         </div>
         <div className="nav-status-group">

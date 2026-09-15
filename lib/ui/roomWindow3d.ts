@@ -1,27 +1,31 @@
 import * as THREE from "three/webgpu";
 import { screenUV, smoothstep } from "three/tsl";
+import {
+  ROOM_WINDOW_PANEL_COUNT,
+  ROOM_WINDOW_INSTANCE_COUNT,
+  ROOM_WINDOW_MEMBER_COUNT,
+  ROOM_WINDOW_TRIANGLE_COUNT,
+  ROOM_WINDOW_DRAW_CALL_COUNT,
+  ROOM_WINDOW_SOURCE_HEIGHT,
+  resolveRoomWindowGeometry,
+  type RoomWindowApertureRect,
+  type RoomWindowRoomRect,
+  type RoomWindowPoint,
+} from "./roomWindowGeometry";
+export {
+  ROOM_BACK_WALL_VANISHING_POINT_X_RATIO,
+  ROOM_WINDOW_PANEL_COUNT,
+  ROOM_WINDOW_FORM_COUNT,
+  ROOM_WINDOW_INSTANCE_COUNT,
+  ROOM_WINDOW_MEMBER_COUNT,
+  ROOM_WINDOW_TRIANGLE_COUNT,
+  ROOM_WINDOW_DRAW_CALL_COUNT,
+  resolveRoomWindowRightVerticalScale,
+  type RoomWindowApertureRect,
+  type RoomWindowRoomRect,
+} from "./roomWindowGeometry";
 
-export const ROOM_WINDOW_PANEL_COUNT = 5;
-export const ROOM_WINDOW_FORM_COUNT = 1;
-/** Kept for the existing renderer diagnostic; one mesh is now one form. */
-export const ROOM_WINDOW_INSTANCE_COUNT = ROOM_WINDOW_FORM_COUNT;
-export const ROOM_WINDOW_MEMBER_COUNT =
-  ROOM_WINDOW_PANEL_COUNT + 1 + ROOM_WINDOW_PANEL_COUNT + 1;
-export const ROOM_WINDOW_TRIANGLE_COUNT = ROOM_WINDOW_MEMBER_COUNT * 2;
-export const ROOM_WINDOW_DRAW_CALL_COUNT = 1;
-
-// The back-wall floor seam reaches this point on the y=.5 room horizon.
-// Keeping the window sill incident with it makes the two lines converge in
-// perspective instead of running as a conspicuous parallel pair.
-export const ROOM_BACK_WALL_VANISHING_POINT_X_RATIO =
-  5639.759259 / 1280;
-
-const WINDOW_SOURCE_WIDTH = 856;
-const WINDOW_SOURCE_HEIGHT = 415.059;
 const WINDOW_LEFT_DEPTH = 1_800;
-const WINDOW_OUTER_STROKE_PX = 9;
-const WINDOW_INNER_STROKE_PX = 5.5;
-const WINDOW_MIDDLE_POSITION = 0.46;
 // Submit after the default-order cloth so its existing depth writes mask the
 // frame. The window remains physically behind the specimen and still appears
 // through shader-discarded fray holes, but partial fabric alpha no longer
@@ -37,20 +41,6 @@ const FRAME_INDEX_COUNT = ROOM_WINDOW_MEMBER_COUNT * QUAD_INDEX_COUNT;
 
 if (ROOM_WINDOW_TRIANGLE_COUNT !== FRAME_INDEX_COUNT / 3) {
   throw new Error("Room window geometry budget is out of sync");
-}
-
-export interface RoomWindowApertureRect {
-  /** CSS pixels relative to the renderer canvas. */
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-export interface RoomWindowRoomRect {
-  /** CSS pixels relative to the renderer canvas. */
-  left: number;
-  width: number;
 }
 
 export interface RoomWindowLayoutResult {
@@ -89,29 +79,6 @@ export interface RoomWindow3d {
 
 const finiteOr = (value: number, fallback: number): number =>
   Number.isFinite(value) ? value : fallback;
-
-export function resolveRoomWindowRightVerticalScale(
-  aperture: RoomWindowApertureRect,
-  room: RoomWindowRoomRect,
-): number {
-  const roomWidth = Math.max(1, finiteOr(room.width, 1280));
-  const roomLeft = finiteOr(room.left, 0);
-  const apertureLeft = finiteOr(aperture.left, 0);
-  const apertureRight = apertureLeft + Math.max(1, finiteOr(aperture.width, 1));
-  const vanishingPointX =
-    roomLeft + roomWidth * ROOM_BACK_WALL_VANISHING_POINT_X_RATIO;
-  const leftDistance = vanishingPointX - apertureLeft;
-  const rightDistance = vanishingPointX - apertureRight;
-  if (
-    !Number.isFinite(leftDistance) ||
-    !Number.isFinite(rightDistance) ||
-    leftDistance <= 1 ||
-    rightDistance <= 1
-  ) {
-    return 0.846;
-  }
-  return THREE.MathUtils.clamp(rightDistance / leftDistance, 0.35, 0.98);
-}
 
 /**
  * One shallow, non-overlapping window form for the shared room renderer.
@@ -219,11 +186,8 @@ export function createRoomWindow3d(
       left: finiteOr(rawRoom.left, 0),
       width: Math.max(1, finiteOr(rawRoom.width, viewportWidth)),
     };
-    const rightVerticalScale = resolveRoomWindowRightVerticalScale(
-      aperture,
-      room,
-    );
-    const projectiveDenominator = 1 / rightVerticalScale - 1;
+    const projectedGeometry = resolveRoomWindowGeometry(aperture, room);
+    const { rightVerticalScale } = projectedGeometry;
     const rightDepth = WINDOW_LEFT_DEPTH / rightVerticalScale;
 
     // The model mirrors the static room camera without entering its subtree;
@@ -234,24 +198,16 @@ export function createRoomWindow3d(
 
     const setProjectedPoint = (
       target: THREE.Vector3,
-      sourceU: number,
-      sourceV: number,
+      point: RoomWindowPoint,
     ) => {
-      const u = THREE.MathUtils.clamp(sourceU, 0, 1);
-      const v = THREE.MathUtils.clamp(sourceV, 0, 1);
-      const denominator = 1 + projectiveDenominator * u;
-      const projectedU =
-        ((1 + projectiveDenominator) * u) / denominator;
-      const projectedV = v / denominator;
-      const screenX = aperture.left + projectedU * aperture.width;
-      const screenY = aperture.top + projectedV * aperture.height;
+      const projectedU = (point.x - aperture.left) / aperture.width;
       const depth = THREE.MathUtils.lerp(
         WINDOW_LEFT_DEPTH,
         rightDepth,
         projectedU,
       );
-      const ndcX = (screenX / viewportWidth) * 2 - 1;
-      const ndcY = 1 - (screenY / viewportHeight) * 2;
+      const ndcX = (point.x / viewportWidth) * 2 - 1;
+      const ndcY = 1 - (point.y / viewportHeight) * 2;
       const halfHeight =
         Math.tan(THREE.MathUtils.degToRad(nextCamera.fov * 0.5)) * depth;
       target.set(
@@ -261,72 +217,16 @@ export function createRoomWindow3d(
       );
     };
 
-    const writeQuad = (
-      quad: number,
-      leftU: number,
-      topV: number,
-      rightU: number,
-      bottomV: number,
-    ) => {
+    projectedGeometry.quads.forEach(({ points }, quad) => {
       const base = quad * QUAD_VERTEX_COUNT;
-      setProjectedPoint(scratchPoint, leftU, topV);
-      positions.setXYZ(base, scratchPoint.x, scratchPoint.y, scratchPoint.z);
-      setProjectedPoint(scratchPoint, leftU, bottomV);
-      positions.setXYZ(base + 1, scratchPoint.x, scratchPoint.y, scratchPoint.z);
-      setProjectedPoint(scratchPoint, rightU, bottomV);
-      positions.setXYZ(base + 2, scratchPoint.x, scratchPoint.y, scratchPoint.z);
-      setProjectedPoint(scratchPoint, rightU, topV);
-      positions.setXYZ(base + 3, scratchPoint.x, scratchPoint.y, scratchPoint.z);
-    };
-
-    const outerWidth = WINDOW_OUTER_STROKE_PX / WINDOW_SOURCE_WIDTH;
-    const innerHalfWidth =
-      WINDOW_INNER_STROKE_PX / WINDOW_SOURCE_WIDTH / 2;
-    const sillTop = 1 - WINDOW_OUTER_STROKE_PX / WINDOW_SOURCE_HEIGHT;
-    const middleHalfHeight =
-      WINDOW_INNER_STROKE_PX / WINDOW_SOURCE_HEIGHT / 2;
-    const postRanges: Array<readonly [number, number]> = [];
-    let quad = 0;
-
-    for (let post = 0; post <= ROOM_WINDOW_PANEL_COUNT; post += 1) {
-      const center = post / ROOM_WINDOW_PANEL_COUNT;
-      const left =
-        post === 0
-          ? 0
-          : post === ROOM_WINDOW_PANEL_COUNT
-            ? 1 - outerWidth
-            : center - innerHalfWidth;
-      const right =
-        post === 0
-          ? outerWidth
-          : post === ROOM_WINDOW_PANEL_COUNT
-            ? 1
-            : center + innerHalfWidth;
-      postRanges.push([left, right]);
-      writeQuad(quad++, left, 0, right, sillTop);
-    }
-
-    for (let panel = 0; panel < ROOM_WINDOW_PANEL_COUNT; panel += 1) {
-      writeQuad(
-        quad++,
-        postRanges[panel][1],
-        WINDOW_MIDDLE_POSITION - middleHalfHeight,
-        postRanges[panel + 1][0],
-        WINDOW_MIDDLE_POSITION + middleHalfHeight,
-      );
-    }
-
-    // The sill is one uninterrupted strip and ends at the jamb silhouette.
-    // Posts terminate on its upper edge, so every lower corner is shared once.
-    writeQuad(quad++, 0, sillTop, 1, 1);
-    if (quad !== ROOM_WINDOW_MEMBER_COUNT) {
-      throw new Error("Room window member count is out of sync");
-    }
-
-    setProjectedPoint(apertureCorners[0], 0, 0);
-    setProjectedPoint(apertureCorners[1], 1, 0);
-    setProjectedPoint(apertureCorners[2], 1, 1);
-    setProjectedPoint(apertureCorners[3], 0, 1);
+      points.forEach((point, vertex) => {
+        setProjectedPoint(scratchPoint, point);
+        positions.setXYZ(base + vertex, scratchPoint.x, scratchPoint.y, scratchPoint.z);
+      });
+    });
+    projectedGeometry.aperture.forEach((point, corner) => {
+      setProjectedPoint(apertureCorners[corner], point);
+    });
 
     positions.needsUpdate = true;
     frameGeometry.computeVertexNormals();
@@ -352,7 +252,7 @@ export function createRoomWindow3d(
     camera,
     851,
     832,
-    { left: -66, top: 0, width: 880, height: WINDOW_SOURCE_HEIGHT },
+    { left: -66, top: 0, width: 880, height: ROOM_WINDOW_SOURCE_HEIGHT },
     { left: 0, width: 1280 },
   );
 

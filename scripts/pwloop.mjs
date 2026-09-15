@@ -4,7 +4,7 @@
 // scene to actually render, runs a named scenario, and captures a timed burst
 // of stage screenshots so transitions can be inspected frame by frame.
 //
-//   node scripts/pwloop.mjs <scenario> [--url=http://localhost:3000/room]
+//   node scripts/pwloop.mjs <scenario> [--url=http://localhost:3000/]
 //        [--headed] [--out=shots] [--reduced]
 //
 // Scenarios: boot, mobile, cabinet, light, loupe, weave, sample, rapid, iris
@@ -21,7 +21,7 @@ const opt = (name, dflt) => {
   const hit = args.find((a) => a.startsWith(`--${name}=`));
   return hit ? hit.split("=").slice(1).join("=") : dflt;
 };
-const URL_ = opt("url", "http://localhost:3000/room");
+const URL_ = opt("url", "http://localhost:3000/");
 const OUT = path.resolve(opt("out", "shots"), scenario);
 const HEADED = args.includes("--headed");
 const REDUCED = args.includes("--reduced");

@@ -73,9 +73,10 @@
 :root {
   --room-controls-left: clamp(18px, 4.296875vw, 55px);
   --room-controls-top: clamp(20px, 4.6875dvh, 39px);
-  --room-logo-size: 64px;
+  --room-logo-size: 44px;
+  --room-logo-hit-size: var(--room-control-size);
   --room-controls-width: 216px;
-  --room-controls-start: calc(var(--room-controls-top) + var(--room-logo-size) + 8px);
+  --room-controls-start: calc(var(--room-controls-top) + var(--room-logo-hit-size));
 }
 
 .nav-bar {
@@ -113,8 +114,9 @@
   position: relative;
   isolation: isolate;
   display: grid;
-  width: var(--room-logo-size);
-  height: var(--room-logo-size);
+  width: var(--room-logo-hit-size);
+  height: var(--room-logo-hit-size);
+  overflow: clip;
   padding: 0;
   place-items: center;
   border: 0;
@@ -123,7 +125,56 @@
   cursor: pointer;
   pointer-events: auto;
   touch-action: manipulation;
-  transition: background var(--d-fast) var(--ease-motion);
+  transition:
+    width var(--room-duration-reveal) var(--ease-motion),
+    background var(--d-fast) var(--ease-motion);
+}
+
+.nav-logo-button[aria-expanded="true"] {
+  width: var(--room-controls-width);
+}
+
+.nav-logo-symbol {
+  position: absolute;
+  left: 0;
+  top: calc((var(--room-logo-hit-size) - var(--room-logo-size)) / 2);
+  z-index: 2;
+  width: var(--room-logo-size);
+  height: var(--room-logo-size);
+}
+
+.nav-logo-wordmark {
+  position: absolute;
+  left: calc(var(--room-logo-size) + 6px);
+  top: 50%;
+  display: inline-flex;
+  width: max-content;
+  transform: translateY(-50%);
+  color: var(--room-ui-ink);
+  font-family: var(--font-display);
+  font-size: clamp(18px, 5vw, 25px);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.035em;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.nav-logo-letter {
+  display: block;
+  opacity: 0;
+  transform: translateX(var(--logo-collapse-x, -20px));
+  /* Adapt the Anthropic study's shared travel and half-duration reveal;
+     no stagger, timer, or per-frame JavaScript. Use the room's motion curve. */
+  transition:
+    transform var(--room-duration-reveal) var(--ease-motion),
+    opacity var(--room-duration-letter) var(--ease-motion);
+}
+
+.nav-logo-button[aria-expanded="true"] .nav-logo-letter {
+  opacity: 1;
+  transform: translateX(0);
+  transition-delay: 0ms, var(--room-duration-letter);
 }
 
 .nav-logo-mark {
@@ -135,9 +186,11 @@
   height: var(--room-logo-size);
   background: linear-gradient(
     145deg,
-    rgba(42, 39, 35, 0.78),
-    rgba(7, 7, 7, 0.9)
+    rgb(42, 39, 35),
+    rgb(7, 7, 7)
   );
+  /* The mark has its own pigment; the bright sky cannot wash it out.
+     Frost remains in the grain layer, not in translucent ink. */
   backdrop-filter: blur(11px) saturate(76%);
   -webkit-backdrop-filter: blur(11px) saturate(76%);
   mask-image: url("/loom-mark.svg?v=2");
@@ -188,7 +241,7 @@
   overflow: visible;
   transform: scaleY(0);
   transform-origin: top;
-  transition: transform 340ms var(--ease-motion);
+  transition: transform var(--room-duration-reveal) var(--ease-motion);
   pointer-events: none;
 }
 
@@ -203,7 +256,7 @@
 
 @media (hover: hover) and (pointer: fine) {
   .nav-logo-button:hover {
-    background: rgba(48, 40, 34, 0.07);
+    background: transparent;
   }
 }
 
@@ -372,7 +425,6 @@
   :root {
     --room-controls-left: 18px;
     --room-controls-top: max(8px, env(safe-area-inset-top, 0px));
-    --room-logo-size: 48px;
     --room-controls-width: min(224px, calc(100vw - 36px));
   }
 
@@ -383,12 +435,6 @@
 
   .nav-brand {
     margin-left: 0;
-  }
-
-  .nav-logo-button,
-  .nav-logo-mark {
-    width: var(--room-logo-size);
-    height: var(--room-logo-size);
   }
 
   /* Tab strip: workshop · my swatches · tuning. Docked flush to the bottom

@@ -1,0 +1,56 @@
+/* Shared square range control with material/light size variants.
+   Browser pseudo-elements stay in separate rules: unsupported selectors must
+   not invalidate another engine's slider. Native input behavior is retained. */
+.cabinet-pane--material .slider input[type="range"] {
+  --room-range-track-size: var(--room-range-track-material);
+  --room-range-thumb-size: var(--room-range-thumb-material);
+  --room-range-track-fill: var(--room-ui-line-material-strong);
+  --room-range-thumb-fill: var(--fg);
+  --room-range-thumb-border: 0;
+}
+
+.room-light-modal__control input[type="range"] {
+  --room-range-track-size: var(--room-range-track-light);
+  --room-range-thumb-size: var(--room-range-thumb-light);
+  --room-range-track-fill: var(--line-strong);
+  --room-range-thumb-fill: var(--accent);
+  --room-range-thumb-border: 1px solid white;
+}
+
+:is(.cabinet-pane--material .slider, .room-light-modal__control) input[type="range"]::-webkit-slider-runnable-track {
+  height: var(--room-range-track-size);
+  border-radius: var(--room-radius-control);
+  background: var(--room-range-track-fill);
+}
+
+:is(.cabinet-pane--material .slider, .room-light-modal__control) input[type="range"]::-moz-range-track {
+  height: var(--room-range-track-size);
+  border-radius: var(--room-radius-control);
+  background: var(--room-range-track-fill);
+}
+
+:is(.cabinet-pane--material .slider, .room-light-modal__control) input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: var(--room-range-thumb-size);
+  height: var(--room-range-thumb-size);
+  margin-top: calc((var(--room-range-track-size) - var(--room-range-thumb-size)) / 2);
+  border: var(--room-range-thumb-border);
+  border-radius: var(--room-radius-control);
+  background: var(--room-range-thumb-fill);
+  box-shadow: none;
+}
+
+:is(.cabinet-pane--material .slider, .room-light-modal__control) input[type="range"]::-moz-range-thumb {
+  width: var(--room-range-thumb-size);
+  height: var(--room-range-thumb-size);
+  border: var(--room-range-thumb-border);
+  border-radius: var(--room-radius-control);
+  background: var(--room-range-thumb-fill);
+  box-shadow: none;
+}
+
+.cabinet-pane--material .slider input[type="range"]::-moz-range-progress {
+  height: var(--room-range-track-size);
+  border-radius: var(--room-radius-control);
+  background: transparent;
+}

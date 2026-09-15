@@ -13,24 +13,28 @@
 }
 
 .room-frame {
+  --room-bake-active: 0;
   --room-ink: #211d1a;
   --room-line: rgba(53, 43, 35, 0.105);
-  /* Moodboard: pale plaster, honey wood, and clear daylight around the dye. */
-  --room-wall-top: #fffdf5;
-  --room-wall-mid: #f7eed9;
-  --room-wall-bottom: #ebdcc1;
-  --room-side-top: #fff9ec;
-  --room-side-mid: #f0e2c7;
-  --room-side-bottom: #ddc8a5;
-  --room-floor-near: #93775f;
-  --room-floor-mid: #ae9278;
-  --room-floor-far: #c7b39a;
+  /* Neutral plaster and lightly oiled wood. Surface pigment stays restrained;
+     warmth belongs to the existing daylight rather than every shadow stop. */
+  --room-wall-top: #faf9f4;
+  --room-wall-mid: #e8e5dd;
+  --room-wall-bottom: #d4d2c8;
+  --room-side-top: #f1f0e9;
+  --room-side-mid: #dedfd7;
+  --room-side-bottom: #c6cbc6;
+  --room-floor-near: #968576;
+  --room-floor-mid: #b09e8b;
+  --room-floor-far: #cec1ad;
   --room-cabinet-left: 66.484375%;
   --room-cabinet-width: 30.78125%;
   /* Both coordinates come from the 1280 px room drawing. Keeping the jamb
      offset expressed from the wall corner prevents a height-sized window
      from wandering onto the side wall as the viewport narrows. */
   --room-wall-corner-x: 71.9140625%;
+  --room-wall-corner-y: 66.6466346%;
+  --room-floor-right-y: 86.3091981%;
   --room-window-corner-gap: min(8.3203125vw, 12.8004808dvh);
   --room-window-width: 105.769231dvh;
   --room-window-height: 49.886899dvh;
@@ -67,7 +71,7 @@
   min-height: 420px;
   overflow: hidden;
   color: var(--room-ink);
-  background: #f4e9d3;
+  background: var(--room-wall-mid);
 }
 
 .room-frame__architecture,
@@ -161,8 +165,29 @@
 }
 
 .room-frame__surface-texture--floor {
-  opacity: 0.72;
+  opacity: 0.45;
   mix-blend-mode: multiply;
+}
+
+/* Shade belongs to the substrate, below the white aperture and direct light.
+   A static gradient preserves the existing top fade; only opacity changes.
+   Legacy, zero strength, missing assets and other hours retain their palette. */
+.room-frame__sunlight-shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(144deg,
+    rgba(220, 200, 170, 0),
+    rgba(193, 162, 118, 0.48) 22%,
+    rgba(168, 131, 77, 0.86) 62%,
+    #775936);
+  mix-blend-mode: multiply;
+  opacity: 0;
+  pointer-events: none;
+  will-change: opacity;
+}
+
+.room-frame[data-room-sunlight-tone="sunlit"] .room-frame__sunlight-shade {
+  opacity: calc(var(--room-bake-active) * min(1, var(--room-dapple-opacity) * 2) * 0.34);
 }
 
 .room-frame__stop--wall-light {
@@ -238,13 +263,26 @@
   box-shadow: none;
 }
 
+/* The aperture sits above the room's atmosphere wash, so it needs its own
+   night plate. Paint once; the existing daylight clock only fades opacity.
+   Daylight stays white and opaque, while the clipped opening cools at dusk. */
+.room-frame__window::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, #182234, #3b4c64);
+  opacity: clamp(0, calc(var(--room-night-opacity) + var(--room-twilight-opacity) * 0.72), 1);
+  pointer-events: none;
+  will-change: opacity;
+}
+
 .room-frame__angled-light {
   position: absolute;
   top: var(--room-window-y);
   left: var(--room-window-x);
   width: 96vw;
   height: 34vh;
-  opacity: var(--room-beam-opacity);
+  opacity: calc(var(--room-beam-opacity) * (1 - var(--room-bake-active) * 0.94));
   background:
     radial-gradient(
       ellipse 92% 74% at 4% 48%,
@@ -269,6 +307,32 @@
   will-change: transform, opacity;
 }
 
+/* The frame comes from the same twelve quads as the depth-tested Three form.
+   These local filters repaint on resize/tuning only, never on a solar tick. */
+.room-frame__window-vector {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.room-frame__window-form {
+  opacity: 0.78;
+  mask-image: linear-gradient(to bottom, transparent 3%, black 60%);
+}
+
+.room-frame__window-bloom {
+  opacity: 0;
+  will-change: opacity;
+}
+
+.room-frame[data-room-sunlight-tone="sunlit"] .room-frame__window-bloom {
+  opacity: calc(var(--room-window-bloom) * var(--room-bake-active) * min(1, var(--room-dapple-opacity) * 2));
+}
+
 .room-frame__floor-projection {
   /* Both cues share one receiver: the light ray's intersection with the
      measured floor seam. A fixed paint surface is only composited during
@@ -291,19 +355,91 @@
   position: absolute;
   inset: 0;
   contain: strict;
-  opacity: var(--room-dapple-opacity);
+  opacity: calc(var(--room-dapple-opacity) * (1 - var(--room-bake-active)));
   will-change: opacity;
 }
 
 .room-frame__ground-light {
   overflow: hidden;
   clip-path: polygon(
-    71.9140625% 66.6466346%,
-    100% 86.3091981%,
+    var(--room-wall-corner-x) var(--room-wall-corner-y),
+    100% var(--room-floor-right-y),
     100% 100%,
     0 100%,
     0 79.6344586%
   );
+}
+
+.room-frame__wall-light {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+  clip-path: polygon(
+    var(--room-wall-corner-x) 0,
+    100% 0,
+    100% var(--room-floor-right-y),
+    var(--room-wall-corner-x) var(--room-wall-corner-y)
+  );
+}
+
+.room-frame[data-room-sunlight-wall-ready="true"] .room-frame__wall-light {
+  visibility: visible;
+}
+
+/* Hold a decoded neighbor while the next source arrives. The previous field
+   remains the fallback when neither source is available; cloth stays live. */
+.room-frame[data-room-sunlight="baked"][data-room-sunlight-ready="true"][data-room-sunlight-wall-ready="true"] {
+  --room-bake-active: var(--room-bake-weight, 0);
+}
+
+.room-frame__sunlight-receiver {
+  position: absolute;
+  inset: 0;
+  isolation: isolate;
+  opacity: calc(var(--room-dapple-opacity) * var(--room-bake-active));
+  pointer-events: none;
+  will-change: opacity;
+}
+
+.room-frame__sunlight-plate {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  overflow: hidden;
+  /* A+B uses complementary premultiplied weights inside an isolated pair.
+     Normal source-over would dim common pixels halfway through the fade. */
+  mix-blend-mode: plus-lighter;
+  will-change: transform, opacity;
+}
+
+.room-frame__sunlight-bake,
+.room-frame__wall-sunlight-bake {
+  position: absolute;
+  left: 0;
+  top: 0;
+  max-width: none;
+  filter: blur(var(--room-bake-softness, 1px));
+  pointer-events: none;
+  /* Keep the source/filter surface fixed while the receiver crop moves. */
+  will-change: transform;
+}
+
+.room-frame__sunlight-defs {
+  position: absolute;
+  pointer-events: none;
+}
+
+.room-frame[data-room-sunlight-tone="sunlit"] :is(.room-frame__sunlight-bake, .room-frame__wall-sunlight-bake) {
+  /* Static alpha gain is confined to the 1024×512 plate. No full-scene filter
+     and no filter values driven by the daylight animation. */
+  filter: var(--room-bake-exposure-filter) blur(calc(var(--room-bake-softness, 1px) * 2));
+}
+
+.room-frame[data-room-sunlight-tone="sunlit"] .room-frame__sunlight-receiver {
+  opacity: calc(min(0.92, var(--room-dapple-opacity) * 1.5) * var(--room-bake-active));
 }
 
 .room-frame__dapple-mask {
@@ -322,6 +458,19 @@
   -webkit-mask-image: none;
   filter: blur(12px);
   mix-blend-mode: screen;
+}
+
+.room-frame__cloth-shadow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 256px;
+  height: 128px;
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: 0 0;
+  mix-blend-mode: multiply;
+  will-change: transform, opacity;
 }
 
 .room-frame__transmitted-light {
@@ -348,8 +497,8 @@
 
 .room-frame__stage {
   position: absolute;
-  /* The stage itself never overlaps the cabinet; this higher paint order only
-     lets the pointer-free loupe rim cross their shared edge. */
+  /* The lens rim may overflow the specimen, but mounted controls must stay
+     above it: the cabinet's side tab extends into the stage's hit area. */
   z-index: 6;
   inset: 0 calc(100% - var(--room-cabinet-left)) 0 0;
   min-width: 0;
@@ -397,7 +546,7 @@
     calc(var(--material-loupe-y, 0px) - 50%),
     0
   );
-  transition: opacity 110ms var(--ease-motion);
+  transition: opacity var(--room-duration-lens) var(--ease-motion);
   will-change: transform, opacity;
 }
 
@@ -411,7 +560,7 @@
 
 .room-frame__cabinet {
   position: absolute;
-  z-index: 5;
+  z-index: 7;
   top: var(--room-cabinet-top);
   left: var(--room-cabinet-left);
   right: auto;
@@ -427,11 +576,12 @@
 }
 
 .room-frame__guides path,
+.material-cabinet__baseline line,
 .nav-environment-guide line {
   fill: none;
-  stroke: #fff;
-  stroke-width: 0.8px;
-  stroke-dasharray: 1.2 3.2;
+  stroke: var(--room-guide-color);
+  stroke-width: var(--room-guide-width);
+  stroke-dasharray: var(--room-guide-dash);
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
@@ -451,6 +601,8 @@
 
 .material-cabinet {
   position: relative;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -460,11 +612,13 @@
 
 .material-cabinet__track {
   position: relative;
+  flex: 1 1 0;
+  min-height: 0;
   width: 100%;
   height: 100%;
   transform-style: preserve-3d;
   transform: rotateY(0deg);
-  transition: transform 420ms var(--ease-motion);
+  transition: transform var(--room-duration-panel) var(--ease-motion);
   will-change: transform;
 }
 
@@ -472,10 +626,24 @@
   transform: rotateY(-180deg);
 }
 
+.material-cabinet__baseline {
+  position: relative;
+  z-index: 2;
+  display: block;
+  flex: 0 0 1px;
+  height: 1px;
+  min-height: 1px;
+  /* Same 814→1279 guide extent as the room drawing's 851→1245 cabinet. */
+  left: -9.390863%;
+  width: 118.020305%;
+  overflow: visible;
+  pointer-events: none;
+}
+
 .material-cabinet__face {
   --room-glass-height: var(--room-cabinet-height);
-  --room-glass-padding-x: 18px;
-  --room-glass-padding-top: 16px;
+  --room-glass-padding-x: var(--room-panel-inset-x);
+  --room-glass-padding-top: var(--room-panel-inset-top);
   position: absolute;
   inset: 0;
   min-width: 0;
@@ -486,7 +654,7 @@
   -webkit-overflow-scrolling: touch;
   backface-visibility: hidden;
   border: 0;
-  border-radius: 0;
+  border-radius: var(--room-radius-control);
   box-shadow: none;
   scrollbar-color: var(--line-strong) transparent;
   scrollbar-width: thin;
@@ -497,43 +665,11 @@
 }
 
 .material-cabinet__face--material {
-  --bg: rgba(250, 251, 249, 0.86);
-  --bg-elev: rgba(243, 245, 242, 0.9);
-  --bg-elev-2: rgba(234, 237, 233, 0.92);
-  --line: rgba(48, 51, 47, 0.14);
-  --line-strong: rgba(48, 51, 47, 0.28);
-  --fg: #30332f;
-  --fg-light: #30332f;
-  --fg-mute: rgba(48, 51, 47, 0.76);
-  --fg-dim: rgba(48, 51, 47, 0.6);
-  --accent: #30332f;
-  --cat: var(--accent);
-  /* Neutralize control chrome, never the material/map image content. */
-  --dye-indigo: var(--accent);
-  --dye-madder: var(--accent);
-  --dye-gardenia: var(--accent);
-  --dye-persimmon: var(--accent);
-  --dye-mugwort: var(--accent);
-  --error: #9b3f35;
-  padding: 16px 18px 20px;
-  color: var(--fg);
-  color-scheme: light;
+  padding: var(--room-panel-inset-top) var(--room-panel-inset-x) var(--room-space-5);
 }
 
 .material-cabinet__face--archive {
-  --bg: rgba(250, 251, 249, 0.86);
-  --bg-elev: rgba(243, 245, 242, 0.9);
-  --bg-elev-2: rgba(234, 237, 233, 0.92);
-  --line: rgba(108, 114, 111, 0.24);
-  --line-strong: rgba(94, 101, 97, 0.38);
-  --fg: #30332f;
-  --fg-mute: rgba(48, 51, 47, 0.76);
-  --fg-dim: rgba(48, 51, 47, 0.55);
-  --accent: #424742;
-  --error: #9b3f35;
-  padding: 16px 18px 20px;
-  color: var(--fg);
-  color-scheme: light;
+  padding: var(--room-panel-inset-top) var(--room-panel-inset-x) var(--room-space-5);
   transform: rotateY(180deg);
 }
 
@@ -541,11 +677,9 @@
 .room-light-modal__dialog {
   /* A shared translucent substrate; grain is a separate layer so its 60%
      opacity does not fade the text, controls, or white structural rules. */
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.32), rgba(255, 255, 255, 0.12)),
-    rgba(255, 255, 255, 0.3);
-  backdrop-filter: blur(12px) saturate(0.85);
-  -webkit-backdrop-filter: blur(12px) saturate(0.85);
+  background: var(--room-glass-fill);
+  backdrop-filter: var(--room-glass-filter);
+  -webkit-backdrop-filter: var(--room-glass-filter);
 }
 
 .material-cabinet__face::before,
@@ -562,8 +696,8 @@
   margin-right: calc(-1 * var(--room-glass-padding-x));
   margin-bottom: calc(var(--room-glass-padding-top) - var(--room-glass-height));
   margin-left: calc(-1 * var(--room-glass-padding-x));
-  background: url("/2d-textures/sandpaper.png") 0 0 / 208.8px 300px repeat;
-  opacity: 0.6;
+  background: var(--room-grain-image) 0 0 / var(--room-grain-size) repeat;
+  opacity: var(--room-grain-opacity);
   mix-blend-mode: multiply;
   pointer-events: none;
 }
@@ -609,7 +743,7 @@
 .cabinet-pane__kicker,
 .cabinet-tuning-label > span {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--room-type-label);
   line-height: 1.2;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -620,7 +754,7 @@
   max-width: 29ch;
   margin-top: 7px;
   color: var(--fg-dim);
-  font-size: 12px;
+  font-size: var(--room-type-body);
   line-height: 1.35;
 }
 
@@ -628,7 +762,7 @@
   max-width: 17ch;
   margin-top: 5px;
   overflow: hidden;
-  font-size: 21px;
+  font-size: var(--room-type-title);
   font-weight: 500;
   line-height: 1.08;
   letter-spacing: -0.02em;
@@ -639,7 +773,7 @@
 .cabinet-material-meta {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 12px;
+  gap: var(--room-space-3);
   margin: 18px 0 0;
   padding: 8px 0 10px;
 }
@@ -686,7 +820,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--room-space-3);
   margin: 0 -3px;
   padding: 4px 3px 7px;
   background: linear-gradient(var(--bg) 78%, transparent);
@@ -694,12 +828,12 @@
 
 .cabinet-disclosure > summary {
   display: flex;
-  min-height: 44px;
+  min-height: var(--room-control-size);
   align-items: center;
   justify-content: space-between;
   color: var(--fg-mute);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--room-type-label);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
@@ -733,11 +867,11 @@
 
 .cabinet-pane--material .cabinet-material-meta dd {
   margin-top: 4px;
-  font-size: 10px;
+  font-size: var(--room-type-label);
 }
 
 .cabinet-pane--material .cabinet-pane__scroll {
-  gap: 16px;
+  gap: var(--room-space-4);
   margin-top: 16px;
   padding-right: 0;
 }
@@ -759,7 +893,7 @@
 
 .cabinet-pane--material .preview-strip {
   grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
-  gap: 8px;
+  gap: var(--room-space-2);
   overflow: visible;
 }
 
@@ -785,19 +919,19 @@
 
 .cabinet-pane--material :is(.btn, .instrument-button, .construction-option,
   .perf-meter, .material-draft-tools, .preview-chip-button, .fabric-picker-select) {
-  border-radius: 0;
+  border-radius: var(--room-radius-control);
 }
 
 .cabinet-pane--material :is(.btn, .instrument-button) {
-  min-height: 32px;
+  min-height: var(--room-control-compact);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--room-type-label);
   letter-spacing: 0.02em;
 }
 
 .cabinet-pane--material :is(.btn-ghost, .tx-mode-picker, .construction-option,
   .perf-meter) {
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--room-control-bg);
   border-color: var(--line);
   box-shadow: none;
   backdrop-filter: none;
@@ -805,13 +939,13 @@
 }
 
 .cabinet-pane--material .tx-mode-tab {
-  min-height: 36px;
-  font-size: 10px;
+  min-height: var(--room-control-regular);
+  font-size: var(--room-type-label);
 }
 
 .cabinet-pane--material .tx-mode-tab[data-active="true"],
 .room-light-modal .tx-mode-tab[data-active="true"] {
-  background: rgba(48, 51, 47, 0.06);
+  background: var(--room-control-selected);
   color: var(--fg);
 }
 
@@ -835,7 +969,7 @@
 
 .cabinet-pane--material .construction-option[data-active="true"] {
   border-color: var(--accent);
-  background: rgba(255, 255, 255, 0.98);
+  background: var(--room-control-active);
   color: var(--fg);
 }
 
@@ -845,7 +979,7 @@
 }
 
 .cabinet-pane--material .instrument-pad-grid {
-  gap: 8px;
+  gap: var(--room-space-2);
 }
 
 .cabinet-pane--material .instrument-pad-surface {
@@ -869,46 +1003,13 @@
   gap: 10px;
 }
 
-.cabinet-pane--material .slider input[type="range"]::-webkit-slider-runnable-track {
-  height: 2px;
-  border-radius: 0;
-  background: rgba(48, 51, 47, 0.28);
-}
-
-.cabinet-pane--material .slider input[type="range"]::-moz-range-track {
-  height: 2px;
-  border-radius: 0;
-  background: rgba(48, 51, 47, 0.28);
-}
-
-.cabinet-pane--material .slider input[type="range"]::-moz-range-progress {
-  height: 2px;
-  border-radius: 0;
-  background: transparent;
-}
-
-.cabinet-pane--material .slider input[type="range"]::-webkit-slider-thumb {
-  width: 8px;
-  height: 8px;
-  margin-top: -3px;
-  border-radius: 0;
-  background: var(--fg);
-}
-
-.cabinet-pane--material .slider input[type="range"]::-moz-range-thumb {
-  width: 8px;
-  height: 8px;
-  border-radius: 0;
-  background: var(--fg);
-}
-
 .cabinet-pane--material .perf-meters {
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
 }
 
 .cabinet-pane--material .fine-tune > summary {
-  min-height: 36px;
+  min-height: var(--room-control-regular);
   align-items: center;
 }
 
@@ -933,7 +1034,7 @@
 @media (pointer: coarse) {
   .cabinet-pane--material :is(.btn, .instrument-button, .tx-mode-tab,
     .fine-tune > summary) {
-    min-height: 44px;
+    min-height: var(--room-control-size);
   }
 }
 
@@ -942,16 +1043,18 @@
   position: absolute;
   z-index: 4;
   top: 0;
-  left: -44px;
+  left: calc(-1 * var(--room-control-size));
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: var(--room-control-size);
+  height: var(--room-control-size);
   padding: 0;
   place-items: center;
   border: 0;
-  border-radius: 0;
-  background: rgba(255, 255, 255, 0.82);
-  color: inherit;
+  border-radius: 0 0 0 12px;
+  /* Mounted chrome stays above the face's glass/scroll fades. */
+  isolation: isolate;
+  background: var(--room-tab-bg);
+  color: var(--room-ui-ink);
   cursor: pointer;
   touch-action: manipulation;
   transition: background var(--d-tap) var(--ease-motion);
@@ -960,8 +1063,8 @@
 .material-cabinet__flip-icon {
   grid-area: 1 / 1;
   display: block;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   opacity: 0;
   filter: blur(2px);
   pointer-events: none;
@@ -977,17 +1080,17 @@
   /* Let the previous symbol dissolve before the destination appears. Both
      remain mounted, so a quick reversal never queues a stale icon swap. */
   transition-duration: var(--d-fast);
-  transition-delay: 160ms;
+  transition-delay: var(--room-delay-icon);
 }
 
 @media (hover: hover) {
   .material-cabinet__flip:hover {
-    background: rgba(255, 255, 255, 0.96);
+    background: var(--room-tab-hover);
   }
 }
 
 .material-cabinet__flip:active {
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--room-tab-pressed);
 }
 
 .material-cabinet__flip:focus-visible {
@@ -998,15 +1101,6 @@
 /* Environment rail ------------------------------------------------------- */
 
 .room-light-modal {
-  --bg: rgba(250, 251, 249, 0.86);
-  --bg-elev: rgba(243, 245, 242, 0.9);
-  --bg-elev-2: rgba(234, 237, 233, 0.92);
-  --line: rgba(108, 114, 111, 0.24);
-  --line-strong: rgba(94, 101, 97, 0.38);
-  --fg: #30332f;
-  --fg-mute: rgba(48, 51, 47, 0.76);
-  --fg-dim: rgba(48, 51, 47, 0.55);
-  --accent: #424742;
   position: fixed;
   z-index: 29;
   top: var(--room-controls-start);
@@ -1018,8 +1112,8 @@
   pointer-events: none;
   color: var(--fg);
   transition:
-    grid-template-rows 260ms var(--ease-motion),
-    visibility 0s 300ms;
+    grid-template-rows var(--room-duration-close) var(--ease-motion),
+    visibility 0s var(--room-delay-hidden);
 }
 
 .room-light-modal[data-open="true"] {
@@ -1027,7 +1121,7 @@
   visibility: visible;
   pointer-events: auto;
   transition:
-    grid-template-rows 340ms var(--ease-motion),
+    grid-template-rows var(--room-duration-reveal) var(--ease-motion),
     visibility 0s;
 }
 
@@ -1044,18 +1138,18 @@
   position: absolute;
   z-index: 0;
   inset: 0;
-  background: rgba(255, 255, 255, 0.5);
-  backdrop-filter: blur(12px) saturate(0.85);
-  -webkit-backdrop-filter: blur(12px) saturate(0.85);
-  mask-image: linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.8) 40%, transparent);
-  -webkit-mask-image: linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.8) 40%, transparent);
+  background: var(--room-glass-rail-fill);
+  backdrop-filter: var(--room-glass-filter);
+  -webkit-backdrop-filter: var(--room-glass-filter);
+  mask-image: var(--room-glass-fade);
+  -webkit-mask-image: var(--room-glass-fade);
   pointer-events: none;
 }
 
 .room-light-modal__dialog {
   --room-glass-height: max(0px, calc(100dvh - var(--room-controls-start) - var(--room-controls-bottom)));
-  --room-glass-padding-x: 14px;
-  --room-glass-padding-top: 10px;
+  --room-glass-padding-x: var(--room-rail-inset-x);
+  --room-glass-padding-top: var(--room-rail-inset-top);
   position: relative;
   z-index: 1;
   box-sizing: border-box;
@@ -1065,9 +1159,9 @@
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--line-strong) transparent;
-  padding: 10px 14px 14px;
+  padding: var(--room-rail-inset-top) var(--room-rail-inset-x) var(--room-rail-inset-x);
   border: 0;
-  border-radius: 0;
+  border-radius: var(--room-radius-control);
   outline: none;
   background: transparent;
   backdrop-filter: none;
@@ -1075,15 +1169,15 @@
 }
 
 .room-light-modal__dialog::before {
-  mask-image: linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.8) 40%, transparent);
-  -webkit-mask-image: linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.8) 40%, transparent);
+  mask-image: var(--room-glass-fade);
+  -webkit-mask-image: var(--room-glass-fade);
 }
 
 .room-light-modal__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--room-space-2);
   min-height: 30px;
   margin-bottom: 8px;
 }
@@ -1091,7 +1185,7 @@
 .room-light-modal__header h2 {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--room-type-label);
   font-weight: 500;
   line-height: 1.35;
   letter-spacing: 0.06em;
@@ -1111,24 +1205,10 @@
   white-space: nowrap;
 }
 
-.room-light-modal__close {
-  appearance: none;
-  flex: 0 0 44px;
-  min-height: 44px;
-  margin: -6px -8px -6px 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--fg-mute);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  cursor: pointer;
-}
-
 .room-light-modal__body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--room-space-3);
 }
 
 .room-light-modal__group {
@@ -1139,15 +1219,15 @@
   opacity: 0;
   transform: translateY(-7px);
   transition:
-    opacity 150ms var(--ease-motion),
-    transform 200ms var(--ease-motion);
-  transition-delay: calc((4 - var(--cascade-index, 0)) * 18ms);
+    opacity var(--room-duration-group-fade) var(--ease-motion),
+    transform var(--room-duration-group-travel) var(--ease-motion);
+  transition-delay: calc((4 - var(--cascade-index, 0)) * var(--room-stagger-exit));
 }
 
 .room-light-modal[data-open="true"] .room-light-modal__group {
   opacity: 1;
   transform: translateY(0);
-  transition-delay: calc(var(--cascade-index, 0) * 28ms);
+  transition-delay: calc(var(--cascade-index, 0) * var(--room-stagger-enter));
 }
 
 .room-light-modal__group legend,
@@ -1156,7 +1236,7 @@
   padding: 0;
   color: var(--fg-mute);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--room-type-detail);
   line-height: 1.4;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1184,14 +1264,14 @@
   justify-content: space-between;
   gap: 3px 8px;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--room-type-detail);
   line-height: 1.4;
 }
 
 .room-light-modal__control output {
   color: var(--fg-mute);
   font-variant-numeric: tabular-nums;
-  font-size: 8px;
+  font-size: var(--room-type-micro);
 }
 
 .room-light-modal__control input[type="range"] {
@@ -1206,36 +1286,6 @@
   cursor: ew-resize;
 }
 
-.room-light-modal__control input[type="range"]::-webkit-slider-runnable-track {
-  height: 1px;
-  background: var(--line-strong);
-}
-
-.room-light-modal__control input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 9px;
-  height: 9px;
-  margin-top: -4px;
-  border: 1px solid white;
-  border-radius: 0;
-  background: var(--accent);
-  box-shadow: none;
-}
-
-.room-light-modal__control input[type="range"]::-moz-range-track {
-  height: 1px;
-  background: var(--line-strong);
-}
-
-.room-light-modal__control input[type="range"]::-moz-range-thumb {
-  width: 9px;
-  height: 9px;
-  border: 1px solid white;
-  border-radius: 0;
-  background: var(--accent);
-  box-shadow: none;
-}
-
 .room-light-modal__control input:disabled { opacity: 0.38; cursor: not-allowed; }
 
 .room-light-modal :is(button, input, summary):focus-visible {
@@ -1247,44 +1297,66 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--room-space-2);
   margin-top: 5px;
 }
 
 .room-light-modal__toggle-row label {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--room-type-detail);
 }
 
-.room-light-modal__toggle-row input {
-  appearance: none;
-  width: 36px;
-  height: 36px;
+.room-light-modal__switch {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 var(--room-control-size);
+  width: var(--room-control-size);
+  height: var(--room-control-size);
+}
+
+.room-light-modal__switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   margin: 0;
-  border: 1px solid var(--line);
-  border-radius: 0;
-  background: white;
+  opacity: 0;
   cursor: pointer;
 }
 
-.room-light-modal__toggle-row input:checked {
+.room-light-modal__switch-indicator {
+  width: var(--room-control-indicator);
+  height: var(--room-control-indicator);
+  border: 1px solid var(--line);
+  border-radius: var(--room-radius-control);
+  background: var(--room-control-bg);
+  pointer-events: none;
+}
+
+.room-light-modal__switch input:checked + .room-light-modal__switch-indicator {
   background:
-    linear-gradient(var(--accent), var(--accent)) center / 8px 8px no-repeat,
-    white;
+    linear-gradient(var(--accent), var(--accent)) center / var(--room-control-indicator-mark) var(--room-control-indicator-mark) no-repeat,
+    var(--room-control-bg);
+}
+
+.room-light-modal__switch input:focus-visible + .room-light-modal__switch-indicator {
+  outline: 1px dotted var(--fg);
+  outline-offset: 3px;
 }
 
 .room-light-modal__response dl { margin: 8px 0 0; }
 .room-light-modal__response dl > div {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--room-space-2);
   padding: 8px 0;
 }
 .room-light-modal__response dt,
 .room-light-modal__response dd {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 8px;
+  font-size: var(--room-type-micro);
   line-height: 1.4;
 }
 .room-light-modal__response dd { display: flex; align-items: center; gap: 5px; }
@@ -1313,7 +1385,7 @@
 }
 .room-light-modal__mode-picker .tx-mode-tab {
   display: grid;
-  min-height: 36px;
+  min-height: var(--room-control-regular);
   place-items: center;
 }
 .room-light-modal__mode-picker:has(input:focus-visible) {
@@ -1330,23 +1402,27 @@
 .room-light-modal__actions p { display: none; }
 .room-light-modal__cycle-note {
   margin: 4px 0 0;
-  font: 9px / 1.5 var(--font-mono);
+  font: var(--room-type-detail) / 1.5 var(--font-mono);
   color: var(--fg-dim);
 }
 .room-light-modal__actions button {
-  min-height: 36px;
+  min-height: var(--room-control-regular);
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--fg-mute);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--room-type-detail);
   cursor: pointer;
 }
 
 @media (max-width: 820px) {
   :root {
     --room-controls-bottom: 0px;
+  }
+  .room-frame {
+    --room-wall-corner-y: 53.3173077%;
+    --room-floor-right-y: 69.0473584%;
   }
   /* Keep the same measured room, but crop its horizon into the visible
      two-thirds stage so the floor/light cue does not disappear behind the
@@ -1355,10 +1431,14 @@
     height: 80%;
   }
 
+  .room-frame__sunlight-shade {
+    height: 80%;
+  }
+
   .room-frame__ground-light {
     clip-path: polygon(
-      71.9140625% 53.3173077%,
-      100% 69.0473584%,
+      var(--room-wall-corner-x) var(--room-wall-corner-y),
+      100% var(--room-floor-right-y),
       100% 100%,
       0 100%,
       0 63.7075669%
@@ -1379,6 +1459,7 @@
   }
 
   .room-frame__guides,
+  .material-cabinet__baseline,
   .room-frame__foreground-line {
     display: none;
   }
@@ -1410,8 +1491,8 @@
     border-right: 0;
     border-bottom: 0;
     border-left: 0;
-    border-radius: 0;
-    transition: transform 420ms var(--ease-motion);
+    border-radius: var(--room-radius-control);
+    transition: transform var(--room-duration-panel) var(--ease-motion);
   }
 
   .material-cabinet__face--archive {
@@ -1439,7 +1520,7 @@
   .material-cabinet__face--material,
   .material-cabinet__face--archive {
     --room-glass-height: var(--room-cabinet-sheet-height);
-    --room-glass-padding-x: 14px;
+    --room-glass-padding-x: var(--room-rail-inset-x);
     --room-glass-padding-top: 12px;
     padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px));
   }
@@ -1447,7 +1528,7 @@
   /* The compact sheets are solid surfaces; room light stays in the stage. */
   .material-cabinet__face,
   .room-light-modal__dialog {
-    background: #f8f9f6;
+    background: var(--room-ui-solid);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
@@ -1470,7 +1551,7 @@
     min-height: 40px;
     align-items: flex-start;
     justify-content: center;
-    padding-left: 44px;
+    padding-left: var(--room-control-size);
   }
 
   .cabinet-pane__lede {
@@ -1479,7 +1560,7 @@
 
   .cabinet-material-header h2 {
     margin-top: 2px;
-    font-size: 17px;
+    font-size: var(--room-type-title-compact);
   }
 
   .cabinet-material-meta {
@@ -1503,21 +1584,19 @@
   }
 
   .room-light-modal__group summary {
-    min-height: 36px;
+    min-height: var(--room-control-regular);
   }
 }
 
 @media (pointer: coarse) {
   .room-light-modal__control input[type="range"] {
-    min-height: 44px;
+    min-height: var(--room-control-size);
     margin-top: 0;
   }
 
-  .room-light-modal__close,
-  .room-light-modal__toggle-row input,
   .room-light-modal__actions button {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--room-control-size);
+    min-height: var(--room-control-size);
   }
 }
 
@@ -1532,6 +1611,9 @@
   }
 
   .nav-environment-guide,
+  .nav-logo-button,
+  .nav-logo-letter,
+  .nav-logo-button[aria-expanded="true"] .nav-logo-letter,
   .room-light-modal,
   .room-light-modal[data-open="true"],
   .room-light-modal__group,
@@ -1594,13 +1676,13 @@
   }
 
   .material-cabinet .material-cabinet__flip {
-    background: #f8f9f6;
+    background: var(--room-ui-solid);
     border-color: currentColor;
   }
 
   .material-cabinet__face,
   .room-light-modal__dialog {
-    background: #f8f9f6;
+    background: var(--room-ui-solid);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }

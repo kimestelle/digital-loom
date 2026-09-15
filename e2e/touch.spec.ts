@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { expect, test, type Locator, type Page } from "playwright/test";
 
-const ROOM_PATH = "/room";
+const ROOM_PATH = "/";
 
 const MAP_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -101,7 +101,7 @@ async function expectBakedRoomTextures(page: Page): Promise<void> {
         style.getPropertyValue(`--room-floor-${stop}`).trim(),
       );
     }),
-  ).toEqual(["#93775f", "#ae9278", "#c7b39a"]);
+  ).toEqual(["#968576", "#b09e8b", "#cec1ad"]);
   await expect(planes.locator(".room-frame__plane--back")).toHaveAttribute(
     "d",
     "M0.5 0.5H920.5V554.5L0.5 662.5Z",
@@ -175,7 +175,7 @@ async function expectBakedRoomTextures(page: Page): Promise<void> {
       transformAttribute: null,
       filterAttribute: null,
     });
-    if (name === "floor") await expect(texture).toHaveCSS("opacity", "0.72");
+    if (name === "floor") await expect(texture).toHaveCSS("opacity", "0.45");
   }
 }
 
@@ -621,6 +621,7 @@ async function expectEnvironmentControlsRail(page: Page): Promise<void> {
   await expect(rail).toHaveAttribute("inert", "");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.locator(".room-light-modal__backdrop")).toHaveCount(0);
+  await expect(rail.locator(".room-light-modal__header button")).toHaveCount(0);
   await expect(page.locator(".nav-mode-slot")).toHaveCount(0);
   await expect(logoHome).toHaveAttribute("aria-hidden", "true");
   await expect(logoPixel).toHaveAttribute("aria-hidden", "true");
@@ -903,7 +904,7 @@ test.describe("coarse-pointer room instrument", () => {
     await expect(flip).toHaveCSS("top", "0px");
     await expect(flip).toHaveCSS("left", "0px");
     await expect(flip).toHaveCSS("border-width", "0px");
-    await expect(flip).toHaveCSS("border-radius", "0px");
+    await expect(flip).toHaveCSS("border-radius", "0px 0px 0px 12px");
     await expect(page.locator(".material-cabinet__aperture")).toHaveCount(0);
     await expect(flip.locator("svg")).toHaveCount(2);
     await expect(materialIcon).toHaveCount(1);

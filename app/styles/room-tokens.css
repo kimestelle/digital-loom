@@ -1,0 +1,111 @@
+/* Room design system. Imported by the room route group, never /sky; scene pigments and runtime
+   lighting stay in room.css. Values preserve the existing rendered interface. */
+:root {
+  /* Neutral chrome — specimen colors never inherit these category aliases. */
+  --room-ui-bg: rgba(250, 251, 249, 0.86);
+  --room-ui-elev: rgba(243, 245, 242, 0.9);
+  --room-ui-elev-2: rgba(234, 237, 233, 0.92);
+  --room-ui-ink: #30332f;
+  --room-ui-muted: rgba(48, 51, 47, 0.76);
+  --room-ui-dim: rgba(48, 51, 47, 0.55);
+  --room-ui-dim-material: rgba(48, 51, 47, 0.6);
+  --room-ui-accent: #424742;
+  --room-ui-line: rgba(108, 114, 111, 0.24);
+  --room-ui-line-strong: rgba(94, 101, 97, 0.38);
+  --room-ui-line-material: rgba(48, 51, 47, 0.14);
+  --room-ui-line-material-strong: rgba(48, 51, 47, 0.28);
+  --room-ui-error: #9b3f35;
+  --room-ui-solid: #f8f9f6;
+  --room-control-bg: rgba(255, 255, 255, 0.9);
+  --room-control-selected: rgba(48, 51, 47, 0.06);
+  --room-control-active: rgba(255, 255, 255, 0.98);
+  --room-tab-bg: rgba(255, 255, 255, 0.82);
+  --room-tab-hover: rgba(255, 255, 255, 0.96);
+  --room-tab-pressed: rgba(255, 255, 255, 0.7);
+
+  /* Glass and grain are separate layers; never apply their opacity to text. */
+  --room-glass-fill: linear-gradient(145deg, rgba(255, 255, 255, 0.32), rgba(255, 255, 255, 0.12)), rgba(255, 255, 255, 0.3);
+  --room-glass-filter: blur(12px) saturate(0.85);
+  --room-glass-rail-fill: rgba(255, 255, 255, 0.5);
+  --room-glass-fade: linear-gradient(to bottom, #000, rgba(0, 0, 0, 0.8) 40%, transparent);
+  --room-grain-image: url("/2d-textures/sandpaper.png");
+  --room-grain-size: 208.8px 300px;
+  --room-grain-opacity: 0.6;
+  --room-guide-color: #fff;
+  --room-guide-width: 0.8px;
+  --room-guide-dash: 1.2 3.2;
+
+  --room-type-micro: 8px;
+  --room-type-detail: 9px;
+  --room-type-label: 10px;
+  --room-type-body: 12px;
+  --room-type-title: 21px;
+  --room-type-title-compact: 17px;
+  --room-space-1: 4px;
+  --room-space-2: 8px;
+  --room-space-3: 12px;
+  --room-space-4: 16px;
+  --room-space-5: 20px;
+  --room-panel-inset-x: 18px;
+  --room-panel-inset-top: var(--room-space-4);
+  --room-rail-inset-x: 14px;
+  --room-rail-inset-top: 10px;
+  --room-radius-control: 0;
+  --room-control-size: 44px;
+  --room-control-compact: 32px;
+  --room-control-regular: 36px;
+  --room-control-indicator: 16px;
+  --room-control-indicator-mark: 6px;
+  --room-range-track-material: 2px;
+  --room-range-thumb-material: 8px;
+  --room-range-track-light: 1px;
+  --room-range-thumb-light: 9px;
+
+  /* Deliberate roles on the shared --ease-motion curve, not a new curve. */
+  --room-duration-reveal: 340ms;
+  --room-duration-letter: 170ms;
+  --room-duration-panel: 420ms;
+  --room-duration-close: 260ms;
+  --room-delay-hidden: 300ms;
+  --room-delay-icon: 160ms;
+  --room-duration-group-fade: 150ms;
+  --room-duration-group-travel: 200ms;
+  --room-stagger-enter: 28ms;
+  --room-stagger-exit: 18ms;
+  --room-duration-lens: 110ms;
+}
+
+/* Adapter for existing authoring components. One light theme, with the
+   dossier's intentionally stronger ink/lines expressed as a variant. */
+.material-cabinet__face,
+.room-light-modal {
+  --bg: var(--room-ui-bg);
+  --bg-elev: var(--room-ui-elev);
+  --bg-elev-2: var(--room-ui-elev-2);
+  --line: var(--room-ui-line);
+  --line-strong: var(--room-ui-line-strong);
+  --fg: var(--room-ui-ink);
+  --fg-mute: var(--room-ui-muted);
+  --fg-dim: var(--room-ui-dim);
+  --accent: var(--room-ui-accent);
+}
+
+.material-cabinet__face {
+  --error: var(--room-ui-error);
+  color: var(--fg);
+  color-scheme: light;
+}
+
+.material-cabinet__face--material {
+  --line: var(--room-ui-line-material);
+  --line-strong: var(--room-ui-line-material-strong);
+  --fg-light: var(--room-ui-ink);
+  --fg-dim: var(--room-ui-dim-material);
+  --accent: var(--room-ui-ink);
+  --cat: var(--accent);
+  --dye-indigo: var(--accent);
+  --dye-madder: var(--accent);
+  --dye-gardenia: var(--accent);
+  --dye-persimmon: var(--accent);
+  --dye-mugwort: var(--accent);
+}

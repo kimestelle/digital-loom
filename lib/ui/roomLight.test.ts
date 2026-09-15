@@ -644,7 +644,7 @@ describe("room light drift", () => {
     expect(clampRoomLightFrameDelta(Number.NaN)).toBe(0);
   });
 
-  it("measures the floor receiver only on mount/resize and disconnects it", () => {
+  it("measures floor and window geometry only on mount/resize and disconnects it", () => {
     const events = new EventTarget();
     vi.stubGlobal("document", {
       visibilityState: "visible",
@@ -673,10 +673,24 @@ describe("room light drift", () => {
     const css = new Map<string, string>();
     const aperture = { getBoundingClientRect: apertureBounds };
     const planes = { getBoundingClientRect: planeBounds };
+    const vectorAttributes = new Map<string, string>();
+    const pathAttributes = new Map<string, string>();
+    const vectorWrite = vi.fn((key: string, value: string) => vectorAttributes.set(key, value));
+    const pathWrite = vi.fn((selector: string, key: string, value: string) => pathAttributes.set(`${selector}:${key}`, value));
+    const vector = {
+      setAttribute: vectorWrite,
+      querySelector: (selector: string) => ({
+        setAttribute: (key: string, value: string) => pathWrite(selector, key, value),
+      }),
+    };
     const root = {
       getBoundingClientRect: roomBounds,
-      querySelector: (selector: string) =>
-        selector === "[data-room-window-mask]" ? aperture : planes,
+      querySelector: (selector: string) => {
+        if (selector === "[data-room-window-mask]") return aperture;
+        if (selector === ".room-frame__planes") return planes;
+        if (selector === "[data-room-window-vector]") return vector;
+        return null;
+      },
       style: { setProperty: (key: string, value: string) => css.set(key, value) },
       dataset: {},
     } as unknown as HTMLElement;
@@ -689,17 +703,28 @@ describe("room light drift", () => {
     expect(observe).toHaveBeenCalledTimes(3);
     expect(roomBounds).toHaveBeenCalledTimes(1);
     expect(css.get("--room-projection-visible")).toBe("1");
+    expect(vectorAttributes.get("viewBox")).toBe("0 0 880 415.059");
+    expect(pathWrite).toHaveBeenCalledTimes(3);
+    const sillPath = pathAttributes.get('[data-window-path="sill"]:d');
+    expect(sillPath).toMatch(/^M.+Z$/);
+    const windowClip = css.get("--room-window-right-bottom");
     const initialX = css.get("--room-projection-x");
     controller.setDaylight(0.5);
     expect(roomBounds).toHaveBeenCalledTimes(1);
     expect(apertureBounds).toHaveBeenCalledTimes(1);
     expect(planeBounds).toHaveBeenCalledTimes(1);
+    expect(vectorWrite).toHaveBeenCalledTimes(1);
+    expect(pathWrite).toHaveBeenCalledTimes(3);
     expect(css.get("--room-projection-x")).not.toBe(initialX);
     const beforeResize = css.get("--room-projection-x");
     width = 1000;
     onResize();
     expect(roomBounds).toHaveBeenCalledTimes(2);
     expect(css.get("--room-projection-x")).not.toBe(beforeResize);
+    expect(css.get("--room-window-right-bottom")).not.toBe(windowClip);
+    expect(vectorWrite).toHaveBeenCalledTimes(2);
+    expect(pathWrite).toHaveBeenCalledTimes(6);
+    expect(pathAttributes.get('[data-window-path="sill"]:d')).not.toBe(sillPath);
     dispose();
     expect(disconnect).toHaveBeenCalledTimes(1);
   });

@@ -20,6 +20,8 @@ export interface InsertPanelProps {
   onSubmit: () => void;
   busy: boolean;
   error?: string | null;
+  /** Isolated previews can exercise the field without reading/writing a key. */
+  credentialStorage?: "device" | "session";
 }
 
 export const InsertPanel = memo(function InsertPanel({
@@ -30,6 +32,7 @@ export const InsertPanel = memo(function InsertPanel({
   onSubmit,
   busy,
   error,
+  credentialStorage = "device",
 }: InsertPanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -38,10 +41,11 @@ export const InsertPanel = memo(function InsertPanel({
   // takes precedence over the server's key. Cleared field = server key.
   const [falKey, setFalKey] = useState("");
   useEffect(() => {
-    setFalKey(localStorage.getItem(FAL_KEY_STORAGE) ?? "");
-  }, []);
+    setFalKey(credentialStorage === "device" ? localStorage.getItem(FAL_KEY_STORAGE) ?? "" : "");
+  }, [credentialStorage]);
   const saveFalKey = (v: string) => {
     setFalKey(v);
+    if (credentialStorage !== "device") return;
     if (v.trim()) localStorage.setItem(FAL_KEY_STORAGE, v.trim());
     else localStorage.removeItem(FAL_KEY_STORAGE);
   };

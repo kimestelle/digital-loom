@@ -1,4 +1,8 @@
 import type { ResolvedRoomLight } from "./roomLight";
+import {
+  ROOM_BACK_WALL_VANISHING_POINT_X_RATIO,
+  resolveRoomWindowRightVerticalScale,
+} from "./roomWindowGeometry";
 
 /** Canonical composited receiver size used by room.css. */
 export const ROOM_FLOOR_PROJECTION_BASE_LENGTH = 512;
@@ -8,7 +12,7 @@ export const ROOM_FLOOR_PROJECTION_BASE_WIDTH = 256;
  * Matches the back-wall vanishing point used by roomWindow3d without pulling
  * Three.js into the DOM light controller.
  */
-export const ROOM_FLOOR_VANISHING_POINT_X_RATIO = 5639.759259 / 1280;
+export const ROOM_FLOOR_VANISHING_POINT_X_RATIO = ROOM_BACK_WALL_VANISHING_POINT_X_RATIO;
 
 const ROOM_SOURCE_WIDTH = 1280;
 const ROOM_SOURCE_HEIGHT = 832;
@@ -168,19 +172,7 @@ export function resolveRoomFloorApertureRightBottom(
   room: RoomFloorProjectionRect,
 ): number {
   if (!finiteRect(aperture) || !finiteRect(room)) return 0.846;
-  const vanishingPointX =
-    room.left + room.width * ROOM_FLOOR_VANISHING_POINT_X_RATIO;
-  const leftDistance = vanishingPointX - aperture.left;
-  const rightDistance = vanishingPointX - (aperture.left + aperture.width);
-  if (
-    !Number.isFinite(leftDistance) ||
-    !Number.isFinite(rightDistance) ||
-    leftDistance <= 1 ||
-    rightDistance <= 1
-  ) {
-    return 0.846;
-  }
-  return clamp(rightDistance / leftDistance, 0.35, 0.98);
+  return resolveRoomWindowRightVerticalScale(aperture, room);
 }
 
 /**

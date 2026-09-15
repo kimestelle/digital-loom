@@ -13,8 +13,12 @@ export type MaterialCabinetFace = "material" | "archive";
 export interface MaterialCabinetProps {
   face: MaterialCabinetFace;
   onFlip: (nextFace: MaterialCabinetFace) => void;
+  /** Fires after the actual flip/slide (or reduced-motion fade) has settled. */
+  onFaceSettled?: (face: MaterialCabinetFace) => void;
   materialFace: ReactNode;
   archiveFace: ReactNode;
+  /** Mounted below both faces; occupies layout space instead of covering controls. */
+  actionShelf?: ReactNode;
   /** Outer material-face scroller, exposed for view-change scroll resets. */
   materialFaceRef?: RefObject<HTMLElement | null>;
   className?: string;
@@ -29,16 +33,36 @@ export interface MaterialCabinetProps {
 export function MaterialCabinet({
   face,
   onFlip,
+  onFaceSettled,
   materialFace,
   archiveFace,
+  actionShelf,
   materialFaceRef,
   className,
 }: MaterialCabinetProps) {
   const flipRef = useRef<HTMLButtonElement | null>(null);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const settledRef = useRef(onFaceSettled);
   const materialRef = useRef<HTMLElement | null>(null);
   const archiveRef = useRef<HTMLElement | null>(null);
   const nextFace: MaterialCabinetFace =
     face === "material" ? "archive" : "material";
+
+  useEffect(() => { settledRef.current = onFaceSettled; }, [onFaceSettled]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const frame = requestAnimationFrame(() => {
+      // Read the real CSS animations instead of duplicating a duration token.
+      // Face animations also cover the reduced-motion opacity alternative.
+      const animations = [trackRef.current, materialRef.current, archiveRef.current]
+        .flatMap(element => element?.getAnimations() ?? []);
+      void Promise.allSettled(animations.map(animation => animation.finished)).then(() => {
+        if (!cancelled) settledRef.current?.(face);
+      });
+    });
+    return () => { cancelled = true; cancelAnimationFrame(frame); };
+  }, [face]);
 
   useEffect(() => {
     const inactive = face === "material" ? archiveRef.current : materialRef.current;
@@ -64,7 +88,7 @@ export function MaterialCabinet({
 
   return (
     <section className={classes} data-face={face} aria-label="material cabinet">
-      <div className="material-cabinet__track" data-face={face}>
+      <div ref={trackRef} className="material-cabinet__track" data-face={face}>
         <section
           ref={setMaterialFaceRef}
           className="material-cabinet__face material-cabinet__face--material"
@@ -87,6 +111,13 @@ export function MaterialCabinet({
           {archiveFace}
         </section>
       </div>
+
+      {/* The lower guide belongs to the panel edge, not the room viewport.
+          Keeping it in flow makes the shelf push the guide and panel together. */}
+      <svg className="material-cabinet__baseline" aria-hidden="true" focusable="false">
+        <line x1="0" y1="0.5" x2="100%" y2="0.5" />
+      </svg>
+      {actionShelf}
 
       <button
         ref={flipRef}

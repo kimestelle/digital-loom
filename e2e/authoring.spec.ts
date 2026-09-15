@@ -2,8 +2,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { expect, test, type Locator, type Page } from "playwright/test";
+import type { MaterialPreset } from "../lib/presets/types";
 
-const ROOM_PATH = "/room";
+const ROOM_PATH = "/";
 
 const MAP_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -116,6 +117,61 @@ async function openAuthoringSurface(
   ).toBeVisible({ timeout: 90_000 });
 }
 
+async function readLocalPresets(page: Page): Promise<MaterialPreset[]> {
+  return page.evaluate(() => new Promise<MaterialPreset[]>((resolve, reject) => {
+    const request = indexedDB.open("loom-map-cache");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("presets")) {
+        db.close();
+        resolve([]);
+        return;
+      }
+      const transaction = db.transaction("presets", "readonly");
+      const rows = transaction.objectStore("presets").getAll();
+      rows.onsuccess = () => resolve(rows.result as MaterialPreset[]);
+      rows.onerror = () => reject(rows.error);
+      transaction.oncomplete = () => db.close();
+    };
+  }));
+}
+
+function behaviorControl(page: Page): Locator {
+  return page.locator('aside[aria-label="material dossier"]')
+    .getByRole("group", { name: /^behavior:/i, includeHidden: true });
+}
+
+async function editBehavior(page: Page, key = "ArrowRight"): Promise<string> {
+  const behavior = behaviorControl(page);
+  const original = await behavior.getAttribute("aria-label");
+  await behavior.focus();
+  await behavior.press(key);
+  await expect(behavior).not.toHaveAttribute("aria-label", original ?? "");
+  await expect(behavior).not.toHaveAttribute("aria-label", /Preview/);
+  return (await behavior.getAttribute("aria-label")) ?? "";
+}
+
+async function expectShelfPushesContent(page: Page): Promise<void> {
+  const shelf = page.locator(".material-edit-shelf");
+  await expect(shelf).toHaveAttribute("data-open", "true");
+  await expect.poll(async () => shelf.evaluate((element) => {
+    const cabinet = element.closest(".material-cabinet");
+    const track = cabinet?.querySelector(".material-cabinet__track");
+    if (!cabinet || !track) return false;
+    const shellBox = cabinet.getBoundingClientRect();
+    const trackBox = track.getBoundingClientRect();
+    const shelfBox = element.getBoundingClientRect();
+    return element.parentElement === track.parentElement
+      && shelfBox.height > 0
+      && trackBox.height > 60
+      && Math.abs(trackBox.bottom - shelfBox.top) <= 2
+      && Math.abs(shellBox.bottom - shelfBox.bottom) <= 2
+      && shelfBox.left >= shellBox.left - 1
+      && shelfBox.right <= shellBox.right + 1;
+  })).toBe(true);
+}
+
 async function expectBakedRoomTextures(page: Page): Promise<void> {
   const planes = page.locator("svg.room-frame__planes");
   const room = page.locator(".room-frame");
@@ -127,7 +183,7 @@ async function expectBakedRoomTextures(page: Page): Promise<void> {
         style.getPropertyValue(`--room-floor-${stop}`).trim(),
       );
     }),
-  ).toEqual(["#93775f", "#ae9278", "#c7b39a"]);
+  ).toEqual(["#968576", "#b09e8b", "#cec1ad"]);
   await expect(planes.locator(".room-frame__plane--back")).toHaveAttribute(
     "d",
     "M0.5 0.5H920.5V554.5L0.5 662.5Z",
@@ -203,7 +259,7 @@ async function expectBakedRoomTextures(page: Page): Promise<void> {
       transformAttribute: null,
       filterAttribute: null,
     });
-    if (name === "floor") await expect(texture).toHaveCSS("opacity", "0.72");
+    if (name === "floor") await expect(texture).toHaveCSS("opacity", "0.45");
   }
 }
 
@@ -688,6 +744,7 @@ async function expectEnvironmentControlsRail(page: Page): Promise<void> {
   await expect(rail).toHaveAttribute("inert", "");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.locator(".room-light-modal__backdrop")).toHaveCount(0);
+  await expect(rail.locator(".room-light-modal__header button")).toHaveCount(0);
   await expect(page.locator(".nav-mode-slot")).toHaveCount(0);
   await expect(guide).toHaveCount(1);
   await expect(guideLine).toHaveCount(1);
@@ -848,7 +905,7 @@ async function expectEnvironmentControlsRail(page: Page): Promise<void> {
 }
 
 test.describe("separate original surface", () => {
-  test("loads the original instrument at / without room chrome", async ({
+  test("loads the original instrument at /sky without room chrome", async ({
     page,
   }) => {
     test.slow();
@@ -866,7 +923,7 @@ test.describe("separate original surface", () => {
       );
     });
     await installAuthoringFixtures(page);
-    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.goto("/sky", { waitUntil: "domcontentloaded" });
 
     await expect(page.locator(".nav-brand-name")).toHaveText("digital loom");
     await expect(
@@ -886,11 +943,23 @@ test.describe("separate original surface", () => {
     await expect(originalCanvas).toHaveCount(1, { timeout: 90_000 });
     await expect(originalCanvas).toBeVisible();
     await expect(originalStage.locator(".cloth-scene")).toHaveCount(0);
-    expect(new URL(page.url()).pathname).toBe("/");
+    expect(new URL(page.url()).pathname).toBe("/sky");
   });
 });
 
 test.describe("local-first authoring surface", () => {
+  test.beforeEach(async ({ page }, testInfo) => {
+    if (!testInfo.titlePath.some(title => title.includes("material changes"))) return;
+    // These tests exercise the real authoring state and DOM geometry, not GPU
+    // fidelity. Keep 2D map/thumbnail canvases but avoid software cloth rendering.
+    await page.addInitScript(() => {
+      const getContext = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, kind: string, ...args: unknown[]) {
+        if (kind === "webgl" || kind === "webgl2" || kind === "experimental-webgl") return null;
+        return Reflect.apply(getContext, this, [kind, ...args]);
+      } as typeof getContext;
+    });
+  });
   test.describe.configure({ timeout: 120_000 });
 
   test("keeps borderless sandpaper panels and a separately faded environment rail", async ({
@@ -1173,12 +1242,30 @@ test.describe("local-first authoring surface", () => {
     const trigger = page.getByRole("button", {
       name: "environment controls",
     });
+    const symbol = trigger.locator(".nav-logo-symbol");
     const home = trigger.locator(".nav-logo-pixel-home");
     const pixel = home.locator("canvas.nav-logo-pixel.pixel-play-over");
+    const wordmark = trigger.locator(".nav-logo-wordmark");
+    const characters = wordmark.locator(".nav-logo-letter");
     await expect(trigger).toBeVisible({ timeout: 30_000 });
     const logoMark = trigger.locator("span.nav-logo-mark");
+    await expect(symbol).toHaveCount(1);
     await expect(logoMark).toHaveCount(1);
     await expect(logoMark).toHaveAttribute("aria-hidden", "true");
+    await expect(wordmark).toHaveAttribute("aria-hidden", "true");
+    await expect(wordmark).toHaveText("digital loom");
+    await expect(characters).toHaveCount(12);
+    expect(
+      await characters.evaluateAll((letters) =>
+        letters.filter((letter) => letter.textContent?.trim()).length,
+      ),
+    ).toBe(11);
+    expect(
+      await page.evaluate(async () => {
+        await document.fonts.ready;
+        return document.fonts.status;
+      }),
+    ).toBe("loaded");
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
     await expect(home).toHaveAttribute("data-pressed", "false");
     await expect(home).toHaveAttribute("aria-hidden", "true");
@@ -1194,13 +1281,28 @@ test.describe("local-first authoring surface", () => {
         { timeout: 30_000 },
       )
       .not.toBe("300x150");
+    // The non-default canvas size above is this client tree's hydration
+    // signal. Only then require the layout effect's measured letter offsets.
+    await expect
+      .poll(() =>
+        characters.evaluateAll((letters) =>
+          letters.every((letter) =>
+            getComputedStyle(letter).getPropertyValue("--logo-collapse-x").trim(),
+          ),
+        ),
+      )
+      .toBe(true);
 
     const geometry = await trigger.evaluate((button) => {
+      const symbol = button.querySelector<HTMLElement>(".nav-logo-symbol");
       const mark = button.querySelector<HTMLElement>(".nav-logo-mark");
       const home = button.querySelector<HTMLElement>(".nav-logo-pixel-home");
       const pixel = home?.querySelector<HTMLCanvasElement>("canvas");
-      if (!mark || !home || !pixel) throw new Error("Living logo is incomplete");
+      if (!symbol || !mark || !home || !pixel) {
+        throw new Error("Living logo is incomplete");
+      }
       const buttonRect = button.getBoundingClientRect();
+      const symbolRect = symbol.getBoundingClientRect();
       const markRect = mark.getBoundingClientRect();
       const homeRect = home.getBoundingClientRect();
       const buttonStyle = getComputedStyle(button);
@@ -1214,6 +1316,14 @@ test.describe("local-first authoring surface", () => {
           position: buttonStyle.position,
           isolation: buttonStyle.isolation,
           borderRadius: buttonStyle.borderRadius,
+          overflowX: buttonStyle.overflowX,
+          overflowY: buttonStyle.overflowY,
+        },
+        symbol: {
+          left: symbolRect.left - buttonRect.left,
+          top: symbolRect.top - buttonRect.top,
+          width: symbolRect.width,
+          height: symbolRect.height,
         },
         mark: {
           left: markRect.left - buttonRect.left,
@@ -1255,17 +1365,25 @@ test.describe("local-first authoring surface", () => {
       };
     });
     expect(geometry.button).toMatchObject({
-      width: 64,
-      height: 64,
+      width: 44,
+      height: 44,
       position: "relative",
       isolation: "isolate",
       borderRadius: "0px",
+      overflowX: "clip",
+      overflowY: "clip",
+    });
+    expect(geometry.symbol).toMatchObject({
+      left: 0,
+      top: 2,
+      width: 40,
+      height: 40,
     });
     expect(geometry.mark).toMatchObject({
       left: 0,
-      top: 0,
-      width: 64,
-      height: 64,
+      top: 2,
+      width: 40,
+      height: 40,
       maskPosition: "50% 50%",
       maskRepeat: "no-repeat",
       maskSize: "contain",
@@ -1273,10 +1391,10 @@ test.describe("local-first authoring surface", () => {
     });
     expect(geometry.mark.maskImage).toContain("/loom-mark.svg?v=2");
     expect(geometry.mark.backgroundImage).toContain("linear-gradient");
-    expect(geometry.home.left).toBeCloseTo(geometry.button.width * 0.3, 1);
-    expect(geometry.home.top).toBeCloseTo(geometry.button.height * 0.38, 1);
-    expect(geometry.home.width).toBeCloseTo(25.6, 1);
-    expect(geometry.home.height).toBeCloseTo(21.76, 1);
+    expect(geometry.home.left).toBeCloseTo(12, 1);
+    expect(geometry.home.top).toBeCloseTo(17.2, 1);
+    expect(geometry.home.width).toBeCloseTo(16, 1);
+    expect(geometry.home.height).toBeCloseTo(13.6, 1);
     expect(geometry.home.right).toBeGreaterThan(0);
     expect(geometry.home.bottom).toBeGreaterThan(0);
     expect(geometry.home.overflowX).toBe("hidden");
@@ -1287,6 +1405,98 @@ test.describe("local-first authoring surface", () => {
       pointerEvents: "none",
       filter: "brightness(0) invert(1)",
     });
+
+    const readWordmarkState = () =>
+      trigger.evaluate((button) => {
+        const symbol = button.querySelector<HTMLElement>(".nav-logo-symbol");
+        const wordmark = button.querySelector<HTMLElement>(".nav-logo-wordmark");
+        const rail = document.querySelector<HTMLElement>(".room-light-modal");
+        const letters = Array.from(
+          button.querySelectorAll<HTMLElement>(".nav-logo-letter"),
+        );
+        if (!symbol || !wordmark || !rail || !letters.length) {
+          throw new Error("Expandable wordmark is incomplete");
+        }
+        const buttonRect = button.getBoundingClientRect();
+        const symbolRect = symbol.getBoundingClientRect();
+        const railRect = rail.getBoundingClientRect();
+        const paintedLetters = letters.filter((letter) =>
+          letter.textContent?.trim(),
+        );
+        const letterRects = paintedLetters.map((letter) =>
+          letter.getBoundingClientRect(),
+        );
+        const firstStyle = getComputedStyle(letters[0]);
+        return {
+          button: {
+            left: buttonRect.left,
+            right: buttonRect.right,
+            top: buttonRect.top,
+            bottom: buttonRect.bottom,
+            width: buttonRect.width,
+            height: buttonRect.height,
+          },
+          symbol: {
+            left: symbolRect.left,
+            top: symbolRect.top,
+            width: symbolRect.width,
+            height: symbolRect.height,
+          },
+          rail: {
+            left: railRect.left,
+            right: railRect.right,
+            width: railRect.width,
+          },
+          glyphs: {
+            left: Math.min(...letterRects.map((rect) => rect.left)),
+            right: Math.max(...letterRects.map((rect) => rect.right)),
+          },
+          characters: letters.map((letter) => {
+            const style = getComputedStyle(letter);
+            const matrix =
+              style.transform === "none"
+                ? new DOMMatrixReadOnly()
+                : new DOMMatrixReadOnly(style.transform);
+            return {
+              text: letter.textContent ?? "",
+              left: letter.getBoundingClientRect().left,
+              opacity: Number.parseFloat(style.opacity),
+              translateX: matrix.m41,
+              offset: Number.parseFloat(
+                style.getPropertyValue("--logo-collapse-x"),
+              ),
+            };
+          }),
+          motion: {
+            durations: firstStyle.transitionDuration
+              .split(",")
+              .map((value) => Number.parseFloat(value)),
+            delays: firstStyle.transitionDelay
+              .split(",")
+              .map((value) => Number.parseFloat(value)),
+          },
+          fontStatus: document.fonts.status,
+          viewportWidth: innerWidth,
+          documentWidth: document.documentElement.scrollWidth,
+        };
+      });
+
+    await page.waitForTimeout(360);
+    const collapsed = await readWordmarkState();
+    expect(collapsed.fontStatus).toBe("loaded");
+    expect(collapsed.motion.durations).toEqual([0.34, 0.17]);
+    expect(collapsed.characters.every(({ opacity }) => opacity === 0)).toBe(
+      true,
+    );
+    expect(
+      collapsed.characters.every(({ offset }) => Number.isFinite(offset)),
+    ).toBe(true);
+    for (const { left } of collapsed.characters) {
+      expect(left).toBeCloseTo(
+        collapsed.symbol.left + collapsed.symbol.width / 2,
+        0,
+      );
+    }
 
     const bitmap = () =>
       pixel.evaluate((element) => {
@@ -1316,15 +1526,6 @@ test.describe("local-first authoring surface", () => {
     }
     expect(moving.size).toBeGreaterThan(1);
 
-    await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.waitForTimeout(400);
-    const still = new Set<number>();
-    for (let frame = 0; frame < 4; frame += 1) {
-      still.add((await bitmap()).hash);
-      await page.waitForTimeout(120);
-    }
-    expect(still.size).toBe(1);
-
     await home.evaluate((element) => {
       element.addEventListener(
         "pointerdown",
@@ -1344,6 +1545,55 @@ test.describe("local-first authoring surface", () => {
     await expect(trigger).toHaveAttribute("aria-expanded", "true");
     await expect(home).toHaveAttribute("data-pressed", "true");
 
+    await expect
+      .poll(async () => (await readWordmarkState()).button.width)
+      .toBe(216);
+    await expect
+      .poll(async () =>
+        (await readWordmarkState()).characters.every(
+          ({ opacity, translateX }) =>
+            opacity === 1 && Math.abs(translateX) <= 0.01,
+        ),
+      )
+      .toBe(true);
+    const expanded = await readWordmarkState();
+    expect(expanded.motion.delays).toEqual([0, 0.17]);
+    expect(expanded.button.left).toBeCloseTo(expanded.rail.left, 0);
+    expect(expanded.button.right).toBeCloseTo(expanded.rail.right, 0);
+    expect(expanded.glyphs.left).toBeGreaterThanOrEqual(expanded.button.left);
+    expect(expanded.glyphs.right).toBeLessThanOrEqual(
+      expanded.button.right + 1,
+    );
+    expect(expanded.symbol).toMatchObject({
+      left: expanded.button.left,
+      top: expanded.button.top + 2,
+      width: 40,
+      height: 40,
+    });
+    expect(expanded.documentWidth).toBeLessThanOrEqual(expanded.viewportWidth);
+    // Reverse while the shared 340 ms travel is still in flight. State follows
+    // the last click; there is no queued timeout or stale letter visibility.
+    await trigger.evaluate((button: HTMLButtonElement) => button.click());
+    await page.waitForTimeout(45);
+    await trigger.evaluate((button: HTMLButtonElement) => button.click());
+    await page.waitForTimeout(45);
+    await trigger.evaluate((button: HTMLButtonElement) => button.click());
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await expect(home).toHaveAttribute("data-pressed", "false");
+    await expect
+      .poll(async () => (await readWordmarkState()).button.width)
+      .toBe(44);
+    await expect
+      .poll(async () =>
+        (await readWordmarkState()).characters.every(
+          ({ opacity }) => opacity === 0,
+        ),
+      )
+      .toBe(true);
+
+    await trigger.focus();
+    await trigger.press("Enter");
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
     await page.keyboard.press("Escape");
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
     await expect(home).toHaveAttribute("data-pressed", "false");
@@ -1351,6 +1601,56 @@ test.describe("local-first authoring surface", () => {
     await trigger.press("Enter");
     await expect(trigger).toHaveAttribute("aria-expanded", "true");
     await expect(home).toHaveAttribute("data-pressed", "true");
+
+    await page.setViewportSize({ width: 320, height: 720 });
+    await expect
+      .poll(async () => (await readWordmarkState()).button.width)
+      .toBe(224);
+    await expect
+      .poll(async () =>
+        (await readWordmarkState()).characters.every(
+          ({ opacity }) => opacity === 1,
+        ),
+      )
+      .toBe(true);
+    const compact = await readWordmarkState();
+    expect(compact.button.left).toBeCloseTo(compact.rail.left, 0);
+    expect(compact.button.right).toBeCloseTo(compact.rail.right, 0);
+    expect(compact.button.right).toBeLessThanOrEqual(compact.viewportWidth);
+    expect(compact.glyphs.right).toBeLessThanOrEqual(compact.button.right + 1);
+    expect(compact.documentWidth).toBeLessThanOrEqual(compact.viewportWidth);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(async () => (await readWordmarkState()).button.width)
+      .toBe(44);
+    const reducedCollapsed = await readWordmarkState();
+    expect(reducedCollapsed.motion.durations.every((duration) => duration === 0)).toBe(
+      true,
+    );
+    expect(
+      reducedCollapsed.characters.every(({ opacity }) => opacity === 0),
+    ).toBe(true);
+    await trigger.press("Enter");
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await expect(home).toHaveAttribute("data-pressed", "true");
+    await expect
+      .poll(async () => (await readWordmarkState()).button.width)
+      .toBe(224);
+    expect(
+      (await readWordmarkState()).characters.every(
+        ({ opacity, translateX }) =>
+          opacity === 1 && Math.abs(translateX) <= 0.01,
+      ),
+    ).toBe(true);
+
+    await page.waitForTimeout(400);
+    const still = new Set<number>();
+    for (let frame = 0; frame < 4; frame += 1) {
+      still.add((await bitmap()).hash);
+      await page.waitForTimeout(120);
+    }
+    expect(still.size).toBe(1);
   });
 
   test("keeps dossier pixels live while the control chrome stays flat", async ({
@@ -2090,7 +2390,7 @@ test.describe("local-first authoring surface", () => {
     await expect(flip).toHaveCSS("top", "0px");
     await expect(flip).toHaveCSS("left", "-44px");
     await expect(flip).toHaveCSS("border-width", "0px");
-    await expect(flip).toHaveCSS("border-radius", "0px");
+    await expect(flip).toHaveCSS("border-radius", "0px 0px 0px 12px");
     await expect(page.locator(".material-cabinet__aperture")).toHaveCount(0);
     await expect(flip.locator("svg")).toHaveCount(2);
     await expect(materialIcon).toHaveCount(1);
@@ -2300,39 +2600,193 @@ test.describe("local-first authoring surface", () => {
     ).toHaveValue("4.2");
   });
 
-  test("turns material edits into a recoverable draft and keeps fine controls available", async ({
+  test("material changes shelf pushes the dossier up and supports keyboard compare, undo, redo, and reset", async ({
     page,
   }) => {
     test.slow();
     await openAuthoringSurface(page);
 
     const tuning = page.locator('aside[aria-label="material dossier"]');
-    const bench = page.getByLabel("material draft", { exact: true });
-    const behavior = tuning.getByRole("group", { name: /^behavior:/i });
+    const shelf = page.locator(".material-edit-shelf");
+    const track = page.locator(".material-cabinet__track");
+    const baseline = await behaviorControl(page).getAttribute("aria-label");
+    await expect(shelf).toHaveAttribute("data-open", "false");
+    await expect(page.getByRole("region", { name: "material changes" })).toHaveCount(0);
+    const before = await track.boundingBox();
 
-    await expect(behavior).toBeVisible();
-    await expect(bench).toHaveCount(0);
-    await behavior.focus();
-    await behavior.press("ArrowRight");
+    const firstEdit = await editBehavior(page);
+    const secondEdit = await editBehavior(page, "ArrowUp");
+    await expectShelfPushesContent(page);
+    const after = await track.boundingBox();
+    expect(before!.height - after!.height).toBeGreaterThan(70);
+    await expect(shelf.getByRole("status")).toHaveText("unsaved changes · original unchanged");
+    await expect(tuning.locator(".material-edit-shelf")).toHaveCount(0);
 
-    const activeBench = page.getByLabel("material draft", { exact: true });
-    await expect(activeBench.getByText("draft", { exact: true })).toBeVisible();
-    await expect(activeBench.getByRole("button", { name: "undo material edit" })).toBeEnabled();
-    const compare = activeBench.getByRole("button", { name: "show source" });
-    await expect(compare).toBeEnabled();
-    await compare.click();
-    await expect(
-      activeBench.getByRole("button", { name: "show draft" }),
-    ).toHaveAttribute("aria-pressed", "true");
-    await activeBench.getByRole("button", { name: "show draft" }).click();
+    const compare = shelf.getByRole("group", { name: "compare appearance" });
+    const original = compare.getByRole("button", { name: "original", exact: true });
+    const edited = compare.getByRole("button", { name: "edited", exact: true });
+    await original.focus();
+    await original.press("Enter");
+    await expect(original).toHaveAttribute("aria-pressed", "true");
+    await edited.focus();
+    await edited.press("Space");
+    await expect(edited).toHaveAttribute("aria-pressed", "true");
 
-    await activeBench.getByRole("button", { name: "undo material edit" }).click();
-    await expect(
-      activeBench.getByRole("button", { name: "redo material edit" }),
-    ).toBeEnabled();
-    await expect(
-      tuning.getByRole("button", { name: "satin" }),
-    ).toBeVisible();
+    const undo = shelf.getByRole("button", { name: "undo", exact: true });
+    const redo = shelf.getByRole("button", { name: "redo", exact: true });
+    await undo.focus();
+    await undo.press("Enter");
+    await expect(behaviorControl(page)).toHaveAttribute("aria-label", firstEdit);
+    await expect(redo).toBeEnabled();
+    await redo.focus();
+    await redo.press("Enter");
+    await expect(behaviorControl(page)).toHaveAttribute("aria-label", secondEdit);
+
+    const reset = shelf.getByRole("button", { name: "reset changes" });
+    await reset.focus();
+    await reset.press("Enter");
+    await expect(shelf).toHaveAttribute("data-open", "false");
+    await expect(behaviorControl(page)).toHaveAttribute("aria-label", baseline!);
+    await expect.poll(() => shelf.evaluate((element) => element.contains(document.activeElement))).toBe(false);
     await expect(tuning.getByText("fine tune", { exact: true })).toBeVisible();
+  });
+
+  test("material changes recover after reload and save as a new swatch without changing the original", async ({ page }) => {
+    test.slow();
+    await openAuthoringSurface(page);
+    const originalName = (await page.locator(".cabinet-material-header h2").textContent())!.trim();
+    const baseline = await behaviorControl(page).getAttribute("aria-label");
+    const originalPresets = await readLocalPresets(page);
+    const editedBehavior = await editBehavior(page);
+    const shelf = page.locator(".material-edit-shelf");
+    await expect(shelf.getByRole("status")).toContainText("unsaved changes");
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(shelf).toHaveAttribute("data-open", "true", { timeout: 30_000 });
+    if (await page.locator(".material-cabinet").getAttribute("data-face") === "archive") {
+      await page.getByRole("button", { name: "show material dossier" }).click();
+    }
+    await expect(behaviorControl(page)).toHaveAttribute("aria-label", editedBehavior);
+    await expect(shelf.getByRole("status")).toContainText("unsaved changes");
+    expect(await readLocalPresets(page)).toEqual(originalPresets);
+
+    await shelf.getByRole("button", { name: "save as new swatch" }).click();
+    await expect(shelf.getByRole("status")).toHaveText("saved to swatch archive", { timeout: 30_000 });
+    const savedName = (await page.locator(".cabinet-material-header h2").textContent())!.trim();
+    expect(savedName).not.toBe(originalName);
+    const savedPresets = await readLocalPresets(page);
+    expect(savedPresets).toHaveLength(originalPresets.length + 1);
+    for (const preset of originalPresets) {
+      expect(savedPresets.find((candidate) => candidate.slug === preset.slug)).toEqual(preset);
+    }
+    expect(savedPresets.some((preset) => preset.name === savedName)).toBe(true);
+
+    await shelf.getByRole("button", { name: "view swatch" }).click();
+    const archive = page.locator('[data-cabinet-face="archive"]');
+    await expect(archive.getByRole("button", { name: savedName, exact: true })).toHaveAttribute("aria-pressed", "true");
+    await archive.getByRole("button", { name: originalName, exact: true }).click();
+    await page.getByRole("button", { name: "show material dossier" }).click();
+    await expect(page.locator(".cabinet-material-header h2")).toHaveText(originalName);
+    await expect(behaviorControl(page)).toHaveAttribute("aria-label", baseline!);
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: savedName, exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(shelf).toHaveAttribute("data-open", "false");
+  });
+
+  test("material changes stay unsaved when unrelated copies and swatch reorders finish saving", async ({ page }) => {
+    test.slow();
+    await openAuthoringSurface(page);
+    const editedBehavior = await editBehavior(page);
+    await page.getByRole("button", { name: "show swatch archive" }).click();
+    const library = page.locator('[data-cabinet-face="archive"] section[data-dye="mugwort"]');
+    const count = await library.locator("li.swatch").count();
+    const clone = page.getByRole("button", { name: "duplicate e2e swatch into library", exact: true });
+    await clone.click();
+    await expect(library.locator("li.swatch")).toHaveCount(count + 1, { timeout: 30_000 });
+    await clone.click();
+    await expect(library.locator("li.swatch")).toHaveCount(count + 2, { timeout: 30_000 });
+    const grip = library.getByRole("button", { name: /^reorder / }).last();
+    await grip.focus();
+    await grip.press("ArrowUp");
+    await expect(page.locator(".save-status")).toHaveAttribute("data-status", "dirty");
+    await expect(page.locator(".material-edit-shelf").getByRole("status")).toHaveText("unsaved changes · original unchanged");
+    await page.getByRole("button", { name: "show material dossier" }).click();
+    await expect(behaviorControl(page)).toHaveAttribute("aria-label", editedBehavior);
+  });
+
+  test("material changes guard lets users cancel or discard before switching swatches", async ({ page }) => {
+    test.slow();
+    await openAuthoringSurface(page);
+    const originalName = (await page.locator(".cabinet-material-header h2").textContent())!.trim();
+    const editedBehavior = await editBehavior(page);
+    await page.getByRole("button", { name: "show swatch archive" }).click();
+    const target = page.getByRole("button", { name: "e2e swatch", exact: true });
+    await target.click();
+    const dialog = page.getByRole("dialog", { name: "save changes before leaving" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "save & switch", exact: true })).toBeEnabled();
+    await dialog.getByRole("button", { name: "cancel", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(target).toBeFocused();
+    await expect(page.locator(".cabinet-material-header h2")).toHaveText(originalName);
+    await expect(behaviorControl(page)).toHaveAttribute("aria-label", editedBehavior);
+    await target.click();
+    await dialog.getByRole("button", { name: "discard & switch", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(target).toHaveAttribute("aria-pressed", "true", { timeout: 30_000 });
+    await expect(page.locator(".material-edit-shelf")).toHaveAttribute("data-open", "false");
+  });
+
+  test("material changes guard saves a new swatch before switching", async ({ page }) => {
+    test.slow();
+    await openAuthoringSurface(page);
+    const originalName = (await page.locator(".cabinet-material-header h2").textContent())!.trim();
+    const initialPresets = await readLocalPresets(page);
+    await editBehavior(page);
+    await page.getByRole("button", { name: "show swatch archive" }).click();
+    const target = page.getByRole("button", { name: "e2e swatch", exact: true });
+    await target.click();
+    const dialog = page.getByRole("dialog", { name: "save changes before leaving" });
+    await dialog.getByRole("button", { name: "save & switch", exact: true }).click();
+    await expect(dialog).toBeHidden({ timeout: 30_000 });
+    await expect(target).toHaveAttribute("aria-pressed", "true", { timeout: 30_000 });
+    const saved = (await readLocalPresets(page)).find((preset) =>
+      !initialPresets.some((initial) => initial.slug === preset.slug)
+      && preset.name.startsWith(originalName),
+    );
+    expect(saved).toBeDefined();
+    await expect(page.getByRole("button", { name: saved!.name, exact: true })).toBeVisible();
+    await expect(page.locator(".material-edit-shelf")).toHaveAttribute("data-open", "false");
+  });
+
+  test.describe("compact material changes shelf", () => {
+    test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+    test("keeps touch controls above the bottom edge and removes reveal motion when reduced motion is requested", async ({ page }) => {
+      test.slow();
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await openAuthoringSurface(page);
+      const behavior = behaviorControl(page);
+      await behavior.scrollIntoViewIfNeeded();
+      await behavior.tap({ position: { x: 32, y: 32 } });
+      const shelf = page.locator(".material-edit-shelf");
+      await expectShelfPushesContent(page);
+      const save = shelf.getByRole("button", { name: "save as new swatch" });
+      const box = await save.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(844);
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+      expect(await shelf.evaluate((element) => getComputedStyle(element).transitionDuration))
+        .toMatch(/^(0s|0s,\s*0s)$/);
+      const compare = shelf.getByRole("group", { name: "compare appearance" });
+      await compare.getByRole("button", { name: "original", exact: true }).tap();
+      await expect(compare.getByRole("button", { name: "original", exact: true })).toHaveAttribute("aria-pressed", "true");
+      await compare.getByRole("button", { name: "edited", exact: true }).tap();
+      await shelf.getByRole("button", { name: "reset changes" }).tap();
+      await expect(shelf).toHaveAttribute("data-open", "false");
+    });
   });
 });

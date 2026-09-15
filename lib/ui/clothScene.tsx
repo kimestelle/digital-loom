@@ -44,6 +44,11 @@ import { easeMotion } from "@/lib/ui/motion";
 import type { ResolvedRoomLight } from "@/lib/ui/roomLight";
 import { createRoomWindow3d } from "@/lib/ui/roomWindow3d";
 import {
+  ROOM_CLOTH_SHADOW_SAMPLES_PER_EDGE,
+  resolveRoomClothShadow,
+} from "@/lib/ui/roomClothShadow";
+import { createRoomClothShadowCanvas } from "@/lib/ui/roomClothShadowCanvas";
+import {
   createMaterialLoupeNodes,
   MATERIAL_LOUPE_DIAMETER_PX,
   MATERIAL_LOUPE_LAYER,
@@ -344,6 +349,17 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     // Reuse the aperture measurement from resize; flare tracking does not
     // trigger a layout read on animation frames.
     const roomWindowScreenRect = { left: 0, top: 0, width: 0, height: 0 };
+    const roomShadowCanvas = roomWindowFrame?.querySelector<HTMLCanvasElement>(
+      "[data-room-cloth-shadow]",
+    );
+    const roomShadow = roomShadowCanvas
+      ? createRoomClothShadowCanvas(roomShadowCanvas)
+      : null;
+    const roomPlanes = roomWindowFrame?.querySelector<SVGSVGElement>(".room-frame__planes");
+    const roomShadowLayout = {
+      room: { left: 0, top: 0, width: 0, height: 0 },
+      planes: { left: 0, top: 0, width: 0, height: 0 },
+    };
     if (roomWindow) {
       scene.add(roomWindow.root);
       container.dataset.roomWindowModel = "ready";
@@ -463,6 +479,14 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       refreshCanvasBounds();
+      if (roomShadow && roomWindowFrame && roomPlanes) {
+        const roomRect = roomWindowFrame.getBoundingClientRect();
+        const planesRect = roomPlanes.getBoundingClientRect();
+        for (const key of ["left", "top", "width", "height"] as const) {
+          roomShadowLayout.room[key] = roomRect[key];
+          roomShadowLayout.planes[key] = planesRect[key];
+        }
+      }
       if (roomWindow && roomWindowAperture) {
         const apertureRect = roomWindowAperture.getBoundingClientRect();
         roomWindowScreenRect.left = apertureRect.left - canvasBounds.left;
@@ -1031,7 +1055,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       tex: clothTex,
       blanks: clothBlanks,
       launchShimmer,
-    } = createClothMaterial();
+    } = createClothMaterial({ roomAmbient: roomEnvironment });
     clothU.u_fogColor.value.copy(fogColor);
     const launchReducedMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
@@ -2149,6 +2173,9 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       clothU.u_ambientColor.value
         .copy(hemi.color)
         .multiplyScalar(resolved.ambient.intensity);
+      clothU.u_ambientGroundColor.value
+        .copy(hemi.groundColor)
+        .multiplyScalar(resolved.ambient.intensity);
       clothU.u_fogDensity.value = 0;
     };
     const updateSun = (dtSeconds: number) => {
@@ -2411,6 +2438,56 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
     let objectSpin = 0;
     let lastMode = props.mode ?? "cloth";
     const projectedCorner = new THREE.Vector3();
+    const shadowCorner = new THREE.Vector3();
+    const shadowPoints = Array.from(
+      { length: ROOM_CLOTH_SHADOW_SAMPLES_PER_EDGE * 4 },
+      () => ({ x: 0, y: 0 }),
+    );
+    let lastShadowAt = -Infinity;
+    const updateRoomClothShadow = (now: number) => {
+      if (!roomShadow || now - lastShadowAt < 50) return;
+      lastShadowAt = now;
+      const p = propsRef.current;
+      const light = p.roomLightRef?.current;
+      const unit = units[units.length - 1];
+      const visibility = clothU.u_fade.value * clothU.u_materialReveal.value *
+        easeMotion(clothU.u_launchProgress.value);
+      if (!unit || !light || p.wireframe || visibility < 0.001) {
+        roomShadow.hide();
+        return;
+      }
+      // Twenty boundary samples only: no extra mesh traversal, raycast, or
+      // solver work. Matrices are current after the existing scene render.
+      const count = ROOM_CLOTH_SHADOW_SAMPLES_PER_EDGE;
+      for (let edge = 0; edge < 4; edge++) {
+        for (let step = 0; step < count; step++) {
+          const t = step / count;
+          const col = Math.round((unit.cols - 1) *
+            (edge === 0 ? t : edge === 1 ? 1 : edge === 2 ? 1 - t : 0));
+          const row = Math.round((unit.rows - 1) *
+            (edge === 0 ? 0 : edge === 1 ? t : edge === 2 ? 1 : 1 - t));
+          const index = (row * unit.cols + col) * 3;
+          shadowCorner.set(
+            unit.solver.pos[index],
+            -unit.solver.pos[index + 1],
+            unit.solver.pos[index + 2],
+          ).applyMatrix4(unit.group.matrixWorld).project(camera);
+          const point = shadowPoints[edge * count + step];
+          point.x = canvasBounds.left - roomShadowLayout.room.left +
+            (shadowCorner.x + 1) * 0.5 * canvasBounds.width;
+          point.y = canvasBounds.top - roomShadowLayout.room.top +
+            (1 - shadowCorner.y) * 0.5 * canvasBounds.height;
+        }
+      }
+      // Coarse coverage only; map readback would cost more than this shadow.
+      // Match the shader's exponential loss while retaining fiber backlight.
+      const loss = Math.min(1, Math.max(0,
+        clothU.u_alphaFromDensity.value + clothU.u_alphaBoost.value * 0.5,
+      ));
+      roomShadow.paint(resolveRoomClothShadow(
+        shadowPoints, light, roomShadowLayout, visibility, Math.pow(1 - loss, 2.5),
+      ));
+    };
     const updateLoupeHitBounds = (
       bounds: THREE.Box3 | null,
       matrixWorld: THREE.Matrix4 | null,
@@ -2982,6 +3059,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       controls?.update();
       renderer.render(scene, camera);
       if (roomEnvironment) {
+        updateRoomClothShadow(animationNow);
         const specimenTransitioning = blend > 0.001 && blend < 0.999;
         if (specimenTransitioning) {
           loupeHitBoundsValid = false;
@@ -3102,6 +3180,7 @@ const ClothScene = forwardRef<ClothSceneHandle, Props>(function ClothScene(
       cancelAnimationFrame(resizeRaf);
       ro.disconnect();
       controls?.dispose();
+      roomShadow?.dispose();
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener(
         "pointerenter",

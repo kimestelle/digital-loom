@@ -608,7 +608,7 @@
   margin-right: auto;
 }
 
-.fine-tune > summary span:last-child {
+.fine-tune > summary span:last-child:not(:first-child) {
   color: var(--fg-dim);
   font-size: 8.5px;
 }

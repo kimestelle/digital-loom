@@ -25,6 +25,10 @@ import {
   resolveRoomFloorApertureRightBottom,
   resolveRoomFloorProjectionInto,
 } from "./roomFloorProjection";
+import { resolveRoomSunlightProjection } from "./roomSunlightProjection";
+import { ROOM_SUNLIGHT_FRAMES, ROOM_SUNLIGHT_INTERVAL_EVENT } from "./roomSunlightAtlas";
+import { resolveRoomSunlightInterval } from "./roomSunlightTimeline";
+import { resolveRoomWindowGeometry } from "./roomWindowGeometry";
 
 export const DEFAULT_ROOM_LIGHT_DRIFT_RATE =
   DEFAULT_ROOM_LIGHT_SETTINGS.driftRate;
@@ -515,6 +519,27 @@ class BrowserRoomLightController implements RoomLightControllerRuntime {
         room,
       ),
     };
+    // One measurement owns the aperture clip and both geometry consumers.
+    // The fixture has no cloth renderer to publish the exact perspective.
+    root.style.setProperty("--room-window-right-bottom", `${this.floorProjectionLayout.apertureRightBottom * 100}%`);
+    const windowVector = root.querySelector<SVGSVGElement>("[data-room-window-vector]");
+    if (windowVector) {
+      const geometry = resolveRoomWindowGeometry(
+        { left: 0, top: 0, width: apertureRect.width, height: apertureRect.height },
+        { left: roomRect.left - apertureRect.left, width: roomRect.width },
+      );
+      const path = (points: readonly { x: number; y: number }[]) =>
+        points.map((point, index) => `${index ? "L" : "M"}${point.x},${point.y}`).join("") + "Z";
+      windowVector.setAttribute("viewBox", `0 0 ${apertureRect.width} ${apertureRect.height}`);
+      const paths = {
+        frame: geometry.quads.filter(quad => quad.kind === "frame").map(quad => path(quad.points)).join(""),
+        sill: geometry.quads.filter(quad => quad.kind === "sill").map(quad => path(quad.points)).join(""),
+        aperture: path(geometry.aperture),
+      };
+      for (const [kind, value] of Object.entries(paths)) {
+        windowVector.querySelector(`[data-window-path="${kind}"]`)?.setAttribute("d", value);
+      }
+    }
   };
 
   private connectFloorProjectionMeasurement(): void {
@@ -569,6 +594,40 @@ class BrowserRoomLightController implements RoomLightControllerRuntime {
     light: ResolvedRoomLight,
   ): void {
     const layout = this.floorProjectionLayout;
+    const interval = resolveRoomSunlightInterval(ROOM_SUNLIGHT_FRAMES, light.pathPosition);
+    root.style.setProperty("--room-bake-weight", interval && layout ? "1" : "0");
+    // The old and incoming fields are both registered to the *current* rays.
+    // Only small optical differences dissolve; the window grid keeps moving.
+    ROOM_SUNLIGHT_FRAMES.forEach((bake, index) => {
+      const weight = interval?.lowerIndex === index ? interval.lowerWeight
+        : interval?.upperIndex === index ? interval.upperWeight : 0;
+      root.style.setProperty(`--room-bake-mix-${index}`, String(weight));
+      if (weight === 0) return;
+      for (const receiver of ["floor", "right-wall"] as const) {
+        const projection = layout ? resolveRoomSunlightProjection(bake, light, layout, receiver, {
+          temporalWeight: 1, cropToReceiver: true,
+        }) : null;
+        const prefix = receiver === "floor" ? `--room-bake-${index}` : `--room-wall-bake-${index}`;
+        const crop = projection?.sourceBounds;
+        root.style.setProperty(`${prefix}-transform`, projection?.transform ?? "scale(0)");
+        root.style.setProperty(`${prefix}-width`, `${crop?.width ?? bake.width}px`);
+        root.style.setProperty(`${prefix}-height`, `${crop?.height ?? bake.height}px`);
+        root.style.setProperty(`${prefix}-left`, `${-(crop?.x ?? 0)}px`);
+        root.style.setProperty(`${prefix}-top`, `${-(crop?.y ?? 0)}px`);
+      }
+    });
+    // React only replaces the pair at a keyframe boundary, never on a drift
+    // tick. The native image cache shares decoded sources across receivers.
+    if (interval) {
+      const key = `${interval.lowerIndex}:${interval.upperIndex}`;
+      if (root.dataset.roomSunlightInterval !== key) {
+        root.dataset.roomSunlightInterval = key;
+        if (typeof root.dispatchEvent === "function") root.dispatchEvent(new Event(ROOM_SUNLIGHT_INTERVAL_EVENT));
+      }
+    }
+    // Authored only, not solar-phase driven: changing time must not re-raster
+    // a blur every tick. Keep the existing edge-softness control meaningful.
+    root.style.setProperty("--room-bake-softness", `${this.settingsRef.current.dappleSoftness * 2}px`);
     if (layout) {
       resolveRoomFloorProjectionInto(this.floorProjection, light, layout);
     } else {

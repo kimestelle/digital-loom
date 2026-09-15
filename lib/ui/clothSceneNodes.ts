@@ -52,6 +52,7 @@ import {
   dFdy,
   dot,
   exp,
+  faceDirection,
   float,
   fract,
   length,
@@ -142,7 +143,7 @@ const spectralRamp = (t: Node<"float">) =>
 // uniform names with `.value` semantics so the component's per-frame push block
 // carries over verbatim; `tex` holds the swappable texture nodes (assign
 // `.value`, never null — use the slot's entry in `blanks`).
-export function createClothMaterial() {
+export function createClothMaterial({ roomAmbient = false } = {}) {
   const blanks = {
     albedo: makeBlackTexture(),
     density: makeBlackTexture(),
@@ -168,6 +169,7 @@ export function createClothMaterial() {
     u_lightDir: uniform(new Vector3(0, 0, 1)),
     u_lightColor: uniform(new Color(1.4, 1.2, 0.95)),
     u_ambientColor: uniform(new Color(0.32, 0.42, 0.55)),
+    u_ambientGroundColor: uniform(new Color(0.32, 0.42, 0.55)),
     u_baseColor: uniform(new Color(1, 1, 1)),
     u_translucency: uniform(0.55),
     u_sheen: uniform(0.9),
@@ -541,8 +543,27 @@ export function createClothMaterial() {
           .mul(0.9)
           .mul(sunShade);
 
-        // Ambient sky bounce.
-        const ambient = u.u_ambientColor.rgb.mul(fabricColor).mul(0.55);
+        // The room's indirect field is broad sky/window light over quieter
+        // floor bounce. Tilt its axis toward the left window: an upright
+        // hemisphere (normal.y only) cannot describe vertical hanging folds.
+        // Use the primitive's facing for two-sided cloth; individual normal
+        // map texels must not flip the field when they graze the view. This axis
+        // belongs to the room, not the sun, so it cannot jump at midnight.
+        // roomAmbient is a build-time choice; the sky viewer keeps its exact
+        // existing shader. No texture reads, extra light, or render pass.
+        const ambientLight = u.u_ambientColor.rgb.toVar();
+        if (roomAmbient) {
+          const facingNormal = Ns.mul(faceDirection);
+          const skyWeight = clamp(
+            dot(facingNormal, vec3(-0.8, 0.6, 0.0)).mul(0.5).add(0.5),
+            0.0,
+            1.0,
+          );
+          ambientLight.assign(
+            mix(u.u_ambientGroundColor.rgb, u.u_ambientColor.rgb, skyWeight),
+          );
+        }
+        const ambient = ambientLight.mul(fabricColor).mul(0.55);
 
         // Grazing sheen — grazing to view, boosted at cut hems. On the micro
         // normal, so individual threads sparkle instead of the whole sheet.
@@ -556,13 +577,21 @@ export function createClothMaterial() {
           .mul(u.u_sheen)
           .mul(mix(1.35, 0.65, roughLum))
           .mul(mix(1.0, 1.5, hemFactor))
-          .mul(strainMag.mul(1.5).add(1.0));
+          .mul(strainMag.mul(1.5).add(1.0))
+          .toVar();
 
         const color = frontDiffuse
           .add(transmitted.mul(0.65))
           .add(ambient)
           .add(u.u_lightColor.rgb.mul(sheen).mul(0.5).mul(sunShade))
           .toVar();
+
+        if (roomAmbient) {
+          // Fibres also reflect the broad indirect field after the sun sets.
+          // Reuse the existing sheen lobe: no second pow or environment map.
+          // This is a surface reflection, never background visibility.
+          color.addAssign(ambientLight.mul(sheen).mul(0.22));
+        }
 
         color.mulAssign(mix(1.0, 0.72, hemFactor));
 
@@ -611,7 +640,7 @@ export function createClothMaterial() {
             .mul(fabricColor)
             .mul(spec.mul(3.5).add(ndl.mul(0.25)))
             .mul(sunShade)
-            .add(u.u_ambientColor.rgb.mul(fabricColor).mul(0.55));
+            .add(ambientLight.mul(fabricColor).mul(0.55));
           color.assign(mix(color, metallic, metal));
         });
 

@@ -180,7 +180,8 @@ export function RoomLightModal({
   }, [onClose]);
 
   useEffect(() => {
-    if (!open) return;
+    // The workbench can start open; wait for the portal before capturing its rail.
+    if (!open || !mounted) return;
     const trigger = document.querySelector<HTMLButtonElement>(
       '[aria-controls="room-environment-controls"]',
     );
@@ -217,7 +218,7 @@ export function RoomLightModal({
       document.removeEventListener("click", onOutsideClick, true);
       if (rail?.contains(document.activeElement)) trigger?.focus();
     };
-  }, [open]);
+  }, [open, mounted]);
 
   if (!mounted) return null;
   const update = <Key extends keyof RoomLightSettings>(
@@ -247,19 +248,6 @@ export function RoomLightModal({
               Place the daylight, then tune the room&apos;s illumination and soft light patch. These settings stay with the room, not the material.
             </p>
           </div>
-          <button
-            type="button"
-            className="room-light-modal__close"
-            aria-label="close daylight controls"
-            onClick={() => {
-              document.querySelector<HTMLButtonElement>(
-                '[aria-controls="room-environment-controls"]',
-              )?.focus();
-              onClose();
-            }}
-          >
-            close
-          </button>
         </header>
 
         <div className="room-light-modal__body">
@@ -348,14 +336,17 @@ export function RoomLightModal({
                   Resumes the day and night cycle from the chosen time after closing.
                 </p>
               </div>
-              <input
-                id={controlId("auto-drift")}
-                type="checkbox"
-                role="switch"
-                checked={safeSettings.autoDrift}
-                aria-describedby={controlId("auto-drift-hint")}
-                onChange={(event) => update("autoDrift", event.currentTarget.checked)}
-              />
+              <span className="room-light-modal__switch">
+                <input
+                  id={controlId("auto-drift")}
+                  type="checkbox"
+                  role="switch"
+                  checked={safeSettings.autoDrift}
+                  aria-describedby={controlId("auto-drift-hint")}
+                  onChange={(event) => update("autoDrift", event.currentTarget.checked)}
+                />
+                <span className="room-light-modal__switch-indicator" aria-hidden="true" />
+              </span>
             </div>
             {safeSettings.autoDrift && (
               <p className="room-light-modal__cycle-note">resumes when controls close</p>

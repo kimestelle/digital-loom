@@ -1,4 +1,6 @@
 import { forwardRef, type CSSProperties, type ReactNode } from "react";
+import { RoomSunlightImage } from "./roomSunlightImage";
+import { RoomWindowLight, DEFAULT_ROOM_SUNLIGHT_BLOOM } from "./roomWindowLight";
 
 export interface RoomFrameProps {
   /** The single persistent Three canvas and its specimen interaction layer. */
@@ -11,6 +13,12 @@ export interface RoomFrameProps {
   style?: CSSProperties;
   /** Exposed for deterministic light checks; the controller may also set CSS vars. */
   lightPosition?: number;
+  /** Registered daylight keyframes or the retained light treatment. */
+  sunlight?: "baked" | "legacy";
+  /** Display contrast only; both looks use the same optical field and geometry. */
+  sunlightTone?: "sunlit" | "neutral";
+  /** Local highlight scatter, exposed in the component study for tuning. */
+  sunlightBloom?: number;
 }
 
 function lightPositionAttribute(value: number | undefined): string {
@@ -32,6 +40,9 @@ export const RoomFrame = forwardRef<HTMLElement, RoomFrameProps>(function RoomFr
   className,
   style,
   lightPosition,
+  sunlight = "baked",
+  sunlightTone = "sunlit",
+  sunlightBloom = DEFAULT_ROOM_SUNLIGHT_BLOOM,
 }, ref) {
   const classes = ["room-frame", className].filter(Boolean).join(" ");
 
@@ -43,6 +54,8 @@ export const RoomFrame = forwardRef<HTMLElement, RoomFrameProps>(function RoomFr
       data-room-environment="room"
       data-has-cabinet={Boolean(cabinet)}
       data-light-position={lightPositionAttribute(lightPosition)}
+      data-room-sunlight={sunlight}
+      data-room-sunlight-tone={sunlightTone}
     >
       <div className="room-frame__architecture" aria-hidden="true">
         <svg
@@ -107,6 +120,8 @@ export const RoomFrame = forwardRef<HTMLElement, RoomFrameProps>(function RoomFr
           />
         </svg>
 
+        <div className="room-frame__sunlight-shade" />
+
         <div
           className="room-frame__window-anchor"
           data-room-window-anchor="wall-corner"
@@ -117,14 +132,27 @@ export const RoomFrame = forwardRef<HTMLElement, RoomFrameProps>(function RoomFr
           />
 
           <div className="room-frame__angled-light" />
+          <RoomWindowLight vectorFrame={stage == null} bloom={sunlightBloom} />
+        </div>
+        <div className="room-frame__wall-light">
+          {sunlight === "baked" ? <RoomSunlightImage bloom={sunlightBloom} receiver="right-wall" /> : null}
         </div>
         <div className="room-frame__ground-light">
+          {sunlight === "baked" ? <RoomSunlightImage bloom={sunlightBloom} /> : null}
           <div className="room-frame__floor-projection">
             <div className="room-frame__dapple">
               <div className="room-frame__dapple-mask room-frame__dapple-mask--soft" />
             </div>
             <div className="room-frame__transmitted-light" />
           </div>
+          {stage != null ? (
+            <canvas
+              className="room-frame__cloth-shadow"
+              data-room-cloth-shadow=""
+              width={256}
+              height={128}
+            />
+          ) : null}
         </div>
         <div className="room-frame__foreground-line" />
       </div>
@@ -136,7 +164,7 @@ export const RoomFrame = forwardRef<HTMLElement, RoomFrameProps>(function RoomFr
         aria-hidden="true"
         focusable="false"
       >
-        <path d="M851 0V832M1245 0V832M814 39H1279M814 714H1279" />
+        <path d="M851 0V832M1245 0V832M814 39H1279" />
       </svg>
 
       <section
